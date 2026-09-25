@@ -1,6 +1,9 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-    <xacro:unless value="$(arg sim_mode)">
+    <xacro:if value="${hardware == 'worx' and '$(arg sim_mode)' != 'true'}">
+        <xacro:include filename="ros2_control_worx.xacro" />
+    </xacro:if>
+    <xacro:unless value="${'$(arg sim_mode)' == 'true' or hardware == 'worx'}">
         <xacro:property name="vesc_yaml" value="$(find open_mower_next)/config/hardware/vesc.yaml" />
         <xacro:property name="vesc" value="${xacro.load_yaml(vesc_yaml)}"/>
 

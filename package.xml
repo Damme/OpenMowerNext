@@ -13,6 +13,9 @@
 
   <depend>hardware_interface</depend>
   <depend>ros2_control</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>pluginlib</depend>
+  <depend>nlohmann-json-dev</depend>
 
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
@@ -86,5 +89,6 @@
   <export>
     <build_type>ament_cmake</build_type>
     <opennav_docking plugin="${prefix}/src/docking_helper/plugins.xml" />
+    <hardware_interface plugin="${prefix}/src/worx_hardware/plugins.xml" />
   </export>
 </package>

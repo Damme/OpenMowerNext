@@ -1,0 +1,57 @@
+# Worx Landroid with the Worx mainboard firmware (JSON over SPI).
+# Values from the running ROS1 robot (params/hardware_specific/Worx, coverage_planner).
+# Dimensions marked "approx" are estimates; odometry uses wheel.ticks_per_m, not the radius.
+
+chassis:
+  offset: [-0.1, 0.0, -0.035]  # approx
+  width: 0.39                  # coverage_planner body_width
+  height: 0.15                 # approx
+  length: 0.58                 # coverage_planner body_length
+  mass: 10                     # approx
+
+mower:
+  offset: [0.0, 0.0, -0.05]    # blade centre relative to base_link (blade_offset 0 in coverage_planner)
+  cut_radius: 0.11             # 0.22 m cut width
+  thickness: 0.01
+  mass: 0.2
+
+wheel:
+  offset: [0, 0.195, 0]        # OM_WHEEL_DISTANCE_M 0.390 / 2
+  mass: 0.2
+  radius: 0.1                  # approx; only used for rad <-> m, consistently everywhere
+  thickness: 0.04
+  velocity:                    # rad/s at radius 0.1 (1.0 m/s)
+    max: 10.0
+    min: -10.0
+  gear_ratio: 1.0              # unused on Worx
+  ticks_per_m: 414.0           # OM_WHEEL_TICKS_PER_M
+
+caster_wheel:
+  offset: [0.35, 0.1]          # approx
+  radius: 0.05
+  mass: 0.05
+
+gps:
+  antenna:
+    offset: [0.0, 0.03, 0.1]   # OM_ANTENNA_OFFSET_X/Y (z approx)
+
+imu:
+  chip:
+    offset: [0.0, 0.0, 0.0]
+
+# worx_hardware plugin parameters (see src/worx_hardware/worx_system.hpp)
+worx:
+  transport: spidev            # spidev | fake (firmware emulator, for bench/sim)
+  spi_device: /dev/spidev0.0
+  spi_speed_hz: 1500000
+  pwm_per_mps: 1230.0          # ROS1 worx_comms MAXSPEED
+  max_pwm: 1230                # 60 % PWM
+  mow_pwm: 1850
+  invert_left: false
+  invert_right: false
+  tick_counter_bits: 32
+  digital_inverted: "Door,Door2,Lift,Collision"
+  battery_empty_voltage: 21.7
+  battery_full_voltage: 28.5
+  blade_idle_timeout: 25.0     # s without drive commands -> blade off
+  log_packets: true

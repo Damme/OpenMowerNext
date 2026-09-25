@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:property name="worx" value="${robot['worx']}"/>
+    <ros2_control name="worx" type="system">
+        <hardware>
+            <plugin>open_mower_next/WorxSystem</plugin>
+            <param name="transport">$(arg worx_transport)</param>
+            <param name="spi_device">${worx['spi_device']}</param>
+            <param name="spi_speed_hz">${worx['spi_speed_hz']}</param>
+            <param name="wheel_radius">${robot['wheel']['radius']}</param>
+            <param name="wheel_ticks_per_m">${robot['wheel']['ticks_per_m']}</param>
+            <param name="tick_counter_bits">${worx['tick_counter_bits']}</param>
+            <param name="pwm_per_mps">${worx['pwm_per_mps']}</param>
+            <param name="max_pwm">${worx['max_pwm']}</param>
+            <param name="mow_pwm">${worx['mow_pwm']}</param>
+            <param name="invert_left">${worx['invert_left']}</param>
+            <param name="invert_right">${worx['invert_right']}</param>
+            <param name="digital_inverted">${worx['digital_inverted']}</param>
+            <param name="battery_empty_voltage">${worx['battery_empty_voltage']}</param>
+            <param name="battery_full_voltage">${worx['battery_full_voltage']}</param>
+            <param name="blade_idle_timeout">${worx['blade_idle_timeout']}</param>
+            <param name="log_packets">${worx['log_packets']}</param>
+        </hardware>
+        <joint name="left_wheel_joint">
+            <command_interface name="velocity">
+                <param name="min">${robot['wheel']['velocity']['min']}</param>
+                <param name="max">${robot['wheel']['velocity']['max']}</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="right_wheel_joint">
+            <command_interface name="velocity">
+                <param name="min">${robot['wheel']['velocity']['min']}</param>
+                <param name="max">${robot['wheel']['velocity']['max']}</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="mower_joint">
+            <command_interface name="effort">
+                <param name="min">0</param>
+                <param name="max">1</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+    </ros2_control>
+</robot>

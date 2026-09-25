@@ -1,0 +1,7 @@
+<library path="worx_hardware">
+  <class name="open_mower_next/WorxSystem"
+         type="open_mower_next::worx_hardware::WorxSystem"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>Worx mainboard over SPI (JSON protocol): wheels, blade, battery, status.</description>
+  </class>
+</library>
