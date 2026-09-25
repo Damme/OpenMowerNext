@@ -120,7 +120,16 @@ def generate_launch_description():
             }.items(),
         ),
 
-    ] + ([] if hardware_name() == 'worx' else [
+    ] + ([
+        # Worx robot: LSM6DSV on the Pi's I2C, publishes imu/data_raw.
+        Node(
+            package='open_mower_next',
+            executable='lsm6dsv_imu_node',
+            name='lsm6dsv_imu',
+            output='screen',
+            parameters=[{'i2c_device': os.getenv('OM_IMU_I2C_DEVICE', '/dev/i2c-1')}],
+        ),
+    ] if hardware_name() == 'worx' else [
         # The Worx mainboard talks SPI through the worx_hardware plugin, not micro-ROS.
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
