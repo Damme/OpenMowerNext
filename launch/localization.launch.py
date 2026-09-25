@@ -56,6 +56,10 @@ def generate_launch_description():
                                     float(os.getenv("OM_DATUM_LONG")),
                                 ],
                                 "grid.use_gaussian_blur": True,
+                                # Worx robot mows on a 5 cm grid
+                                "grid.resolution": float(os.getenv(
+                                    "OM_MAP_GRID_RESOLUTION",
+                                    "0.05" if os.getenv("OM_HARDWARE") == "worx" else "0.1")),
                             }
                         ],
                         remappings=[

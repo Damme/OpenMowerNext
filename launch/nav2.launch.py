@@ -53,7 +53,7 @@ def generate_launch_description():
 
     # Optional robot-specific overrides layered on top (e.g. config/hardware/worx_nav2.yaml).
     overlay = os.getenv('OM_NAV2_PARAMS_OVERLAY', '')
-    overlay_params = [overlay] if overlay else []
+    overlay_params = [ParameterFile(overlay, allow_substs=True)] if overlay else []
     common_node_params = [configured_params] + overlay_params + [{'use_sim_time': use_sim_time}]
 
     load_composable_nodes = LoadComposableNodes(

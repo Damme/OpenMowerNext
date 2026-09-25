@@ -124,6 +124,26 @@ def generate_launch_description():
             }.items(),
         ),
 
+        # Coverage planning and the mowing mission.
+        Node(package='open_mower_next', executable='coverage_server', name='coverage_server', output='screen'),
+        Node(
+            package='open_mower_next',
+            executable='mower_logic',
+            name='mower_logic',
+            output='screen',
+            parameters=[{
+                'gps_fix_topic': os.getenv('OM_GPS_FIX_TOPIC', '/gps/fix'),
+                'gps_settle': float(os.getenv('OM_GPS_WAIT_TIME_SEC', '10.0')),
+                'gps_timeout': float(os.getenv('OM_GPS_RECENT_TIMEOUT_SEC', '1.5')),
+                'battery_low': float(os.getenv('OM_BATTERY_LOW_FRACTION', '0.2')),
+                'battery_resume': float(os.getenv('OM_BATTERY_RESUME_FRACTION', '0.95')),
+                'areas': os.getenv('OM_MOWING_AREAS', ''),
+                # Worx: mow passes with the FTC controller (config/hardware/worx_nav2.yaml).
+                'controller_id': 'FTC' if hardware_name() == 'worx' else 'FollowPath',
+                'goal_checker_id': 'ftc_goal_checker' if hardware_name() == 'worx' else 'general_goal_checker',
+                'progress_checker_id': 'ftc_progress_checker' if hardware_name() == 'worx' else '',
+            }],
+        ),
     ] + ([
         # Worx robot: LSM6DSV on the Pi's I2C, publishes imu/data_raw.
         Node(
