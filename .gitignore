@@ -13,3 +13,6 @@ cmake-build-debug*/
 /.name
 /.idea
 .DS_Store
+
+# Local working notes (not documentation)
+WORX_MIGRATION.md
