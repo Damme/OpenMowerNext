@@ -1,0 +1,93 @@
+<?xml version="1.0"?>
+<!--
+  Mowing mission. Priorities top to bottom (ReactiveFallback re-checks them
+  every tick, a higher branch halts a lower one):
+    emergency > charging > rain > mowing (paused while GPS is bad) > go home > idle.
+  The blade is only ever on inside FollowPass.
+-->
+<root BTCPP_format="4" main_tree_to_execute="Main">
+
+  <BehaviorTree ID="Main">
+    <ReactiveFallback name="priorities">
+      <ReactiveSequence name="emergency">
+        <IsEmergency/>
+        <Hold state="EMERGENCY"/>
+      </ReactiveSequence>
+
+      <ReactiveSequence name="charge">
+        <NeedsCharging/>
+        <Sequence>
+          <SubTree ID="DockIfNeeded" _autoremap="true"/>
+          <Hold state="CHARGING"/>
+        </Sequence>
+      </ReactiveSequence>
+
+      <ReactiveSequence name="rain">
+        <IsRaining/>
+        <Sequence>
+          <SubTree ID="DockIfNeeded" _autoremap="true"/>
+          <Hold state="WAITING_FOR_RAIN"/>
+        </Sequence>
+      </ReactiveSequence>
+
+      <ReactiveSequence name="mow">
+        <CommandIs value="MOW"/>
+        <ReactiveFallback>
+          <ReactiveSequence>
+            <GpsOK/>
+            <SubTree ID="Mow" _autoremap="true"/>
+          </ReactiveSequence>
+          <Hold state="WAITING_FOR_GPS"/>
+        </ReactiveFallback>
+      </ReactiveSequence>
+
+      <ReactiveSequence name="home">
+        <CommandIs value="HOME"/>
+        <Sequence>
+          <SubTree ID="DockIfNeeded" _autoremap="true"/>
+          <SetCommand value="IDLE"/>
+        </Sequence>
+      </ReactiveSequence>
+
+      <Hold state="IDLE"/>
+    </ReactiveFallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="DockIfNeeded">
+    <Fallback>
+      <IsDocked/>
+      <Dock/>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="Mow">
+    <Sequence>
+      <BeginMission/>
+      <Fallback>
+        <Inverter><IsDocked/></Inverter>
+        <Undock/>
+      </Fallback>
+      <Fallback>
+        <KeepRunningUntilFailure>
+          <SubTree ID="MowPass" _autoremap="true"/>
+        </KeepRunningUntilFailure>
+        <MissionFinished/>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- One pass: FAILURE only when the mission has no passes left. -->
+  <BehaviorTree ID="MowPass">
+    <Sequence>
+      <GetPass path="{pass_path}" start="{pass_start}" start_index="{pass_start_index}"/>
+      <Fallback>
+        <Sequence>
+          <NavigateToPose goal="{pass_start}"/>
+          <FollowPass path="{pass_path}" start_index="{pass_start_index}"/>
+        </Sequence>
+        <PassFailed/>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+
+</root>

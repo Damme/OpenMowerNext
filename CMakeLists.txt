@@ -78,6 +78,7 @@ include(cmake/coverage_planner.cmake)
 include(cmake/coverage_server.cmake)
 include(cmake/worx_hardware.cmake)
 include(cmake/lsm6dsv_imu.cmake)
+include(cmake/mower_logic.cmake)
 
 if (BUILD_TESTING)
     find_package(ament_lint_auto REQUIRED)
