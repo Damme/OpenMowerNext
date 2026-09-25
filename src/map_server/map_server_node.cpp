@@ -325,11 +325,20 @@ nav_msgs::msg::OccupancyGrid MapServerNode::mapToOccupancyGrid(msg::Map map)
   occupancy_grid.info.origin.position.x = minX;
   occupancy_grid.info.origin.position.y = minY;
 
+  // Called on every map change: declare the grid parameters only once
+  // (declaring again throws, which made every save_area after startup fail).
+  auto param = [this](const std::string & name, auto default_value) {
+    if (!has_parameter(name)) {
+      declare_parameter(name, default_value);
+    }
+    return get_parameter(name).get_value<decltype(default_value)>();
+  };
+
   // cell size in meters - get from parameter
-  occupancy_grid.info.resolution = declare_parameter("grid.resolution", 0.1);
+  occupancy_grid.info.resolution = param("grid.resolution", 0.1);
 
   // Limit the max size of the grid to avoid memory issues with large areas
-  const int MAX_GRID_SIZE = declare_parameter("grid.max_size", 2000);
+  const int MAX_GRID_SIZE = static_cast<int>(param("grid.max_size", int64_t{2000}));
   int width = std::min(MAX_GRID_SIZE, static_cast<int>((maxX - minX) / occupancy_grid.info.resolution));
   int height = std::min(MAX_GRID_SIZE, static_cast<int>((maxY - minY) / occupancy_grid.info.resolution));
 
