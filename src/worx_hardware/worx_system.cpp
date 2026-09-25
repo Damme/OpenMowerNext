@@ -159,6 +159,8 @@ void WorxSystem::startNode()
         fake_board_->setInCharger(req->data);
         res->success = true;
       });
+    fake_battery_sub_ = node_->create_subscription<std_msgs::msg::Int32>(
+      "/worx/fake/battery_mv", 10, [this](std_msgs::msg::Int32::ConstSharedPtr m) { fake_board_->setBatteryMv(m->data); });
   }
   status_timer_ = node_->create_wall_timer(std::chrono::milliseconds(200), [this]() { publishStatus(); });
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
@@ -174,6 +176,7 @@ void WorxSystem::stopNode()
   emergency_srv_.reset();
   motors_srv_.reset();
   fake_charger_srv_.reset();
+  fake_battery_sub_.reset();
   executor_.reset();
   node_.reset();
 }

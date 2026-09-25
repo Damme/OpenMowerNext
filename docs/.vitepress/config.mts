@@ -42,6 +42,9 @@ export default withMermaid({
           { text: 'Map server', link: '/architecture/map-server' },
           { text: 'Map recorder', link: '/architecture/map-recorder' },
           { text: 'Docking helper', link: '/architecture/docking-helper' },
+          { text: 'Coverage planner', link: '/architecture/coverage-planner' },
+          { text: 'Mowing logic', link: '/architecture/mower-logic' },
+          { text: 'Worx hardware', link: '/architecture/worx-hardware' },
           { text: 'Sim node', link: '/architecture/sim-node' },
         ]
       },

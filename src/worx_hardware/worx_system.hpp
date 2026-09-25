@@ -21,6 +21,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/int32.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 
 #include <atomic>
@@ -111,6 +112,7 @@ private:
   rclcpp::Publisher<open_mower_next::msg::WorxStatus>::SharedPtr status_pub_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_, fake_charger_srv_;
   FakeBoardTransport * fake_board_ = nullptr;  // owned by link_, only with transport=fake
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr fake_battery_sub_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 };
 

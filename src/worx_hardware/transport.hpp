@@ -51,6 +51,8 @@ public:
     double battery_period_s = 1.0;
     int battery_mv = 28000;
     bool in_charger = false;
+    double charge_mv_per_s = 100.0;  // battery rise while in the charger (fast, for sims)
+    int full_mv = 28500;
   };
 
   explicit FakeBoardTransport(Options options);
@@ -59,6 +61,7 @@ public:
 
   // Test hooks (thread-safe).
   void setInCharger(bool in_charger);
+  void setBatteryMv(int mv);
   int leftPwm() const;
   int rightPwm() const;
   int mowPwm() const;
@@ -76,6 +79,7 @@ private:
   bool enabled_ = false;
   int pwm_l_ = 0, pwm_r_ = 0, pwm_mow_ = 0;
   double ticks_l_ = 0, ticks_r_ = 0;
+  double battery_mv_ = 0;
   int pings_ = 0;
   bool started_ = false;
   std::chrono::steady_clock::time_point last_step_, last_pulse_, last_battery_;

@@ -65,7 +65,13 @@ bool SpidevTransport::transfer(const Frame & tx, Frame & rx)
 
 // ---- fake board -------------------------------------------------------------------
 
-FakeBoardTransport::FakeBoardTransport(Options options) : opt_(options) {}
+FakeBoardTransport::FakeBoardTransport(Options options) : opt_(options), battery_mv_(options.battery_mv) {}
+
+void FakeBoardTransport::setBatteryMv(int mv)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  battery_mv_ = mv;
+}
 
 bool FakeBoardTransport::open(std::string &) { return true; }
 
@@ -116,6 +122,9 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
   }
   const double dt = std::chrono::duration<double>(now - last_step_).count();
   last_step_ = now;
+  if (opt_.in_charger && battery_mv_ < opt_.full_mv) {
+    battery_mv_ = std::min<double>(opt_.full_mv, battery_mv_ + opt_.charge_mv_per_s * dt);
+  }
   if (enabled_) {
     // Like the firmware: counters only count up, the Dir bits carry the sign.
     ticks_l_ += std::abs(pwm_l_) / opt_.pwm_per_mps * opt_.ticks_per_m * dt;
@@ -141,7 +150,7 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
     last_battery_ = now;
     nlohmann::ordered_json b;
     b["Battery"] = {
-      {"mV", opt_.battery_mv}, {"mA", opt_.in_charger ? 1200 : 0}, {"Temp", 215},
+      {"mV", static_cast<int>(battery_mv_)}, {"mA", opt_.in_charger && battery_mv_ < opt_.full_mv ? 1200 : 0}, {"Temp", 215},
       {"CellLow", 1}, {"CellHigh", 1}, {"InCharger", opt_.in_charger ? 1 : 0}};
     queue(b.dump());
   }
