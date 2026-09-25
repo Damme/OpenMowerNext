@@ -166,3 +166,29 @@ ros2_control won't fit comfortably, which is why this plan targets the CM4.
 - App vs Foxglove (phase 5).
 - Should the precise path tracking we rely on (FTC pre-rotate and lane accuracy) become a Nav2 controller port or RPP tuning?
 - Upstream: offer the coverage planner and Worx hardware to jkaflik/OpenMowerNext, or keep them fork-only?
+
+## 7. Progress log (branch `worx`)
+
+Build/test environment: Docker image `omnext-dev:jazzy` (ros:jazzy-ros-base + rosdep deps of package.xml,
+built from a scratch Dockerfile). Test in a scratch copy of the repo, never on the Pi.
+
+| Date | Commit | What |
+|---|---|---|
+| 2026-09-25 | `ad5336e` | coverage_planner replaces Fields2Cover (§4) |
+| 2026-09-25 | `26b350a` | **Worx hardware** (`src/worx_hardware`): ros2_control `open_mower_next/WorxSystem` over SPI/JSON; fake-board transport; `OM_HARDWARE=worx` → `config/hardware/worx.yaml` + `description/ros2_control_worx.xacro`; `launch/hardware_bench.launch.py`; controller_manager robot_description topic fix |
+| 2026-09-25 | `c9afbe0` | **LSM6DSV IMU** (`src/lsm6dsv_imu`): ROS-free driver (i2c-dev) + node, started for Worx |
+
+Worx firmware facts (from the robot's logs, 2026-09):
+- `MotorPulse` {Left, Right cumulative magnitudes, count up in both directions; DirLeft/DirRight; Mow ≈ 180 while
+  mowing (a rate, not cumulative); Emergancy; BlockForward}. ~0.15 m/s ≈ 60 ticks/s at 414 ticks/m.
+- `Battery.InCharger` = 1 exactly while charging (mA ≈ 380), so it's the docking signal.
+- `Digital` Door/Door2/Lift/Collision read 1 in the normal state (inverted); Stuck/Stuck2 toggle; Stop/Rain 0.
+- `motorState` ∈ MOTORREQ_ENABLE / _DISABLE / _SETSPEED; `powerState` strings (StartCharging, Charging).
+
+Safety in WorxSystem: `/worx/emergency` latches zero output; the blade stays off after emergency / link loss /
+motor disable until it's commanded off once; the blade stops after 25 s without drive commands (as in worx_comms).
+
+Bench test (in Docker): `OM_HARDWARE=worx ros2 launch open_mower_next hardware_bench.launch.py worx_transport:=fake`,
+then TwistStamped on `/diff_drive_base_controller/cmd_vel`, Float64MultiArray on `/mower_controller/commands`.
+
+Next: map converter (ROS1 map.bag → GeoJSON), then the mowing behaviour.
