@@ -3,7 +3,7 @@
 # Dimensions marked "approx" are estimates; odometry uses wheel.ticks_per_m, not the radius.
 
 chassis:
-  offset: [-0.1, 0.0, -0.035]  # approx
+  offset: [-0.11, 0.0, -0.035]  # base_link on the wheel axle, 0.11 m from the rear; charging_port at the front (0.47)
   width: 0.39                  # coverage_planner body_width
   height: 0.15                 # approx
   length: 0.58                 # coverage_planner body_length

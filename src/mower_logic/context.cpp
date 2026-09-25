@@ -2,6 +2,8 @@
 
 #include <tf2/LinearMath/Quaternion.h>
 
+#include <algorithm>
+
 namespace open_mower_next::mower_logic
 {
 
@@ -105,7 +107,10 @@ std::vector<std::string> Context::operationAreas() const
   std::lock_guard<std::mutex> l(mutex_);
   std::vector<std::string> ids;
   for (const auto & a : map_.areas) {
-    if (a.type == open_mower_next::msg::Area::TYPE_OPERATION) ids.push_back(a.id);
+    if (a.type != open_mower_next::msg::Area::TYPE_OPERATION) continue;
+    if (params.areas.empty() || std::find(params.areas.begin(), params.areas.end(), a.id) != params.areas.end()) {
+      ids.push_back(a.id);
+    }
   }
   return ids;
 }

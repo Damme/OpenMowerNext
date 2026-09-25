@@ -109,7 +109,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr charger_pub_;
   rclcpp::Publisher<open_mower_next::msg::WorxStatus>::SharedPtr status_pub_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_, fake_charger_srv_;
+  FakeBoardTransport * fake_board_ = nullptr;  // owned by link_, only with transport=fake
   rclcpp::TimerBase::SharedPtr status_timer_;
 };
 

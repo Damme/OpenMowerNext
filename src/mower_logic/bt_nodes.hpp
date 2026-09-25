@@ -184,6 +184,7 @@ protected:
     g.path = path_;
     g.controller_id = ctx_->params.controller_id;
     g.goal_checker_id = ctx_->params.goal_checker_id;
+    g.progress_checker_id = ctx_->params.progress_checker_id;
     return true;
   }
   BT::NodeStatus whileRunning() override
@@ -211,11 +212,19 @@ protected:
   BT::NodeStatus onResult(const Result & r) override
   {
     bladeOff();
-    if (r.code == rclcpp_action::ResultCode::SUCCEEDED) {
-      ctx_->mission.passDone();
-      return BT::NodeStatus::SUCCESS;
+    if (r.code != rclcpp_action::ResultCode::SUCCEEDED) return BT::NodeStatus::FAILURE;
+    // A goal checker only compares with the LAST pose; passes that loop back
+    // near their end (stacked perimeter loops) can "succeed" early. Accept
+    // success only near the end of the path, otherwise resume from progress.
+    const size_t reached = search_from_;
+    if (path_.poses.size() > 20 && reached + 20 < path_.poses.size()) {
+      RCLCPP_WARN(ctx_->node->get_logger(), "follow_path ended at pose %zu of %zu - resuming the rest", reached,
+                  path_.poses.size());
+      ctx_->count_failure = false;
+      return BT::NodeStatus::FAILURE;
     }
-    return BT::NodeStatus::FAILURE;
+    ctx_->mission.passDone();
+    return BT::NodeStatus::SUCCESS;
   }
   void onCancel() override { bladeOff(); }
 

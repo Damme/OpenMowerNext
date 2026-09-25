@@ -79,6 +79,9 @@ include(cmake/coverage_server.cmake)
 include(cmake/worx_hardware.cmake)
 include(cmake/lsm6dsv_imu.cmake)
 include(cmake/mower_logic.cmake)
+include(cmake/ftc_controller.cmake)
+
+install(PROGRAMS scripts/worx_sim_dock.py scripts/worx_map_to_geojson.py DESTINATION lib/${PROJECT_NAME})
 
 if (BUILD_TESTING)
     find_package(ament_lint_auto REQUIRED)

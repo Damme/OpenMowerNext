@@ -38,6 +38,14 @@ int main(int argc, char ** argv)
   p.dock_type = node->declare_parameter("dock_type", p.dock_type);
   p.controller_id = node->declare_parameter("controller_id", p.controller_id);
   p.goal_checker_id = node->declare_parameter("goal_checker_id", p.goal_checker_id);
+  p.progress_checker_id = node->declare_parameter("progress_checker_id", p.progress_checker_id);
+  {
+    // Comma separated operation area ids; empty = all areas in map order.
+    std::stringstream ss(node->declare_parameter("areas", std::string()));
+    for (std::string id; std::getline(ss, id, ',');) {
+      if (!id.empty()) p.areas.push_back(id);
+    }
+  }
   const auto tree_file = node->declare_parameter(
     "tree", ament_index_cpp::get_package_share_directory("open_mower_next") + "/config/mower_logic.xml");
   const double rate = node->declare_parameter("tick_rate", 10.0);

@@ -57,6 +57,8 @@ struct Params
   std::string dock_type = "openmower";
   std::string controller_id = "FollowPath";
   std::string goal_checker_id = "general_goal_checker";
+  std::string progress_checker_id = "";  // empty = controller_server default
+  std::vector<std::string> areas;    // operation area ids to mow; empty = all, in map order
 };
 
 class Context
@@ -71,6 +73,7 @@ public:
   std::atomic<Command> command{Command::IDLE};
   std::atomic<int> dock_failures{0};
   std::atomic<bool> blade_in_use{false};  // set by FollowPass while it runs
+  std::atomic<bool> count_failure{true};  // false: last pass "failure" was an early end, resume without counting
 
   // ---- inputs ----
   double batteryFraction() const;

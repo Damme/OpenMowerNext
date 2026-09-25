@@ -161,6 +161,9 @@ public:
   NodeStatus tick() override
   {
     ctx_->setBlade(false);
+    if (!ctx_->count_failure.exchange(true)) {
+      return NodeStatus::SUCCESS;  // early end: just continue from the progress index
+    }
     const bool skipped = ctx_->mission.passFailed(ctx_->params.max_pass_attempts);
     RCLCPP_WARN(ctx_->node->get_logger(), skipped ? "Pass failed too often - skipping it" : "Pass failed - retrying");
     return NodeStatus::SUCCESS;

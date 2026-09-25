@@ -151,6 +151,15 @@ void WorxSystem::startNode()
       link_->send(req->data ? cmdMotorsEnable() : cmdMotorsDisable(), true);
       res->success = true;
     });
+  if (fake_board_) {
+    // Simulation hook: lets a sim node put the emulated board "in the charger".
+    fake_charger_srv_ = node_->create_service<std_srvs::srv::SetBool>(
+      "/worx/fake/set_in_charger", [this](const std_srvs::srv::SetBool::Request::SharedPtr req,
+                                          std_srvs::srv::SetBool::Response::SharedPtr res) {
+        fake_board_->setInCharger(req->data);
+        res->success = true;
+      });
+  }
   status_timer_ = node_->create_wall_timer(std::chrono::milliseconds(200), [this]() { publishStatus(); });
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_);
@@ -164,6 +173,7 @@ void WorxSystem::stopNode()
   status_timer_.reset();
   emergency_srv_.reset();
   motors_srv_.reset();
+  fake_charger_srv_.reset();
   executor_.reset();
   node_.reset();
 }
@@ -175,7 +185,9 @@ CallbackReturn WorxSystem::on_configure(const rclcpp_lifecycle::State &)
     FakeBoardTransport::Options o;
     o.ticks_per_m = cfg_.wheel_ticks_per_m;
     o.pwm_per_mps = cfg_.pwm_per_mps;
-    transport = std::make_unique<FakeBoardTransport>(o);
+    auto fake = std::make_unique<FakeBoardTransport>(o);
+    fake_board_ = fake.get();
+    transport = std::move(fake);
   } else if (cfg_.transport == "spidev") {
     transport = std::make_unique<SpidevTransport>(cfg_.spi_device, static_cast<uint32_t>(cfg_.spi_speed_hz));
   } else {
@@ -229,6 +241,7 @@ CallbackReturn WorxSystem::on_cleanup(const rclcpp_lifecycle::State &)
     link_->stop();
     link_.reset();
   }
+  fake_board_ = nullptr;
   return CallbackReturn::SUCCESS;
 }
 

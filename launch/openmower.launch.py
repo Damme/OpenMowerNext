@@ -20,6 +20,10 @@ def generate_launch_description():
 
     share_directory = get_package_share_directory(package_name)
     robot_description_config = robot_description(share_directory)
+    if hardware_name() == 'worx' and not os.getenv('OM_NAV2_PARAMS_OVERLAY'):
+        # Worx speeds/footprint on top of nav2_params.yaml (read by nav2.launch.py).
+        os.environ['OM_NAV2_PARAMS_OVERLAY'] = os.path.join(
+            share_directory, 'config', 'hardware', 'worx_nav2.yaml')
 
     # Create a robot_state_publisher node
     params = {'robot_description': robot_description_config, 'use_sim_time': False}

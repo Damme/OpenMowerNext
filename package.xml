@@ -15,6 +15,11 @@
   <depend>ros2_control</depend>
   <depend>rclcpp_lifecycle</depend>
   <depend>pluginlib</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_util</depend>
+  <depend>tf2_eigen</depend>
+  <depend>eigen</depend>
   <depend>nlohmann-json-dev</depend>
 
   <depend>rclcpp</depend>
@@ -90,5 +95,6 @@
     <build_type>ament_cmake</build_type>
     <opennav_docking plugin="${prefix}/src/docking_helper/plugins.xml" />
     <hardware_interface plugin="${prefix}/src/worx_hardware/plugins.xml" />
+    <nav2_core plugin="${prefix}/src/ftc_controller/plugins.xml" />
   </export>
 </package>

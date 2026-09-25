@@ -1,0 +1,8 @@
+<library path="ftc_controller">
+  <class type="open_mower_next::ftc_controller::FTCController" base_class_type="nav2_core::Controller">
+    <description>FTC carrot-following PID path controller (ported from the Worx ftc_local_planner).</description>
+  </class>
+  <class type="open_mower_next::ftc_controller::FTCGoalChecker" base_class_type="nav2_core::GoalChecker">
+    <description>Goal reached when the FTC controller finished traversing the plan.</description>
+  </class>
+</library>

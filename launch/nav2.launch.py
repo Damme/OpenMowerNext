@@ -51,7 +51,10 @@ def generate_launch_description():
         remappings=remappings,
         output='screen')
 
-    common_node_params = [configured_params, {'use_sim_time': use_sim_time}]
+    # Optional robot-specific overrides layered on top (e.g. config/hardware/worx_nav2.yaml).
+    overlay = os.getenv('OM_NAV2_PARAMS_OVERLAY', '')
+    overlay_params = [overlay] if overlay else []
+    common_node_params = [configured_params] + overlay_params + [{'use_sim_time': use_sim_time}]
 
     load_composable_nodes = LoadComposableNodes(
         target_container='nav2_container',

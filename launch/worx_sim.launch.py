@@ -62,6 +62,14 @@ def launch_setup(context):
                           'grid.resolution': 0.05, 'grid.max_size': 4000}],
              remappings=[('map_grid', 'map_grid'), ('map', 'mowing_map')]),
         Node(package='open_mower_next', executable='coverage_server', output='screen'),
+        Node(package='open_mower_next', executable='docking_helper', name='docking_helper', output='screen'),
+        Node(package='open_mower_next', executable='worx_sim_dock.py', output='screen'),
+        Node(package='open_mower_next', executable='mower_logic', output='screen',
+             parameters=[{'require_gps': False,
+                         'controller_id': LaunchConfiguration('pass_controller').perform(context),
+                         'goal_checker_id': 'ftc_goal_checker' if LaunchConfiguration('pass_controller').perform(context) == 'FTC' else 'general_goal_checker',
+                         'progress_checker_id': 'ftc_progress_checker' if LaunchConfiguration('pass_controller').perform(context) == 'FTC' else '',
+                          'areas': LaunchConfiguration('areas').perform(context)}]),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'nav2.launch.py')),
             launch_arguments={'use_sim_time': 'false', 'autostart': 'true'}.items()),
@@ -71,8 +79,13 @@ def launch_setup(context):
 def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('OM_HARDWARE', 'worx'),
+        SetEnvironmentVariable('OM_NAV2_PARAMS_OVERLAY', os.getenv(
+            'OM_NAV2_PARAMS_OVERLAY',
+            os.path.join(get_package_share_directory('open_mower_next'), 'config', 'hardware', 'worx_nav2.yaml'))),
         DeclareLaunchArgument('start_x', default_value='0.0'),
         DeclareLaunchArgument('start_y', default_value='0.0'),
         DeclareLaunchArgument('start_yaw', default_value='0.0'),
+        DeclareLaunchArgument('areas', default_value='', description='comma separated area ids (default all)'),
+        DeclareLaunchArgument('pass_controller', default_value='FTC', description='FTC | FollowPath (RPP)'),
         OpaqueFunction(function=launch_setup),
     ])

@@ -12,7 +12,13 @@ Mapping:
     mowing_areas[i].area        -> Polygon, type "operation", id "mow_<i>"
     mowing_areas[i].obstacles   -> Polygon, type "exclusion", id "mow_<i>_obstacle_<j>"
     navigation_areas[i].area    -> Polygon, type "navigation", id "nav_<i>"
-    docking_point               -> LineString [position, 0.5 m ahead], type "docking_station"
+    docking_point               -> LineString [port, 0.5 m out of the dock], type "docking_station"
+
+The ROS1 docking point is the robot's base_link pose when docked (facing the
+station). OpenMowerNext stores a docking station as the charging port pose
+rotated by 180 deg (map_recorder); docking_helper subtracts the
+base_link->charging_port offset again, so --charging-port-offset must match the
+URDF (config/hardware/<hw>.yaml: chassis offset x + length; Worx 0.47).
 
 Needs: pip install rosbags pyproj
 """
@@ -82,6 +88,8 @@ def main(argv=None):
     ap.add_argument('out')
     ap.add_argument('--datum', nargs=2, type=float, required=True, metavar=('LAT', 'LON'),
                     help='OM_DATUM_LAT OM_DATUM_LONG of the ROS1 robot')
+    ap.add_argument('--charging-port-offset', type=float, default=0.47,
+                    help='base_link -> charging_port distance along x in the URDF (default 0.47, Worx)')
     args = ap.parse_args(argv)
 
     typestore = get_typestore(Stores.ROS1_NOETIC)
@@ -111,10 +119,13 @@ def main(argv=None):
                 counts['docking_point'] += 1
                 p, q = msg.position, msg.orientation
                 yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-                ahead = (p.x + 0.5 * math.cos(yaw), p.y + 0.5 * math.sin(yaw))
+                off = args.charging_port_offset
+                port = (p.x + off * math.cos(yaw), p.y + off * math.sin(yaw))
+                out_yaw = yaw + math.pi  # dock pose faces out of the station
+                ahead = (port[0] + 0.5 * math.cos(out_yaw), port[1] + 0.5 * math.sin(out_yaw))
                 features.append(feature('dock_0', 'Docking station', 'docking_station',
                                         {'type': 'LineString',
-                                         'coordinates': [conv(p.x, p.y), conv(*ahead)]}))
+                                         'coordinates': [conv(*port), conv(*ahead)]}))
 
     with open(args.out, 'w', encoding='utf-8') as f:
         json.dump({'type': 'FeatureCollection', 'features': features}, f, indent=2)
