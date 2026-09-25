@@ -2,9 +2,7 @@
 
 #include "utils.h"
 
-#include <tf2/LinearMath/Quaternion.hpp>
-
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <cmath>
 
 namespace open_mower_next::coverage_server
 {
@@ -13,13 +11,12 @@ CoverageServerNode::CoverageServerNode(const rclcpp::NodeOptions & options)
 {
   RCLCPP_INFO(get_logger(), "Starting Coverage Server node");
 
-  robot_width_ = declare_parameter("robot_width", 0.325);
-  operation_width_ = declare_parameter("operation_width", 0.065);
-  min_turning_radius_ = declare_parameter("min_turning_radius", 0.01);
+  declarePlannerParameters();
 
   RCLCPP_INFO(
-    get_logger(), "Configured with robot_width=%.3f, mowing_tool_width=%.3f", robot_width_,
-    operation_width_);
+    get_logger(), "Configured with tool_width=%.3f, overlap=%.2f, clearance=%.3f, fill_mode=%s",
+    planner_params_.tool_width, planner_params_.overlap, planner_params_.clearance,
+    planner_params_.fill_mode.c_str());
 
   area_coverage_service_ = create_service<open_mower_next::srv::AreaCoverage>(
     "area_coverage", std::bind(
@@ -42,6 +39,30 @@ CoverageServerNode::CoverageServerNode(const rclcpp::NodeOptions & options)
 CoverageServerNode::~CoverageServerNode()
 {
   RCLCPP_INFO(get_logger(), "Shutting down Coverage Server node");
+}
+
+// Same names and defaults as the ROS1 coverage_planner node, except
+// outline_count: -1 so the request's headland_loops is used.
+void CoverageServerNode::declarePlannerParameters()
+{
+  auto & p = planner_params_;
+  p.lane_skip = static_cast<int>(declare_parameter("lane_skip", 2));
+  p.optimize_sweep_angle = declare_parameter("optimize_sweep_angle", true);
+  p.blade_offset_x = declare_parameter("blade_offset_x", 0.0);
+  p.blade_offset_y = declare_parameter("blade_offset_y", 0.0);
+  p.tool_width = declare_parameter("tool_width", 0.22);
+  p.overlap = declare_parameter("overlap", 0.35);
+  p.clearance = declare_parameter("clearance", 0.04);
+  p.obstacle_clearance = declare_parameter("obstacle_clearance", -1.0);
+  p.outline_count = static_cast<int>(declare_parameter("outline_count", -1));
+  p.fill_mode = declare_parameter("fill_mode", std::string("request"));
+  p.path_spacing = declare_parameter("path_spacing", 0.1);
+  p.body_width = declare_parameter("body_width", 0.39);
+  p.body_length = declare_parameter("body_length", 0.58);
+  p.min_turn_radius = declare_parameter("min_turn_radius", 0.0);
+  p.loop_transition = declare_parameter("loop_transition", 6.0);
+  p.edge_side = declare_parameter("edge_side", std::string("right"));
+  p.axle_from_rear = declare_parameter("axle_from_rear", 0.11);
 }
 
 void CoverageServerNode::mapCallback(const open_mower_next::msg::Map::SharedPtr msg)
@@ -99,40 +120,68 @@ void CoverageServerNode::handleAreaCoverageRequest(
     }
   }
 
-  const auto coverage_cells = utils::toCells(area_polygon, exclusion_polygons);
-  if (coverage_cells.isEmpty() || coverage_cells.size() == 0) {
+  ::coverage_planner::Request plan_request;
+  plan_request.outline = utils::toPoints(area_polygon.polygon);
+  for (const auto & exclusion : exclusion_polygons) {
+    plan_request.holes.push_back(utils::toPoints(exclusion.polygon));
+  }
+  plan_request.angle_rad = request->swath_angle * M_PI / 180.0;
+  plan_request.outline_count = request->headland_loops;
+
+  const auto result = ::coverage_planner::plan(
+    plan_request, planner_params_,
+    [this](::coverage_planner::LogLevel level, const std::string & text) {
+      switch (level) {
+        case ::coverage_planner::LogLevel::ERROR:
+          RCLCPP_ERROR(get_logger(), "%s", text.c_str());
+          break;
+        case ::coverage_planner::LogLevel::WARN:
+          RCLCPP_WARN(get_logger(), "%s", text.c_str());
+          break;
+        default:
+          RCLCPP_INFO(get_logger(), "%s", text.c_str());
+          break;
+      }
+    });
+
+  const auto & frame_id = area_polygon.header.frame_id;
+  response->area_id = request->area_id;
+  response->coverage_geometry = utils::toMsg(result.mowable, frame_id);
+
+  if (result.mowable.empty()) {
     response->code = open_mower_next::srv::AreaCoverage::Response::CODE_INVALID_EXCLUSION;
     response->message = "Exclusions remove the entire requested area";
     return;
   }
 
-  f2c::types::Robot robot(robot_width_, operation_width_, min_turning_radius_);
+  if (result.paths.empty()) {
+    response->code = open_mower_next::srv::AreaCoverage::Response::CODE_UNKNOWN_ERROR;
+    response->message = "Planner produced no paths (area narrower than the clearances?)";
+    return;
+  }
 
-  const auto swaths =
-    generateSwaths(robot, coverage_cells, request->headland_loops, request->swath_angle);
+  std_msgs::msg::Header header;
+  header.frame_id = frame_id;
+  header.stamp = now();
 
-  nav_msgs::msg::Path path = utils::toMsg(swaths, area_polygon.header.frame_id);
+  for (const auto & planned : result.paths) {
+    response->paths.push_back(utils::toMsg(planned, header));
+  }
+  response->path = utils::concatenate(response->paths, header);
 
   response->message = "Coverage path generated successfully";
   response->code = open_mower_next::srv::AreaCoverage::Response::CODE_SUCCESS;
-  response->path = path;
-  response->coverage_geometry = utils::toMsg(coverage_cells, area_polygon.header.frame_id);
-  response->area_id = request->area_id;
 
-  const auto markers = createVisualizationMarkers(swaths, area_polygon.header.frame_id);
-  visualization_pub_->publish(markers);
+  path_pub_->publish(response->path);
+  visualization_pub_->publish(createVisualizationMarkers(response->paths, frame_id));
 
   RCLCPP_INFO(
-    get_logger(), "Generated path with a %zu poses for area ID: %s", path.poses.size(),
-    request->area_id.c_str());
+    get_logger(), "Generated %zu paths (%zu poses) for area ID: %s", response->paths.size(),
+    response->path.poses.size(), request->area_id.c_str());
 }
 
 msg::Area::SharedPtr CoverageServerNode::findAreaById(const std::string & area_id)
 {
-  geometry_msgs::msg::PolygonStamped result;
-  result.header.frame_id = "map";
-  result.header.stamp = now();
-
   for (const auto & area : current_map_.areas) {
     if (area.id == area_id) {
       RCLCPP_INFO(
@@ -145,32 +194,12 @@ msg::Area::SharedPtr CoverageServerNode::findAreaById(const std::string & area_i
   return nullptr;
 }
 
-std::vector<std::string> CoverageServerNode::findAreasInPolygon(
-  const geometry_msgs::msg::PolygonStamped & polygon)
-{
-  (void)polygon;
-
-  std::vector<std::string> area_ids;
-
-  for (const auto & area : current_map_.areas) {
-    if (area.type == open_mower_next::msg::Area::TYPE_OPERATION) {
-      // TODO: Implement proper polygon intersection test
-      area_ids.push_back(area.id);
-    }
-  }
-
-  RCLCPP_INFO(get_logger(), "Found %zu operation areas within the polygon", area_ids.size());
-  return area_ids;
-}
-
 bool CoverageServerNode::findExclusionsInPolygon(
   const geometry_msgs::msg::PolygonStamped & field_polygon,
   std::vector<geometry_msgs::msg::PolygonStamped> & exclusion_polygons, std::string & message)
 {
   exclusion_polygons.clear();
   message.clear();
-
-  const auto field_cell = utils::toCell(field_polygon);
 
   for (const auto & area : current_map_.areas) {
     if (area.type == open_mower_next::msg::Area::TYPE_EXCLUSION) {
@@ -179,18 +208,16 @@ bool CoverageServerNode::findExclusionsInPolygon(
         return false;
       }
 
-      geometry_msgs::msg::PolygonStamped exclusion;
-      exclusion.header = field_polygon.header;
-      exclusion.polygon = area.area.polygon;
-
-      const auto exclusion_cell = utils::toCell(exclusion);
-      if (field_cell.disjoint(exclusion_cell)) {
+      if (!utils::intersects(field_polygon.polygon, area.area.polygon)) {
         RCLCPP_INFO(
           get_logger(), "Skipping exclusion area outside field: %s, name: %s", area.id.c_str(),
           area.name.c_str());
         continue;
       }
 
+      geometry_msgs::msg::PolygonStamped exclusion;
+      exclusion.header = field_polygon.header;
+      exclusion.polygon = area.area.polygon;
       exclusion_polygons.push_back(exclusion);
       RCLCPP_INFO(
         get_logger(), "Applying exclusion area with ID: %s, name: %s", area.id.c_str(),
@@ -202,79 +229,12 @@ bool CoverageServerNode::findExclusionsInPolygon(
   return true;
 }
 
-f2c::types::Swaths CoverageServerNode::generateSwaths(
-  const f2c::types::Robot & robot, const f2c::types::Cells & cells, const uint16_t headland_loops,
-  const uint16_t swath_angle)
-{
-  f2c::hg::ConstHL hg;
-
-  RCLCPP_INFO(get_logger(), "Generating swaths...");
-
-  auto mainland = cells;
-
-  if (headland_loops > 0) {
-    auto headland_width = robot.getCovWidth() * headland_loops;
-
-    RCLCPP_INFO(
-      get_logger(), "Generating headland with width=%.2f (%d loops of %.2f)", headland_width,
-      headland_loops, robot.getCovWidth());
-
-    mainland = hg.generateHeadlands(cells, headland_width);
-  }
-
-  if (mainland.isEmpty() || mainland.size() == 0) {
-    return f2c::types::Swaths{};
-  }
-
-  f2c::sg::BruteForce swath_generator;
-  f2c::obj::SwathLength swath_objective;
-  const f2c::rp::BoustrophedonOrder sorter;
-  f2c::types::Swaths sorted_swaths;
-
-  for (size_t i = 0; i < mainland.size(); ++i) {
-    const auto cell = mainland.getGeometry(i);
-    if (cell.isEmpty() || cell.area() <= 0.0) {
-      continue;
-    }
-
-    const auto best_angle =
-      swath_generator.computeBestAngle(swath_objective, robot.getCovWidth(), cell);
-    const auto requested_angle = best_angle + (swath_angle * M_PI / 180.0);
-
-    const auto swaths = swath_generator.generateSwaths(requested_angle, robot.getCovWidth(), cell);
-    sorted_swaths.append(sorter.genSortedSwaths(swaths));
-  }
-
-  RCLCPP_INFO(get_logger(), "Generated %zu swaths", sorted_swaths.size());
-
-  if (headland_loops > 0) {
-    auto cells_vector = hg.generateHeadlandSwaths(cells, operation_width_, headland_loops, false);
-
-    for (auto & headland_cells : cells_vector) {
-      if (headland_cells.isEmpty() || headland_cells.size() == 0) {
-        continue;
-      }
-
-      for (size_t i = 0; i < headland_cells.size(); ++i) {
-        for (auto & ring : headland_cells.getGeometry(i)) {
-          sorted_swaths.append(
-            f2c::types::LineString(ring), robot.getCovWidth(), f2c::types::SwathType::HEADLAND);
-        }
-      }
-    }
-
-    RCLCPP_INFO(get_logger(), "Generated %zu headland swaths", cells_vector.size());
-  }
-
-  return sorted_swaths;
-}
-
+// One LINE_STRIP per pass, namespaced by kind.
 visualization_msgs::msg::MarkerArray CoverageServerNode::createVisualizationMarkers(
-  const f2c::types::Swaths & swaths, const std::string & frame_id)
+  const std::vector<open_mower_next::msg::CoveragePath> & paths, const std::string & frame_id)
 {
   visualization_msgs::msg::MarkerArray markers;
 
-  // Add a deletion marker to clear all previous markers
   visualization_msgs::msg::Marker delete_marker;
   delete_marker.header.frame_id = frame_id;
   delete_marker.header.stamp = now();
@@ -283,59 +243,34 @@ visualization_msgs::msg::MarkerArray CoverageServerNode::createVisualizationMark
   delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
   markers.markers.push_back(delete_marker);
 
-  for (size_t i = 0; i < swaths.size(); ++i) {
-    if (i > 0) {
-      visualization_msgs::msg::Marker connection_marker;
-      connection_marker.ns = "connections";
-      connection_marker.color.r = 0.0f;
-      connection_marker.color.g = 0.0f;
-      connection_marker.color.b = 1.0f;
-      connection_marker.color.a = 1.0f;
-      connection_marker.header.frame_id = frame_id;
-      connection_marker.header.stamp = now();
-      connection_marker.id = static_cast<int>(i);
-      connection_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-      connection_marker.action = visualization_msgs::msg::Marker::ADD;
-      connection_marker.scale.x = 0.01;
-      connection_marker.points.push_back(utils::toMsg(swaths[i - 1].endPoint()));
-      connection_marker.points.push_back(utils::toMsg(swaths[i].startPoint()));
-
-      markers.markers.push_back(connection_marker);
-    }
-
-    auto swath = swaths[i];
-
+  for (size_t i = 0; i < paths.size(); ++i) {
     visualization_msgs::msg::Marker marker;
-
-    if (swath.getType() == f2c::types::SwathType::HEADLAND) {
-      marker.ns = "headland";
-      marker.color.r = 0.0f;
-      marker.color.g = 1.0f;
-      marker.color.b = 0.0f;
-      marker.color.a = 1.0f;
-    } else {
-      marker.ns = "mainland";
-      marker.color.r = 1.0f;
-      marker.color.g = 0.0f;
-      marker.color.b = 0.0f;
-      marker.color.a = 1.0f;
+    switch (paths[i].kind) {
+      case open_mower_next::msg::CoveragePath::KIND_PERIMETER:
+        marker.ns = "perimeter";
+        marker.color.g = 1.0f;
+        break;
+      case open_mower_next::msg::CoveragePath::KIND_OBSTACLE:
+        marker.ns = "obstacle";
+        marker.color.r = 1.0f;
+        marker.color.g = 1.0f;
+        break;
+      default:
+        marker.ns = "fill";
+        marker.color.r = 1.0f;
+        break;
     }
-
+    marker.color.a = 1.0f;
     marker.header.frame_id = frame_id;
     marker.header.stamp = now();
     marker.id = static_cast<int>(i);
     marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
     marker.action = visualization_msgs::msg::Marker::ADD;
-    marker.scale.x = swath.getWidth();
-
-    const auto start_point = swath.startPoint();
-    const auto end_point = swath.endPoint();
-
-    for (size_t j = 0; j < swath.numPoints(); ++j) {
-      const auto point = swath.getPoint(j);
-      marker.points.push_back(utils::toMsg(point));
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = 0.02;
+    for (const auto & pose : paths[i].path.poses) {
+      marker.points.push_back(pose.pose.position);
     }
-
     markers.markers.push_back(marker);
   }
 

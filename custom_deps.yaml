@@ -15,7 +15,3 @@ repositories:
     type: git
     url: https://github.com/LORD-MicroStrain/ntrip_client
     version: ros2
-  fields2cover:
-    type: git
-    url: https://github.com/Fields2Cover/Fields2Cover.git
-    version: 0ce7fcce82f3f79f773699448769bcd679c739bc

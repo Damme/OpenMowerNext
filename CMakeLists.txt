@@ -30,7 +30,6 @@ find_package(visualization_msgs REQUIRED)
 find_package(unique_identifier_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(opennav_docking REQUIRED)
-find_package(Fields2Cover REQUIRED)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "/usr/share/cmake/geographiclib/")
 find_package(GeographicLib REQUIRED)
@@ -50,6 +49,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
         "src/msg/DockingStation.msg"
         "src/msg/PolygonWithHoles.msg"
         "src/msg/CoverageGeometry.msg"
+        "src/msg/CoveragePath.msg"
         "src/action/DockRobotTo.action"
         "src/action/DockRobotNearest.action"
         "src/action/RecordDockingStation.action"
@@ -71,6 +71,7 @@ include(cmake/map_server.cmake)
 include(cmake/sim.cmake)
 include(cmake/docking_helper.cmake)
 include(cmake/map_recorder.cmake)
+include(cmake/coverage_planner.cmake)
 include(cmake/coverage_server.cmake)
 
 if (BUILD_TESTING)

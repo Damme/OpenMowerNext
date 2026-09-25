@@ -1,5 +1,8 @@
 #pragma once
 
+#include "coverage_planner/coverage_planner.hpp"
+
+#include "open_mower_next/msg/coverage_path.hpp"
 #include "open_mower_next/msg/map.hpp"
 #include "open_mower_next/srv/area_coverage.hpp"
 #include "open_mower_next/srv/polygon_coverage.hpp"
@@ -8,8 +11,6 @@
 
 #include <nav_msgs/msg/path.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
-
-#include <fields2cover.h>
 
 namespace open_mower_next::coverage_server
 {
@@ -21,9 +22,7 @@ public:
   ~CoverageServerNode();
 
 private:
-  double robot_width_;         // Width of the robot platform
-  double operation_width_;     // Width of the mowing tool/blade
-  double min_turning_radius_;  // Minimum turning radius of the robot
+  ::coverage_planner::Params planner_params_;
 
   rclcpp::Service<open_mower_next::srv::AreaCoverage>::SharedPtr area_coverage_service_;
 
@@ -33,6 +32,8 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr visualization_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
 
+  void declarePlannerParameters();
+
   void handleAreaCoverageRequest(
     const std::shared_ptr<rmw_request_id_t> request_header,
     const std::shared_ptr<open_mower_next::srv::AreaCoverage::Request> request,
@@ -40,25 +41,14 @@ private:
 
   void mapCallback(const open_mower_next::msg::Map::SharedPtr msg);
 
-  uint16_t generateCoveragePath(
-    uint16_t headland_loops, uint16_t swath_angle,
-    const geometry_msgs::msg::PolygonStamped & field_polygon,
-    const std::vector<geometry_msgs::msg::PolygonStamped> & exclusion_polygons,
-    nav_msgs::msg::Path & response_paths, std::string & message);
-
   bool findExclusionsInPolygon(
     const geometry_msgs::msg::PolygonStamped & field_polygon,
     std::vector<geometry_msgs::msg::PolygonStamped> & exclusion_polygons, std::string & message);
-  f2c::types::Swaths generateSwaths(
-    const f2c::types::Robot & robot, const f2c::types::Cells & cells, uint16_t headland_loops,
-    uint16_t swath_angle);
 
   msg::Area::SharedPtr findAreaById(const std::string & area_id);
 
-  std::vector<std::string> findAreasInPolygon(const geometry_msgs::msg::PolygonStamped & polygon);
-
   visualization_msgs::msg::MarkerArray createVisualizationMarkers(
-    const f2c::types::Swaths & swaths, const std::string & frame_id);
+    const std::vector<open_mower_next::msg::CoveragePath> & paths, const std::string & frame_id);
 };
 
 }  // namespace open_mower_next::coverage_server

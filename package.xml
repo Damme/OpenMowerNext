@@ -30,7 +30,7 @@
   <depend>geographiclib</depend>
   <depend>opennav_docking</depend>
   <depend>sensor_msgs</depend>
-  <depend>fields2cover</depend>
+  <build_depend>boost</build_depend>
 
   <build_depend>nlohmann_json_schema_validator_vendor</build_depend>
 

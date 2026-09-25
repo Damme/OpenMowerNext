@@ -1,205 +1,144 @@
 #pragma once
 
-#include "fields2cover/types/Path.h"
-#include "fields2cover/types/Swaths.h"
+#include "coverage_planner/coverage_planner.hpp"
+
 #include "open_mower_next/msg/coverage_geometry.hpp"
+#include "open_mower_next/msg/coverage_path.hpp"
 #include "open_mower_next/msg/polygon_with_holes.hpp"
 
-#include <tf2/LinearMath/Quaternion.hpp>
-
+#include <geometry_msgs/msg/polygon_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <std_msgs/msg/header.hpp>
+#include <tf2/LinearMath/Quaternion.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
+#include <string>
+#include <vector>
 
 namespace open_mower_next::coverage_server::utils
 {
-inline geometry_msgs::msg::Point toMsg(const f2c::types::Point & point)
-{
-  geometry_msgs::msg::Point msg;
-  msg.x = point.getX();
-  msg.y = point.getY();
-  return msg;
-}
-
-inline geometry_msgs::msg::Point32 toPoint32Msg(const f2c::types::Point & point)
-{
-  geometry_msgs::msg::Point32 msg;
-  msg.x = static_cast<float>(point.getX());
-  msg.y = static_cast<float>(point.getY());
-  return msg;
-}
+namespace cp = ::coverage_planner;
 
 inline bool isValid(const geometry_msgs::msg::Polygon & polygon)
 {
-  if (polygon.points.size() < 3) {
+  return polygon.points.size() >= 3;
+}
+
+inline std::vector<cp::Pt> toPoints(const geometry_msgs::msg::Polygon & polygon)
+{
+  std::vector<cp::Pt> pts;
+  pts.reserve(polygon.points.size());
+  for (const auto & p : polygon.points) {
+    pts.emplace_back(p.x, p.y);
+  }
+  return pts;
+}
+
+// True if the two polygons share any area or boundary.
+inline bool intersects(const geometry_msgs::msg::Polygon & a, const geometry_msgs::msg::Polygon & b)
+{
+  const auto pa = geom::makePolygon(toPoints(a));
+  const auto pb = geom::makePolygon(toPoints(b));
+  if (bg::is_empty(pa) || bg::is_empty(pb)) {
     return false;
   }
-
-  return true;
+  try {
+    return bg::intersects(pa, pb);
+  } catch (...) {
+    return false;
+  }
 }
 
-inline f2c::types::LinearRing toLinearRing(const geometry_msgs::msg::Polygon & polygon)
+// Planned points -> nav path; pose yaw from coverage_planner::headings().
+inline nav_msgs::msg::Path toPathMsg(
+  const std::vector<cp::Pt> & pts, const std_msgs::msg::Header & header)
 {
-  f2c::types::LinearRing ring;
-  for (const auto & point : polygon.points) {
-    ring.addPoint(f2c::types::Point(point.x, point.y));
+  nav_msgs::msg::Path path;
+  path.header = header;
+  const auto yaw = cp::headings(pts);
+  path.poses.reserve(pts.size());
+  for (size_t i = 0; i < pts.size(); ++i) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = header;
+    pose.pose.position.x = pts[i].x;
+    pose.pose.position.y = pts[i].y;
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, yaw[i]);
+    pose.pose.orientation = tf2::toMsg(q);
+    path.poses.push_back(pose);
   }
-
-  if (ring.isEmpty()) {
-    return ring;
-  }
-
-  auto first_point = ring.at(0);
-  auto last_point = ring.at(ring.size() - 1);
-
-  // Add the first point again to close the loop if not already closed
-  if (first_point.getX() != last_point.getX() || first_point.getY() != last_point.getY()) {
-    ring.addPoint(first_point);
-  }
-
-  return ring;
+  return path;
 }
 
-inline f2c::types::LinearRing toLinearRing(const geometry_msgs::msg::PolygonStamped & polygon)
+inline open_mower_next::msg::CoveragePath toMsg(
+  const cp::PlannedPath & planned, const std_msgs::msg::Header & header)
 {
-  return toLinearRing(polygon.polygon);
-}
-
-inline f2c::types::Cell toCell(const geometry_msgs::msg::PolygonStamped & polygon)
-{
-  f2c::types::Cell cell;
-
-  const auto boundary_ring = toLinearRing(polygon);
-  if (!boundary_ring.isEmpty()) {
-    cell.addRing(boundary_ring);
+  open_mower_next::msg::CoveragePath msg;
+  switch (planned.kind) {
+    case cp::PlannedPath::PERIMETER:
+      msg.kind = open_mower_next::msg::CoveragePath::KIND_PERIMETER;
+      break;
+    case cp::PlannedPath::OBSTACLE_RING:
+      msg.kind = open_mower_next::msg::CoveragePath::KIND_OBSTACLE;
+      break;
+    default:
+      msg.kind = open_mower_next::msg::CoveragePath::KIND_FILL;
+      break;
   }
-
-  return cell;
+  msg.is_outline = planned.is_outline;
+  msg.path = toPathMsg(planned.pts, header);
+  return msg;
 }
 
-inline f2c::types::Cells toCells(
-  const geometry_msgs::msg::PolygonStamped & boundary_polygon,
-  const std::vector<geometry_msgs::msg::PolygonStamped> & exclusion_polygons)
+inline nav_msgs::msg::Path concatenate(
+  const std::vector<open_mower_next::msg::CoveragePath> & paths,
+  const std_msgs::msg::Header & header)
 {
-  f2c::types::Cells cells{toCell(boundary_polygon)};
-
-  for (const auto & exclusion : exclusion_polygons) {
-    const auto exclusion_cell = toCell(exclusion);
-    if (exclusion_cell.isEmpty() || cells.disjoint(exclusion_cell)) {
-      continue;
-    }
-
-    cells = cells.difference(exclusion_cell);
+  nav_msgs::msg::Path out;
+  out.header = header;
+  for (const auto & p : paths) {
+    out.poses.insert(out.poses.end(), p.path.poses.begin(), p.path.poses.end());
   }
-
-  return cells;
+  return out;
 }
 
-inline geometry_msgs::msg::Polygon toMsg(const f2c::types::LinearRing & ring)
+// Ring -> Polygon, without the closing duplicate point.
+template <typename Ring>
+geometry_msgs::msg::Polygon toPolygonMsg(const Ring & ring)
 {
   geometry_msgs::msg::Polygon msg;
-  if (ring.isEmpty()) {
-    return msg;
+  size_t n = ring.size();
+  if (n > 1 && bg::equals(ring.front(), ring.back())) {
+    --n;
   }
-
-  size_t point_count = ring.size();
-  if (point_count > 1) {
-    const auto first_point = ring.getGeometry(0);
-    const auto last_point = ring.getGeometry(point_count - 1);
-    if (first_point.getX() == last_point.getX() && first_point.getY() == last_point.getY()) {
-      --point_count;
-    }
+  for (size_t i = 0; i < n; ++i) {
+    geometry_msgs::msg::Point32 p;
+    p.x = static_cast<float>(bg::get<0>(ring[i]));
+    p.y = static_cast<float>(bg::get<1>(ring[i]));
+    msg.points.push_back(p);
   }
-
-  for (size_t i = 0; i < point_count; ++i) {
-    msg.points.push_back(toPoint32Msg(ring.getGeometry(i)));
-  }
-
   return msg;
 }
 
-inline open_mower_next::msg::PolygonWithHoles toMsg(
-  const f2c::types::Cell & cell, const std::string & frame_id)
-{
-  open_mower_next::msg::PolygonWithHoles msg;
-  msg.header.frame_id = frame_id;
-
-  if (cell.isEmpty() || cell.size() == 0) {
-    return msg;
-  }
-
-  msg.exterior = toMsg(cell.getGeometry(0));
-  for (size_t i = 1; i < cell.size(); ++i) {
-    msg.holes.push_back(toMsg(cell.getGeometry(i)));
-  }
-
-  return msg;
-}
-
+// Mowable area (outline minus exclusions) -> one cell per component.
 inline open_mower_next::msg::CoverageGeometry toMsg(
-  const f2c::types::Cells & cells, const std::string & frame_id)
+  const cp::BMultiPolygon & mowable, const std::string & frame_id)
 {
   open_mower_next::msg::CoverageGeometry msg;
   msg.header.frame_id = frame_id;
-
-  if (cells.isEmpty()) {
-    return msg;
-  }
-
-  for (size_t i = 0; i < cells.size(); ++i) {
-    const auto cell = cells.getGeometry(i);
-    if (cell.isEmpty() || cell.size() == 0) {
+  for (const auto & poly : mowable) {
+    if (bg::is_empty(poly)) {
       continue;
     }
-
-    msg.cells.push_back(toMsg(cell, frame_id));
-  }
-
-  return msg;
-}
-
-inline geometry_msgs::msg::PoseStamped toMsg(
-  const double x, const double y, const double yaw, const std::string & frame_id)
-{
-  geometry_msgs::msg::PoseStamped pose;
-  pose.header.frame_id = frame_id;
-  pose.pose.position.x = x;
-  pose.pose.position.y = y;
-
-  tf2::Quaternion q;
-  q.setRPY(0, 0, yaw);
-  pose.pose.orientation = tf2::toMsg(q);
-
-  return pose;
-}
-
-inline nav_msgs::msg::Path toMsg(const f2c::types::Swaths & swaths, const std::string & frame_id)
-{
-  nav_msgs::msg::Path msg;
-  msg.header.frame_id = frame_id;
-
-  for (const auto & swath : swaths) {
-    for (size_t j = 0; j < swath.numPoints(); ++j) {
-      const auto & point = swath.getPoint(j);
-      const geometry_msgs::msg::PoseStamped pose =
-        toMsg(point.getX(), point.getY(), point.getAngleFromPoint(), frame_id);
-      msg.poses.push_back(pose);
+    open_mower_next::msg::PolygonWithHoles cell;
+    cell.header.frame_id = frame_id;
+    cell.exterior = toPolygonMsg(poly.outer());
+    for (const auto & inner : poly.inners()) {
+      cell.holes.push_back(toPolygonMsg(inner));
     }
+    msg.cells.push_back(cell);
   }
-
   return msg;
 }
 
-inline nav_msgs::msg::Path toMsg(const f2c::types::Path & path, const std::string & frame_id)
-{
-  nav_msgs::msg::Path msg;
-  msg.header.frame_id = frame_id;
-
-  for (const auto & state : path) {
-    const geometry_msgs::msg::PoseStamped pose =
-      toMsg(state.point.getX(), state.point.getY(), state.angle, frame_id);
-    msg.poses.push_back(pose);
-  }
-
-  return msg;
-}
 }  // namespace open_mower_next::coverage_server::utils
