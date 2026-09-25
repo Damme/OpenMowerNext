@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "map_server/map_server_node.hpp"
 #include "map_server/polygon_iterator.hpp"
 #include "map_server/polygon_utils.hpp"
@@ -271,13 +272,12 @@ void MapServerNode::configureGaussianBlur()
 
 std::vector<msg::Area> MapServerNode::areasWithExclusionsLast(std::vector<msg::Area> areas)
 {
-  std::sort(areas.begin(), areas.end(), [](const msg::Area& a, const msg::Area& b) {
-    if (a.type == b.type)
-    {
-      return a.type == msg::Area::TYPE_EXCLUSION;
-    }
-
-    return a.type < b.type;
+  // Exclusions are painted last so they override operation/navigation cells.
+  // (The previous std::sort comparator returned true for two exclusions - not a
+  // strict weak ordering, UB that crashed with >16 areas - and, since
+  // TYPE_EXCLUSION is 0, actually sorted exclusions first.)
+  std::stable_partition(areas.begin(), areas.end(), [](const msg::Area& a) {
+    return a.type != msg::Area::TYPE_EXCLUSION;
   });
 
   return areas;
