@@ -91,7 +91,7 @@ private:
   void updateControlPoint(double dt);
   void calculateVelocityCommands(double dt, geometry_msgs::msg::TwistStamped & cmd);
   bool turnAssist(bool oscillating, geometry_msgs::msg::TwistStamped & cmd);
-  bool recoveryActive(const Eigen::Vector2d & p, geometry_msgs::msg::TwistStamped & cmd);
+  bool recoveryActive(const Eigen::Vector2d & p, double dt, geometry_msgs::msg::TwistStamped & cmd);
   void skipAhead(double dist);
   bool checkCollision(int max_points);
   bool checkOscillation(const geometry_msgs::msg::TwistStamped & cmd);
@@ -132,6 +132,7 @@ private:
   Eigen::Vector2d stuck_ref_pos_{0, 0};
   double stuck_ref_time_ = 0;
   bool stuck_ref_valid_ = false;
+  double stuck_expected_travel_ = 0;  // commanded travel since stuck_ref_time_
   int recovery_attempts_ = 0;
   uint32_t recovery_last_index_ = 0;
 

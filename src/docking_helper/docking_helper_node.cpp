@@ -1,6 +1,7 @@
 #include "docking_helper/docking_helper_node.hpp"
 #include "docking_helper_node.hpp"
 #include <functional>
+#include <future>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
@@ -233,7 +234,8 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
 
   std::shared_ptr<uint16_t> current_status = std::make_shared<uint16_t>(ActionT::Feedback::STATUS_NONE);
   std::shared_ptr<uint16_t> current_retries = std::make_shared<uint16_t>(0);
-  std::atomic<bool> docking_active(true);
+  // Shared with the result callback, which may run after this function returns.
+  auto docking_active = std::make_shared<std::atomic<bool>>(true);
 
   auto nav2_goal = nav2_msgs::action::DockRobot::Goal();
   nav2_goal.use_dock_id = false;
@@ -275,13 +277,17 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
     }
   };
 
-  send_goal_options.result_callback = [this, goal_handle, result, &docking_active](const auto& nav_result) {
+  send_goal_options.result_callback = [this, goal_handle, result, docking_active](const auto& nav_result) {
     auto status = nav_result.result;
     bool success = status->success;
     uint16_t error_code = status->error_code;
     uint16_t num_retries = status->num_retries;
 
-    docking_active = false;
+    *docking_active = false;
+    if (!goal_handle->is_active())
+    {
+      return;  // already canceled
+    }
 
     result->num_retries = num_retries;
 
@@ -303,7 +309,7 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
     }
   };
 
-  dock_client_->async_send_goal(nav2_goal, send_goal_options);
+  auto nav2_goal_future = dock_client_->async_send_goal(nav2_goal, send_goal_options);
 
   std::string status_messages[] = { "No activity",         "Navigating to staging pose", "Initial perception of dock",
                                     "Controlling to dock", "Waiting for charge",         "Retrying docking" };
@@ -311,8 +317,22 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
   uint16_t last_status = 99;  // Invalid value to ensure first update is sent
   uint16_t last_retries = 0;
 
-  while (docking_active && rclcpp::ok())
+  while (*docking_active && rclcpp::ok())
   {
+    if (goal_handle->is_canceling())
+    {
+      // Propagate the cancel to Nav2's docking goal and stop.
+      if (nav2_goal_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready && nav2_goal_future.get())
+      {
+        dock_client_->async_cancel_goal(nav2_goal_future.get());
+      }
+      *docking_active = false;
+      result->code = ActionT::Result::CODE_UNKNOWN;
+      result->message = "Docking canceled";
+      goal_handle->canceled(result);
+      RCLCPP_INFO(get_logger(), "Docking canceled");
+      return;
+    }
     auto current_time = this->now();
     auto elapsed = current_time - start_time;
     feedback->docking_time.sec = elapsed.seconds();

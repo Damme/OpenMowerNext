@@ -20,6 +20,9 @@ namespace
 // driving forward; commanding exact zero (or reversing) releases the latch.
 constexpr double kStuckTimeout = 3.0;   // s commanding forward without moving
 constexpr double kStuckMinMove = 0.05;  // m of movement that counts as progress
+// Stuck needs this much COMMANDED travel in the window: at 20 Hz the ROS1 test
+// "current command >= 0.02 m/s" fired in slow corners (0.02 m/s * 3 s < 5 cm).
+constexpr double kStuckMinCommanded = 0.15;
 constexpr double kReleaseTime = 1.0;    // s of exact-zero cmd (releases the latch)
 constexpr double kReverseSpeed = 0.15;  // m/s straight back, no steering
 constexpr double kReverseTime = 3.0;    // s -> ~0.3 m over just-driven ground
@@ -255,7 +258,7 @@ geometry_msgs::msg::TwistStamped FTCController::computeVelocityCommands(
   if (state_ == FINISHED) return cmd;
 
   // Stuck recovery owns this cycle entirely while active.
-  if (recoveryActive(robot_pos_, cmd)) {
+  if (recoveryActive(robot_pos_, dt, cmd)) {
     if (is_crashed_) throw nav2_core::FailedToMakeProgress("FTC: stuck, recovery attempts exhausted");
     return cmd;
   }
@@ -503,7 +506,7 @@ bool FTCController::turnAssist(bool oscillating, geometry_msgs::msg::TwistStampe
   return true;
 }
 
-bool FTCController::recoveryActive(const Eigen::Vector2d & p, geometry_msgs::msg::TwistStamped & cmd)
+bool FTCController::recoveryActive(const Eigen::Vector2d & p, double dt_cycle, geometry_msgs::msg::TwistStamped & cmd)
 {
   const double t = now();
   if (recovery_phase_ == 0) {
@@ -515,9 +518,15 @@ bool FTCController::recoveryActive(const Eigen::Vector2d & p, geometry_msgs::msg
       stuck_ref_pos_ = p;
       stuck_ref_time_ = t;
       stuck_ref_valid_ = true;
+      stuck_expected_travel_ = 0.0;
       return false;
     }
-    if ((t - stuck_ref_time_) < kStuckTimeout || std::fabs(last_cmd_vel_linear_) < 0.02) return false;
+    stuck_expected_travel_ += std::fabs(last_cmd_vel_linear_) * dt_cycle;
+    if ((t - stuck_ref_time_) < kStuckTimeout || std::fabs(last_cmd_vel_linear_) < 0.02 ||
+        stuck_expected_travel_ < kStuckMinCommanded)
+    {
+      return false;
+    }
     if (recovery_attempts_ > 0 && current_index_ - recovery_last_index_ < 30) {
       ++recovery_attempts_;
     } else {
@@ -554,6 +563,7 @@ bool FTCController::recoveryActive(const Eigen::Vector2d & p, geometry_msgs::msg
       current_movement_speed_ = cfg_.speed_slow;
       stuck_ref_pos_ = p;
       stuck_ref_time_ = t;
+      stuck_expected_travel_ = 0.0;
       recovery_phase_ = 0;
       RCLCPP_INFO(logger_, "FTC: recovery done, skipped %.2f m, resuming at index %u", skip, current_index_);
       return false;

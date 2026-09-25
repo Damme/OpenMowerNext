@@ -65,7 +65,8 @@ def launch_setup(context):
         Node(package='open_mower_next', executable='docking_helper', name='docking_helper', output='screen'),
         Node(package='open_mower_next', executable='worx_sim_dock.py', output='screen'),
         Node(package='open_mower_next', executable='mower_logic', output='screen',
-             parameters=[{'require_gps': False,
+             parameters=[{'require_gps': LaunchConfiguration('require_gps').perform(context) == 'true',
+                         'gps_settle': 5.0,
                          'controller_id': LaunchConfiguration('pass_controller').perform(context),
                          'goal_checker_id': 'ftc_goal_checker' if LaunchConfiguration('pass_controller').perform(context) == 'FTC' else 'general_goal_checker',
                          'progress_checker_id': 'ftc_progress_checker' if LaunchConfiguration('pass_controller').perform(context) == 'FTC' else '',
@@ -87,5 +88,6 @@ def generate_launch_description():
         DeclareLaunchArgument('start_yaw', default_value='0.0'),
         DeclareLaunchArgument('areas', default_value='', description='comma separated area ids (default all)'),
         DeclareLaunchArgument('pass_controller', default_value='FTC', description='FTC | FollowPath (RPP)'),
+        DeclareLaunchArgument('require_gps', default_value='false', description='true: mower_logic needs /gps/fix'),
         OpaqueFunction(function=launch_setup),
     ])
