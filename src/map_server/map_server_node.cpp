@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include "map_server/map_server_node.hpp"
 #include "map_server/polygon_iterator.hpp"
 #include "map_server/polygon_utils.hpp"
@@ -372,6 +373,16 @@ nav_msgs::msg::OccupancyGrid MapServerNode::mapToOccupancyGrid(msg::Map map)
     }
   }
 
+  // Unknown/exclusion cells next to free space become passable at a high cost,
+  // so a footprint-checking planner accepts poses whose body overhangs an area
+  // edge (outline passes do) but still routes transits away from it.
+  const double edge_band = param("grid.edge_band", 0.0);
+  const auto edge_value = static_cast<int8_t>(std::clamp<int64_t>(param("grid.edge_band_value", int64_t{60}), 1, 99));
+  if (edge_band > 0.0)
+  {
+    paintEdgeBand(occupancy_grid, edge_band, edge_value);
+  }
+
   RCLCPP_INFO(get_logger(), "Occupancy grid size: %.2fm x %.2fm (%.2fm resolution, %dx%d cells)",
               occupancy_grid.info.width * occupancy_grid.info.resolution,
               occupancy_grid.info.height * occupancy_grid.info.resolution, occupancy_grid.info.resolution,
@@ -384,6 +395,52 @@ nav_msgs::msg::OccupancyGrid MapServerNode::mapToOccupancyGrid(msg::Map map)
   }
 
   return occupancy_grid;
+}
+
+void MapServerNode::paintEdgeBand(nav_msgs::msg::OccupancyGrid& grid, double band_m, int8_t value)
+{
+  const int w = static_cast<int>(grid.info.width);
+  const int h = static_cast<int>(grid.info.height);
+  const int r = static_cast<int>(std::ceil(band_m / grid.info.resolution));
+  if (r <= 0 || w <= 0 || h <= 0)
+  {
+    return;
+  }
+  const auto src = grid.data;
+  auto is_free = [&](int x, int y) { return src[y * w + x] == 0; };
+  for (int y = 0; y < h; ++y)
+  {
+    for (int x = 0; x < w; ++x)
+    {
+      // Stamp a disc around every free cell on the border of free space.
+      if (!is_free(x, y))
+      {
+        continue;
+      }
+      const bool border = (x > 0 && !is_free(x - 1, y)) || (x + 1 < w && !is_free(x + 1, y)) ||
+                          (y > 0 && !is_free(x, y - 1)) || (y + 1 < h && !is_free(x, y + 1));
+      if (!border)
+      {
+        continue;
+      }
+      for (int dy = -r; dy <= r; ++dy)
+      {
+        for (int dx = -r; dx <= r; ++dx)
+        {
+          const int nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h || dx * dx + dy * dy > r * r)
+          {
+            continue;
+          }
+          auto& cell = grid.data[ny * w + nx];
+          if (src[ny * w + nx] != 0 && (cell == -1 || cell > value))
+          {
+            cell = value;
+          }
+        }
+      }
+    }
+  }
 }
 
 visualization_msgs::msg::MarkerArray MapServerNode::mapToVisualizationMarkers(msg::Map map)

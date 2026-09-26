@@ -78,7 +78,58 @@ local_costmap:
   local_costmap:
     ros__parameters:
       footprint: "[[0.47, 0.195], [0.47, -0.195], [-0.11, -0.195], [-0.11, 0.195]]"
+      # Map grid (map_server: unknown outside the areas, exclusions lethal,
+      # grid.edge_band a passable high-cost rim) and inflation so transits keep clear.
+      plugins: ["static_layer", "inflation_layer"]
+      track_unknown_space: true
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+        map_topic: "/map_grid"
+        trinary_costmap: false  # keep the edge band's cost (default maps < 100 to free)
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.6       # > circumscribed radius 0.51
+        cost_scaling_factor: 6.0
 global_costmap:
   global_costmap:
     ros__parameters:
       footprint: "[[0.47, 0.195], [0.47, -0.195], [-0.11, -0.195], [-0.11, 0.195]]"
+      # Map grid (map_server: unknown outside the areas, exclusions lethal,
+      # grid.edge_band a passable high-cost rim) and inflation so transits keep clear.
+      plugins: ["static_layer", "inflation_layer"]
+      track_unknown_space: true
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+        map_topic: "/map_grid"
+        trinary_costmap: false  # keep the edge band's cost (default maps < 100 to free)
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.6       # > circumscribed radius 0.51
+        cost_scaling_factor: 6.0
+
+# Transit planner: state lattice with diff-drive primitives (in-place turns),
+# collision-checked with the real footprint - NavFn planned for a point and
+# (allow_unknown) could leave the areas. Lattice resolution = map grid 5 cm.
+planner_server:
+  ros__parameters:
+    GridBased:
+      plugin: "nav2_smac_planner::SmacPlannerLattice"
+      lattice_filepath: "$(find-pkg-share nav2_smac_planner)/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
+      allow_unknown: false
+      tolerance: 0.25
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 5.0
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      reverse_penalty: 2.0
+      change_penalty: 0.05
+      non_straight_penalty: 1.05
+      cost_penalty: 2.0
+      rotation_penalty: 5.0
+      retrospective_penalty: 0.015
+      allow_reverse_expansion: false
+      cache_obstacle_heuristic: true
+      smooth_path: true
