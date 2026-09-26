@@ -21,6 +21,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 
@@ -127,6 +128,7 @@ private:
     fake_collision_srv_, fake_lift_srv_;
   FakeBoardTransport * fake_board_ = nullptr;  // owned by link_, only with transport=fake
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr fake_battery_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr fake_speed_sub_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 };
 

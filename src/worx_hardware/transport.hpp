@@ -68,6 +68,9 @@ public:
   void setBatteryMv(int mv);
   void setCollision(bool active);
   void setLift(bool active);
+  // Terrain: actual wheel travel per PWM (1.5 ~ downhill, the robot outruns its
+  // commands; 0.6 ~ uphill / tall grass).
+  void setSpeedFactor(double factor);
   bool blockForward() const;
   int leftPwm() const;
   int rightPwm() const;
@@ -92,6 +95,7 @@ private:
   std::chrono::steady_clock::time_point last_step_, last_pulse_, last_status_;
   int status_slot_ = 0;
   bool collision_ = false, lift_ = false, block_forward_ = false;
+  double speed_factor_ = 1.0;
 };
 
 }  // namespace open_mower_next::worx_hardware

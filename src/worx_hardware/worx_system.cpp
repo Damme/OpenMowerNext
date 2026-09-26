@@ -176,6 +176,8 @@ void WorxSystem::startNode()
         fake_board_->setLift(req->data);
         res->success = true;
       });
+    fake_speed_sub_ = node_->create_subscription<std_msgs::msg::Float64>(
+      "/worx/fake/speed_factor", 10, [this](std_msgs::msg::Float64::ConstSharedPtr m) { fake_board_->setSpeedFactor(m->data); });
     fake_battery_sub_ = node_->create_subscription<std_msgs::msg::Int32>(
       "/worx/fake/battery_mv", 10, [this](std_msgs::msg::Int32::ConstSharedPtr m) { fake_board_->setBatteryMv(m->data); });
   }
@@ -193,6 +195,7 @@ void WorxSystem::stopNode()
   emergency_srv_.reset();
   motors_srv_.reset();
   fake_charger_srv_.reset();
+  fake_speed_sub_.reset();
   fake_collision_srv_.reset();
   fake_lift_srv_.reset();
   fake_battery_sub_.reset();

@@ -139,8 +139,8 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
   }
   if (enabled_) {
     // Like the firmware: counters only count up, the Dir bits carry the sign.
-    ticks_l_ += std::abs(pwm_l_) / opt_.pwm_per_mps * opt_.ticks_per_m * dt;
-    ticks_r_ += std::abs(pwm_r_) / opt_.pwm_per_mps * opt_.ticks_per_m * dt;
+    ticks_l_ += speed_factor_ * std::abs(pwm_l_) / opt_.pwm_per_mps * opt_.ticks_per_m * dt;
+    ticks_r_ += speed_factor_ * std::abs(pwm_r_) / opt_.pwm_per_mps * opt_.ticks_per_m * dt;
   }
   auto queue = [this](const std::string & s) {
     out_.push_back(kSof);
@@ -191,6 +191,12 @@ void FakeBoardTransport::setCollision(bool active)
 {
   std::lock_guard<std::mutex> l(mutex_);
   collision_ = active;
+}
+
+void FakeBoardTransport::setSpeedFactor(double factor)
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  speed_factor_ = std::max(0.0, factor);
 }
 
 void FakeBoardTransport::setLift(bool active)
