@@ -75,6 +75,12 @@ int main(int argc, char ** argv)
   auto s4 = trigger("skip_pass", [ctx]() { ctx->mission.skipPass(); return ctx->mission.summary(); });
   auto s5 = trigger("skip_area", [ctx]() { ctx->mission.skipArea(); return ctx->mission.summary(); });
   auto s6 = trigger("reset_mission", [ctx]() { ctx->mission.clear(); return "mission cleared"; });
+  auto s7 = node->create_service<std_srvs::srv::Trigger>(
+    "~/clear_emergency", [ctx, &node](const std_srvs::srv::Trigger::Request::SharedPtr,
+                                      std_srvs::srv::Trigger::Response::SharedPtr res) {
+      res->success = ctx->clearEmergency(res->message);
+      RCLCPP_WARN(node->get_logger(), "clear_emergency: %s", res->message.c_str());
+    });
 
   auto state_pub = node->create_publisher<std_msgs::msg::String>("~/state", rclcpp::QoS(1).transient_local());
   auto state_timer = node->create_wall_timer(std::chrono::seconds(1), [&]() {

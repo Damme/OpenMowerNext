@@ -16,6 +16,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
@@ -91,6 +92,8 @@ public:
   double batteryFraction() const;
   bool charging() const;   // charger present
   bool emergency() const;
+  // Clears the latched emergency if nothing still demands it; the message says why not.
+  bool clearEmergency(std::string & message);
   bool raining();          // latched for rain_clear_delay after the last rain
   bool gpsOk();            // good fixes for gps_settle, none missing for gps_timeout
   bool needsCharging();    // latched: set below battery_low, cleared at battery_resume
@@ -124,6 +127,8 @@ private:
   double battery_ = NAN;
   bool charger_ = false;
   bool emergency_ = false;
+  bool worx_emergency_ = false, board_emergency_ = false, lift_ = false, collision_ = false;
+  rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr emergency_client_;
   std::optional<Clock::time_point> last_rain_;
   std::optional<Clock::time_point> gps_good_since_, gps_last_good_;
   bool needs_charging_ = false;

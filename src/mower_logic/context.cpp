@@ -13,6 +13,7 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
   tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf);
   coverage_client = node->create_client<open_mower_next::srv::AreaCoverage>("/area_coverage");
+  emergency_client_ = node->create_client<std_srvs::srv::SetBool>("/worx/emergency");
   blade_pub_ = node->create_publisher<std_msgs::msg::Float64MultiArray>("/mower_controller/commands", 10);
 
   battery_sub_ = node->create_subscription<sensor_msgs::msg::BatteryState>(
@@ -36,6 +37,10 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
       if (bumped) onBump();
       std::lock_guard<std::mutex> l(mutex_);
       emergency_ = m->emergency || m->board_emergency == 1;
+      worx_emergency_ = m->emergency;
+      board_emergency_ = m->board_emergency == 1;
+      lift_ = m->lift;
+      collision_ = m->collision;
       for (size_t i = 0; i < m->digital_names.size() && i < m->digital_active.size(); ++i) {
         if (m->digital_names[i] == "Rain" && m->digital_active[i]) last_rain_ = Clock::now();
       }
@@ -86,6 +91,39 @@ bool Context::emergency() const
   return emergency_;
 }
 
+bool Context::clearEmergency(std::string & message)
+{
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (lift_) {
+      message = "refused: the robot is lifted (Lift input active)";
+      return false;
+    }
+    if (collision_) {
+      message = "refused: bumper still pressed";
+      return false;
+    }
+    if (board_emergency_) {
+      // Tilt with the blade on: the firmware cut the motor MOSFET (MOTORREQ_EMGSTOP) and
+      // only accepts ping/ENABLE/DISABLE/SETSPEED over SPI, so it can't be reset from here.
+      message = "refused: firmware emergency (tilt) - needs MOTORREQ_RESETEMG support in the firmware or a board reset";
+      return false;
+    }
+    if (!worx_emergency_) {
+      message = "no emergency latched";
+      return true;
+    }
+  }
+  if (!emergency_client_->service_is_ready()) {
+    message = "/worx/emergency not available";
+    return false;
+  }
+  auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
+  req->data = false;
+  emergency_client_->async_send_request(req);
+  message = "emergency cleared";
+  return true;
+}
 bool Context::raining()
 {
   if (!params.dock_on_rain) return false;

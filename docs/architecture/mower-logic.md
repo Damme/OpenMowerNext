@@ -41,5 +41,6 @@ and the executor forces the blade off whenever no pass is running.
 | `/mower_logic/stop` | idle where it is, keep the mission |
 | `/mower_logic/skip_pass`, `/mower_logic/skip_area` | skip ahead |
 | `/mower_logic/reset_mission` | forget progress |
+| `/mower_logic/clear_emergency` | clear a latched emergency (`/worx/emergency`, lift); refused while the robot is lifted, the bumper is pressed, or the firmware reports its own (tilt) emergency, which ROS can't reset over SPI |
 
 `/mower_logic/state` (`std_msgs/String`, JSON, 1 Hz): state, command, mission progress, battery, docked, GPS, emergency.
