@@ -190,3 +190,53 @@ TEST(WorxLink, TalksToFakeBoard)
   }
   link.stop();
 }
+
+TEST(WorxLink, FakeBoardBlocksForwardOnCollision)
+{
+  FakeBoardTransport::Options fo;
+  auto fake = std::make_unique<FakeBoardTransport>(fo);
+  FakeBoardTransport * board = fake.get();
+  WorxLink::Options lo;
+  lo.ping_period = std::chrono::milliseconds(50);
+  WorxLink link(std::move(fake), lo);
+
+  std::mutex m;
+  std::vector<std::string> rx;
+  std::string error;
+  ASSERT_TRUE(link.start([&](const std::string & s) { std::lock_guard<std::mutex> l(m); rx.push_back(s); }, error)) << error;
+  link.send(cmdMotorsEnable());
+  link.send(cmdSetSpeed(615, 615, 0));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  EXPECT_EQ(board->leftPwm(), 615);
+  EXPECT_FALSE(board->blockForward());
+
+  // Bump: the firmware latches BlockForward and stops forward motion at once.
+  board->setCollision(true);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1400));  // > one Digital period (1.25 s)
+  EXPECT_TRUE(board->blockForward());
+  EXPECT_EQ(board->leftPwm(), 0);
+  bool block_reported = false, collision_reported = false;
+  {
+    std::lock_guard<std::mutex> l(m);
+    for (const auto & s : rx) {
+      auto p = parseMessage(s);
+      if (p.motor_pulse && p.motor_pulse->block_forward && *p.motor_pulse->block_forward == 1) block_reported = true;
+      if (p.digital && p.digital->count("Collision") && p.digital->at("Collision") == 0) collision_reported = true;
+    }
+  }
+  EXPECT_TRUE(block_reported);
+  EXPECT_TRUE(collision_reported);
+
+  // Forward is still clamped; reversing works and clears the latch once the hood is free.
+  link.send(cmdSetSpeed(-300, -300, 0));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_EQ(board->leftPwm(), -300);
+  board->setCollision(false);
+  link.send(cmdSetSpeed(0, 0, 0));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(board->blockForward());
+  link.send(cmdSetSpeed(615, 615, 0));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_EQ(board->leftPwm(), 615);
+  link.stop();
+}

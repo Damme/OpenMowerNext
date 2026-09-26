@@ -38,8 +38,12 @@ private:
   int fd_ = -1;
 };
 
-// Emulates the Worx board: follows MOTORREQ_SETSPEED (only while enabled),
-// integrates wheel ticks from PWM and reports MotorPulse / Battery / motorState.
+// Emulates the Worx board (LandLord firmware, ROSComms.c / motorctrl.c):
+// follows MOTORREQ_SETSPEED (only while enabled), integrates wheel ticks from
+// PWM, sends MotorPulse every 50 ms and one of Battery / Digital / Analog /
+// MotorPWM / MotorCurrent every 250 ms (so each one every 1.25 s).
+// Collision/Lift latch BlockForward like the firmware: forward PWM is clamped
+// to 0 until a reverse or zero command.
 class FakeBoardTransport : public Transport
 {
 public:
@@ -47,8 +51,8 @@ public:
   {
     double ticks_per_m = 414.0;
     double pwm_per_mps = 1230.0;   // inverse of the host-side speed scaling
-    double pulse_period_s = 0.02;  // MotorPulse rate
-    double battery_period_s = 1.0;
+    double pulse_period_s = 0.05;   // MotorPulse (firmware: every loop, 50 ms)
+    double status_period_s = 0.25;  // one rotating status message (firmware: every 5th loop)
     int battery_mv = 28000;
     bool in_charger = false;
     double charge_mv_per_s = 100.0;  // battery rise while in the charger (fast, for sims)
@@ -62,6 +66,9 @@ public:
   // Test hooks (thread-safe).
   void setInCharger(bool in_charger);
   void setBatteryMv(int mv);
+  void setCollision(bool active);
+  void setLift(bool active);
+  bool blockForward() const;
   int leftPwm() const;
   int rightPwm() const;
   int mowPwm() const;
@@ -82,7 +89,9 @@ private:
   double battery_mv_ = 0;
   int pings_ = 0;
   bool started_ = false;
-  std::chrono::steady_clock::time_point last_step_, last_pulse_, last_battery_;
+  std::chrono::steady_clock::time_point last_step_, last_pulse_, last_status_;
+  int status_slot_ = 0;
+  bool collision_ = false, lift_ = false, block_forward_ = false;
 };
 
 }  // namespace open_mower_next::worx_hardware
