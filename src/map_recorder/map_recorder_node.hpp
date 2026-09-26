@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <tf2_ros/transform_listener.h>
@@ -73,6 +74,11 @@ private:
   uint8_t current_area_type_;
   geometry_msgs::msg::PoseStamped last_recorded_position_;
   std::vector<geometry_msgs::msg::Point> current_boundary_points_;
+  // Every pose driven while recording (Area.stance), in both recording modes.
+  std::vector<geometry_msgs::msg::Pose2D> current_stance_;
+  double stance_distance_ = 0.05;               // m between stance poses
+  double stance_angle_ = 10.0 * M_PI / 180.0;  // rad turned in place between stance poses
+  void recordStance(const geometry_msgs::msg::PoseStamped& pose);
 
   std::shared_ptr<RecordDockingStationGoalHandle> docking_goal_handle_;
   std::shared_ptr<RecordAreaBoundaryGoalHandle> area_boundary_goal_handle_;

@@ -301,9 +301,29 @@ MapRecorderNode::handleAreaBoundaryCancel(const std::shared_ptr<RecordAreaBounda
   return rclcpp_action::CancelResponse::ACCEPT;
 }
 
+void MapRecorderNode::recordStance(const geometry_msgs::msg::PoseStamped& pose)
+{
+  const auto& q = pose.pose.orientation;
+  geometry_msgs::msg::Pose2D p;
+  p.x = pose.pose.position.x;
+  p.y = pose.pose.position.y;
+  p.theta = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+  if (!current_stance_.empty())
+  {
+    const auto& l = current_stance_.back();
+    if (std::hypot(p.x - l.x, p.y - l.y) < stance_distance_ &&
+        std::abs(std::remainder(p.theta - l.theta, 2.0 * M_PI)) < stance_angle_)
+    {
+      return;
+    }
+  }
+  current_stance_.push_back(p);
+}
+
 void MapRecorderNode::handleAreaBoundaryAccepted(const std::shared_ptr<RecordAreaBoundaryGoalHandle> goal_handle)
 {
   current_boundary_points_.clear();
+  current_stance_.clear();
   is_recording_area_ = true;
   area_boundary_goal_handle_ = goal_handle;
   auto goal = goal_handle->get_goal();
@@ -339,6 +359,7 @@ void MapRecorderNode::handleAreaBoundaryAccepted(const std::shared_ptr<RecordAre
       last_recorded_position_ = getMowerPose();
 
       current_boundary_points_.push_back(last_recorded_position_.pose.position);
+      recordStance(last_recorded_position_);
 
       geometry_msgs::msg::PolygonStamped area_poly;
       area_poly.header.frame_id = "map";
@@ -371,6 +392,15 @@ void MapRecorderNode::handleAreaBoundaryAccepted(const std::shared_ptr<RecordAre
           RCLCPP_INFO(get_logger(), "Area recording services have been removed");
 
           return;
+        }
+
+        try
+        {
+          recordStance(getMowerPose());
+        }
+        catch (const std::exception& e)
+        {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "No mower pose for the stance: %s", e.what());
         }
 
         if (auto_recording_mode_)
@@ -458,6 +488,7 @@ void MapRecorderNode::handleAreaBoundaryAccepted(const std::shared_ptr<RecordAre
         polygon.polygon.points.push_back(pt);
       }
       area.area = polygon;
+      area.stance = current_stance_;
 
       auto request = std::make_shared<open_mower_next::srv::SaveArea::Request>();
       request->area = area;

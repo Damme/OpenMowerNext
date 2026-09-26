@@ -68,6 +68,12 @@ def generate_launch_description():
                                 "grid.edge_band": 0.25 if os.getenv("OM_HARDWARE") == "worx" else 0.0,
                                 "grid.exclusion_band": 0.25,
                                 "grid.edge_band_value": 60,
+                                # The body along the recorded lines (nose-first corners reach
+                                # beyond the rim). From the GPS antenna; 0 = off.
+                                "grid.stance_front": 0.47 if os.getenv("OM_HARDWARE") == "worx" else 0.0,
+                                "grid.stance_rear": 0.11,
+                                "grid.stance_half_width": 0.195,
+                                "grid.stance_front_chamfer": 0.10,
                             }
                         ],
                         remappings=[

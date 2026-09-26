@@ -95,6 +95,20 @@ json GeoJSONMap::mapAreaToGeoJSONFeature(const msg::Area & area) const
   }
   feature["geometry"]["coordinates"].push_back(coordinates);
 
+  // [lon, lat, heading in deg (ENU, counter-clockwise from east)]
+  if (!area.stance.empty()) {
+    json stance = json::array();
+    for (const auto & s : area.stance) {
+      geometry_msgs::msg::Point32 pt;
+      pt.x = static_cast<float>(s.x);
+      pt.y = static_cast<float>(s.y);
+      json p = pointToCoordinates(pt);
+      p.push_back(std::round(s.theta * 180.0 / M_PI * 10.0) / 10.0);
+      stance.push_back(p);
+    }
+    feature["properties"]["stance"] = stance;
+  }
+
   return feature;
 }
 
@@ -256,6 +270,20 @@ void GeoJSONMap::parsePolygonFeature(msg::Map & map, const json & feature)
   for (const auto & ll : feature["geometry"]["coordinates"][0]) {
     auto p = parsePoint(ll);
     area.area.polygon.points.push_back(p);
+  }
+
+  if (feature["properties"].contains("stance")) {
+    for (const auto & s : feature["properties"]["stance"]) {
+      if (!s.is_array() || s.size() < 3 || !s[0].is_number() || !s[1].is_number() || !s[2].is_number()) {
+        continue;
+      }
+      const auto p = parsePoint(s);
+      geometry_msgs::msg::Pose2D pose;
+      pose.x = p.x;
+      pose.y = p.y;
+      pose.theta = s[2].get<double>() * M_PI / 180.0;
+      area.stance.push_back(pose);
+    }
   }
 
   map.areas.push_back(area);

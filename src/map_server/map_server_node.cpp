@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include "map_server/map_server_node.hpp"
 #include "map_server/polygon_iterator.hpp"
 #include "map_server/polygon_utils.hpp"
@@ -385,6 +386,24 @@ nav_msgs::msg::OccupancyGrid MapServerNode::mapToOccupancyGrid(msg::Map map)
     paintEdgeBand(occupancy_grid, edge_band, std::min(edge_band, exclusion_band), edge_value);
   }
 
+  // Recorded lines are where the GPS antenna went while the mower was driven
+  // around the area, so the whole body stood at every point of them. At a
+  // corner driven nose-first and then turned, the front reaches beyond the rim;
+  // mark the recorded stance passable for the body like the rim (never for the
+  // centre: RimCostLayer). 0 = off.
+  Stance stance;
+  stance.front = param("grid.stance_front", 0.0);
+  stance.rear = param("grid.stance_rear", 0.0);
+  stance.half_width = param("grid.stance_half_width", 0.0);
+  stance.front_chamfer = param("grid.stance_front_chamfer", 0.0);
+  if (stance.front > 0.0 && stance.half_width > 0.0)
+  {
+    for (const auto& area : map.areas)
+    {
+      paintRecordedStance(occupancy_grid, area, stance, edge_value);
+    }
+  }
+
   RCLCPP_INFO(get_logger(), "Occupancy grid size: %.2fm x %.2fm (%.2fm resolution, %dx%d cells)",
               occupancy_grid.info.width * occupancy_grid.info.resolution,
               occupancy_grid.info.height * occupancy_grid.info.resolution, occupancy_grid.info.resolution,
@@ -449,6 +468,130 @@ void MapServerNode::paintEdgeBand(nav_msgs::msg::OccupancyGrid& grid, double ban
         }
       }
     }
+  }
+}
+
+// Uses the poses recorded with the area (Area.stance). Maps recorded without
+// them (ROS1 map.bag): the heading at each point is the direction of travel
+// (the mower is driven forward while recording) and at each vertex the body
+// turned in place from the incoming to the outgoing heading.
+void MapServerNode::paintRecordedStance(nav_msgs::msg::OccupancyGrid& grid, const msg::Area& area, const Stance& body,
+                                        int8_t value)
+{
+  const auto& pts = area.area.polygon.points;
+  const size_t n = pts.size();
+  const double res = grid.info.resolution;
+  const int w = static_cast<int>(grid.info.width);
+  const int h = static_cast<int>(grid.info.height);
+  auto mark = [&](double x, double y) {
+    const int cx = static_cast<int>(std::floor((x - grid.info.origin.position.x) / res));
+    const int cy = static_cast<int>(std::floor((y - grid.info.origin.position.y) / res));
+    if (cx < 0 || cy < 0 || cx >= w || cy >= h)
+    {
+      return;
+    }
+    auto& cell = grid.data[static_cast<size_t>(cy) * w + cx];
+    if (cell == -1 || cell > value)  // unknown or exclusion: the body was there
+    {
+      cell = value;
+    }
+  };
+  // Fill the body (front corners cut at 45 deg) at (x, y, yaw), sampled at half a cell.
+  const double step = res / 2.0;
+  const double chamfer_limit = body.front + body.half_width - body.front_chamfer;
+  auto stamp = [&](double x, double y, double yaw) {
+    const double c = std::cos(yaw), s = std::sin(yaw);
+    for (double u = -body.rear; u <= body.front + 1e-9; u += step)
+    {
+      for (double v = -body.half_width; v <= body.half_width + 1e-9; v += step)
+      {
+        if (u + std::abs(v) > chamfer_limit + 1e-9)
+        {
+          continue;
+        }
+        mark(x + u * c - v * s, y + u * s + v * c);
+      }
+    }
+  };
+  if (!area.stance.empty())
+  {
+    // Recorded poses: fill in between neighbours (position and heading), but
+    // don't bridge a gap (a pose lookup that failed for a while).
+    const auto& st = area.stance;
+    for (size_t i = 0; i < st.size(); ++i)
+    {
+      stamp(st[i].x, st[i].y, st[i].theta);
+      if (i + 1 == st.size())
+      {
+        break;
+      }
+      const auto& a = st[i];
+      const auto& b = st[i + 1];
+      const double len = std::hypot(b.x - a.x, b.y - a.y);
+      const double turn = std::remainder(b.theta - a.theta, 2.0 * M_PI);
+      if (len > 0.3)
+      {
+        continue;
+      }
+      const int steps = std::max(static_cast<int>(std::ceil(len / res)),
+                                 static_cast<int>(std::ceil(std::abs(turn) / (5.0 * M_PI / 180.0))));
+      for (int k = 1; k < steps; ++k)
+      {
+        const double t = static_cast<double>(k) / steps;
+        stamp(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.theta + turn * t);
+      }
+    }
+    return;
+  }
+  if (n < 3)
+  {
+    return;
+  }
+  // Travel direction of each segment (skipping repeated points).
+  std::vector<double> yaw(n, std::numeric_limits<double>::quiet_NaN());
+  for (size_t i = 0; i < n; ++i)
+  {
+    const auto& a = pts[i];
+    const auto& b = pts[(i + 1) % n];
+    if (std::hypot(b.x - a.x, b.y - a.y) > 0.02)
+    {
+      yaw[i] = std::atan2(b.y - a.y, b.x - a.x);
+    }
+  }
+  double prev = std::numeric_limits<double>::quiet_NaN();
+  for (size_t i = n; i-- > 0;)
+  {
+    if (!std::isnan(yaw[i]))
+    {
+      prev = yaw[i];
+      break;
+    }
+  }
+  for (size_t i = 0; i < n; ++i)
+  {
+    if (std::isnan(yaw[i]))
+    {
+      continue;
+    }
+    const auto& a = pts[i];
+    const auto& b = pts[(i + 1) % n];
+    // Turn in place at the vertex from the previous heading.
+    if (!std::isnan(prev))
+    {
+      const double delta = std::remainder(yaw[i] - prev, 2.0 * M_PI);
+      const int steps = static_cast<int>(std::ceil(std::abs(delta) / (5.0 * M_PI / 180.0)));
+      for (int k = 0; k < steps; ++k)
+      {
+        stamp(a.x, a.y, prev + delta * k / steps);
+      }
+    }
+    const double len = std::hypot(b.x - a.x, b.y - a.y);
+    const int steps = std::max(1, static_cast<int>(std::ceil(len / res)));
+    for (int k = 0; k <= steps; ++k)
+    {
+      stamp(a.x + (b.x - a.x) * k / steps, a.y + (b.y - a.y) * k / steps, yaw[i]);
+    }
+    prev = yaw[i];
   }
 }
 

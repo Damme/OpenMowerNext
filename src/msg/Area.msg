@@ -13,3 +13,7 @@ string id # id of the area
 string name # name of the area
 uint8 type # type of the area. 0 = obstacle, 1 = navigation, 2 = operation
 geometry_msgs/PolygonStamped area # area of the zone
+# Poses (map frame) the mower drove while the boundary was recorded, every few cm
+# and while turning in place. The whole body stood there, so it may overhang the
+# line that far (map_server grid.stance_*). Empty: unknown (derived from the polygon).
+geometry_msgs/Pose2D[] stance
