@@ -344,9 +344,11 @@ void FTCController::updateControlPoint(double dt)
       double distance_to_move = dt * current_movement_speed_;
       double angle_to_move = dt * cfg_.speed_angular * (M_PI / 180.0);
 
-      // Carrot leash: don't run away from a robot that fell behind.
+      // Carrot leash: don't run away from a robot that fell behind. Only when the
+      // carrot is ahead: a robot that overshot it (downhill, bump) must not freeze
+      // the carrot - it is forward-only, so it waits until the carrot passes.
       carrot_gated_ = false;
-      if (cfg_.carrot_max_lag > 0.0) {
+      if (cfg_.carrot_max_lag > 0.0 && local_control_point_.translation().x() > 0.0) {
         const double lag = std::hypot(local_control_point_.translation().x(), local_control_point_.translation().y());
         if (lag > cfg_.carrot_max_lag) {
           distance_to_move = angle_to_move = 0.0;
