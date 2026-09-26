@@ -60,10 +60,12 @@ def generate_launch_description():
                                 "grid.resolution": float(os.getenv(
                                     "OM_MAP_GRID_RESOLUTION",
                                     "0.05" if os.getenv("OM_HARDWARE") == "worx" else "0.1")),
-                                # Passable rim outside the areas: the Worx body overhangs
-                                # the edge on outline passes (see worx_nav2.yaml planner).
-                                "grid.edge_band": 0.45 if os.getenv("OM_HARDWARE") == "worx" else 0.0,
-                                "grid.edge_band_value": 90,
+                                # Rim = half the mower width (0.195) + grid rounding: the
+                                # body may overhang the recorded line by that, the
+                                # centre may not (RimCostLayer in worx_nav2.yaml).
+                                "grid.edge_band": 0.25 if os.getenv("OM_HARDWARE") == "worx" else 0.0,
+                                "grid.exclusion_band": 0.25,
+                                "grid.edge_band_value": 99,
                             }
                         ],
                         remappings=[

@@ -80,6 +80,7 @@ include(cmake/worx_hardware.cmake)
 include(cmake/lsm6dsv_imu.cmake)
 include(cmake/mower_logic.cmake)
 include(cmake/ftc_controller.cmake)
+include(cmake/costmap_layers.cmake)
 
 install(PROGRAMS scripts/worx_sim_dock.py scripts/worx_sim_obstacles.py scripts/worx_map_to_geojson.py DESTINATION lib/${PROJECT_NAME})
 

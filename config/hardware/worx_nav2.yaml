@@ -62,6 +62,11 @@ controller_server:
     FollowPath:
       desired_linear_vel: 0.3
       lookahead_dist: 0.4
+      # No collision check: the local costmap holds only the map (the lines are
+      # drivable - the mower recorded them), the planner keeps the path inside.
+      # On the rim (outline passes run 4 cm inside the line) RPP's projected arc
+      # clipped the outside cells and froze the robot: a grid artefact.
+      use_collision_detection: false
       min_lookahead_dist: 0.25
       max_lookahead_dist: 0.6
       lookahead_time: 1.0
@@ -82,52 +87,60 @@ velocity_smoother:
 local_costmap:
   local_costmap:
     ros__parameters:
+      # Recorded boundaries are where the GPS antenna (~robot centre) drove; the
+      # body overhung them by half the mower's width while recording, so that
+      # rim is known to be clear. The centre must stay inside the line, the
+      # footprint inside line + rim, nothing beyond (RimCostLayer, map_server
+      # grid.edge_band). Same for exclusions, recorded by driving around them.
+      # Body 0.58 x 0.39 m, base_link on the wheel axle 0.11 m from the rear.
       footprint: "[[0.47, 0.195], [0.47, -0.195], [-0.11, -0.195], [-0.11, 0.195]]"
-      # Map grid (map_server: unknown outside the areas, exclusions lethal,
-      # grid.edge_band a passable high-cost rim), obstacles found by bumping
-      # (mower_logic ~/bump_obstacles) and inflation so transits keep clear.
-      plugins: ["static_layer", "bump_layer", "inflation_layer"]
+      # Map grid only (areas, exclusions, rim). The bump obstacles are fuzzy guesses
+      # (the sensor doesn't say where it was hit) and live in the global costmap
+      # for planning around them; here they blocked the back-up and RPP
+      # ("collision ahead") between a guessed mark and the real obstacle.
+      plugins: ["static_layer", "rim_layer", "inflation_layer"]
       track_unknown_space: true
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: "/map_grid"
-        trinary_costmap: false  # keep the edge band's cost (default maps < 100 to free)
-      bump_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
-        footprint_clearing_enabled: false
-        observation_sources: bumps
-        bumps:
-          topic: /mower_logic/bump_obstacles
-          data_type: "PointCloud2"
-          marking: true
-          clearing: false
-          min_obstacle_height: -1.0
-          max_obstacle_height: 1.0
-          obstacle_min_range: 0.0
-          obstacle_max_range: 1000.0
+        trinary_costmap: false  # keep the rim's cost (default maps < 100 to free)
+      rim_layer:
+        plugin: "open_mower_next::costmap_layers::RimCostLayer"
+        from_cost: 251   # static layer: grid.edge_band_value 99 -> 99/100 * 254
+        to_cost: 253     # INSCRIBED: centre forbidden, footprint allowed
       # Wide, soft gradient around exclusions AND the area edges (unknown), so
       # transits keep a margin where there is room (tire marks; a GPS glitch
-      # near the edge must not put the robot outside). ~100 at 0.5 m, ~40 at 0.8 m.
+      # near the edge must not put the robot outside). ~120 at 0.5 m, ~60 at 0.8 m.
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 1.2
-        cost_scaling_factor: 3.0
+        cost_scaling_factor: 2.5      # slower fall-off: corridor centres clearly cheaper than the edges
         inflate_around_unknown: true
 global_costmap:
   global_costmap:
     ros__parameters:
+      # Recorded boundaries are where the GPS antenna (~robot centre) drove; the
+      # body overhung them by half the mower's width while recording, so that
+      # rim is known to be clear. The centre must stay inside the line, the
+      # footprint inside line + rim, nothing beyond (RimCostLayer, map_server
+      # grid.edge_band). Same for exclusions, recorded by driving around them.
+      # Body 0.58 x 0.39 m, base_link on the wheel axle 0.11 m from the rear.
       footprint: "[[0.47, 0.195], [0.47, -0.195], [-0.11, -0.195], [-0.11, 0.195]]"
-      # Map grid (map_server: unknown outside the areas, exclusions lethal,
-      # grid.edge_band a passable high-cost rim), obstacles found by bumping
-      # (mower_logic ~/bump_obstacles) and inflation so transits keep clear.
-      plugins: ["static_layer", "bump_layer", "inflation_layer"]
+      # Map grid (map_server: unknown outside the areas = blocked, exclusions
+      # lethal, the rim), obstacles found by bumping (mower_logic
+      # ~/bump_obstacles) and inflation so transits keep well inside.
+      plugins: ["static_layer", "rim_layer", "bump_layer", "inflation_layer"]
       track_unknown_space: true
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: "/map_grid"
-        trinary_costmap: false  # keep the edge band's cost (default maps < 100 to free)
+        trinary_costmap: false  # keep the rim's cost (default maps < 100 to free)
+      rim_layer:
+        plugin: "open_mower_next::costmap_layers::RimCostLayer"
+        from_cost: 251   # static layer: grid.edge_band_value 99 -> 99/100 * 254
+        to_cost: 253     # INSCRIBED: centre forbidden, footprint allowed
       bump_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         footprint_clearing_enabled: false
@@ -143,16 +156,16 @@ global_costmap:
           obstacle_max_range: 1000.0
       # Wide, soft gradient around exclusions AND the area edges (unknown), so
       # transits keep a margin where there is room (tire marks; a GPS glitch
-      # near the edge must not put the robot outside). ~100 at 0.5 m, ~40 at 0.8 m.
+      # near the edge must not put the robot outside). ~120 at 0.5 m, ~60 at 0.8 m.
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 1.2
-        cost_scaling_factor: 3.0
+        cost_scaling_factor: 2.5      # slower fall-off: corridor centres clearly cheaper than the edges
         inflate_around_unknown: true
 
 # Transit planner: state lattice with diff-drive primitives (in-place turns),
-# collision-checked with the real footprint - NavFn planned for a point and
-# (allow_unknown) could leave the areas. Lattice resolution = map grid 5 cm.
+# checking the footprint (centre vs 253, footprint vs lethal/unknown - see the
+# costmaps). Lattice resolution = map grid 5 cm.
 planner_server:
   ros__parameters:
     GridBased:
@@ -168,12 +181,21 @@ planner_server:
       reverse_penalty: 2.0
       change_penalty: 0.05
       non_straight_penalty: 1.05
-      cost_penalty: 3.0             # follow the inflation gradient away from edges
+      cost_penalty: 3.0             # 5.0 made long transits exceed max_iterations
       rotation_penalty: 1.5         # default 5.0 preferred loops over turning in place
       retrospective_penalty: 0.015
       allow_reverse_expansion: false
       cache_obstacle_heuristic: true
       smooth_path: true
+      # The smoother isn't cost-aware and pulls paths toward inner corners: keep
+      # it gentle so the path keeps its distance from the edges.
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.15
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
 
 # Undocking reverses to the staging pose, and docking starts its approach there:
 # 2 m out onto the lawn before the mission starts (the dock sits outside the areas).

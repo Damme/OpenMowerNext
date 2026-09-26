@@ -5,6 +5,9 @@
 
   - Position-only goal checker (transit_goal_checker): FTC turns to the pass
     heading in place (PRE_ROTATE); matching it here made RPP loop around the goal.
+  - One Nav2 recovery round only: mower_logic decides what to do next (skip
+    further along the pass, retry, skip the pass). Six rounds of spin/wait/
+    backup took ~35 s per unreachable goal.
   - Replans only when the goals change or the path becomes invalid (blocked in
     the costmap, e.g. by a bump obstacle). With the Smac lattice planner every
     fresh plan takes a slightly different route, so periodic replanning gave a
@@ -14,7 +17,7 @@
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="1" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>

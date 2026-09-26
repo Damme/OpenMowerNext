@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="costmap_layers">
+    <class type="open_mower_next::costmap_layers::RimCostLayer" base_class_type="nav2_costmap_2d::Layer">
+      <description>Rewrites one cost value to another (the area rim: centre forbidden, footprint allowed).</description>
+    </class>
+  </library>
+</class_libraries>
