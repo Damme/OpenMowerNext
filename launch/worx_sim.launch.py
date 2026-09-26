@@ -17,6 +17,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -67,6 +68,10 @@ def launch_setup(context):
         Node(package='open_mower_next', executable='worx_sim_dock.py', output='screen'),
         Node(package='open_mower_next', executable='worx_sim_obstacles.py', output='screen',
              parameters=[{'obstacles': LaunchConfiguration('obstacles').perform(context)}]),
+        # Needs the rviz2 package and a DISPLAY (e.g. an X server on the Windows host).
+        Node(package='rviz2', executable='rviz2', output='log',
+             arguments=['-d', os.path.join(share, 'config', 'worx_sim.rviz')],
+             condition=IfCondition(LaunchConfiguration('rviz'))),
         Node(package='open_mower_next', executable='mower_logic', output='screen',
              parameters=[{'require_gps': LaunchConfiguration('require_gps').perform(context) == 'true',
                          'gps_settle': 5.0,
@@ -91,6 +96,7 @@ def generate_launch_description():
         DeclareLaunchArgument('start_yaw', default_value='0.0'),
         DeclareLaunchArgument('areas', default_value='', description='comma separated area ids (default all)'),
         DeclareLaunchArgument('pass_controller', default_value='FTC', description='FTC | FollowPath (RPP)'),
+        DeclareLaunchArgument('rviz', default_value='false', description='start rviz2 with config/worx_sim.rviz'),
         DeclareLaunchArgument('obstacles', default_value='',
                               description='virtual obstacles "x,y,r;..." (map frame), found only by bumping'),
         DeclareLaunchArgument('require_gps', default_value='false', description='true: mower_logic needs /gps/fix'),
