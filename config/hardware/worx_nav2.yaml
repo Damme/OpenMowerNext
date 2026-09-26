@@ -93,7 +93,7 @@ local_costmap:
       # footprint inside line + rim, nothing beyond (RimCostLayer, map_server
       # grid.edge_band). Same for exclusions, recorded by driving around them.
       # Body 0.58 x 0.39 m, base_link on the wheel axle 0.11 m from the rear.
-      footprint: "[[0.47, 0.195], [0.47, -0.195], [-0.11, -0.195], [-0.11, 0.195]]"
+      footprint: "[[0.47, 0.095], [0.37, 0.195], [-0.11, 0.195], [-0.11, -0.195], [0.37, -0.195], [0.47, -0.095]]"
       # Map grid only (areas, exclusions, rim). The bump obstacles are fuzzy guesses
       # (the sensor doesn't say where it was hit) and live in the global costmap
       # for planning around them; here they blocked the back-up and RPP
@@ -126,7 +126,7 @@ global_costmap:
       # footprint inside line + rim, nothing beyond (RimCostLayer, map_server
       # grid.edge_band). Same for exclusions, recorded by driving around them.
       # Body 0.58 x 0.39 m, base_link on the wheel axle 0.11 m from the rear.
-      footprint: "[[0.47, 0.195], [0.47, -0.195], [-0.11, -0.195], [-0.11, 0.195]]"
+      footprint: "[[0.47, 0.095], [0.37, 0.195], [-0.11, 0.195], [-0.11, -0.195], [0.37, -0.195], [0.47, -0.095]]"
       # Map grid (map_server: unknown outside the areas = blocked, exclusions
       # lethal, the rim), obstacles found by bumping (mower_logic
       # ~/bump_obstacles) and inflation so transits keep well inside.

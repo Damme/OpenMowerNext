@@ -419,18 +419,22 @@ bool Context::footprintFits(double x, double y, double yaw) const
     const int8_t v = grid_.data[static_cast<size_t>(cy) * info.width + static_cast<size_t>(cx)];
     return v >= 0 && v < 100;  // free, rim or blurred edge; not unknown, not lethal
   };
-  // The footprint's outline, every 5 cm.
+  // The footprint's outline (front corners cut at 45 deg), every 5 cm.
   const double c = std::cos(yaw), s = std::sin(yaw);
   const double f = params.footprint_front, r = -params.footprint_rear, w = params.footprint_half_width;
-  auto check_edge = [&](double u0, double v0, double u1, double v1) {
+  const double ch = std::clamp(params.footprint_front_chamfer, 0.0, std::min(w, f - r));
+  const double outline[][2] = {{f, w - ch}, {f - ch, w}, {r, w}, {r, -w}, {f - ch, -w}, {f, -w + ch}};
+  constexpr size_t n_pts = sizeof(outline) / sizeof(outline[0]);
+  for (size_t i = 0; i < n_pts; ++i) {
+    const double u0 = outline[i][0], v0 = outline[i][1];
+    const double u1 = outline[(i + 1) % n_pts][0], v1 = outline[(i + 1) % n_pts][1];
     const int n = std::max(1, static_cast<int>(std::ceil(std::hypot(u1 - u0, v1 - v0) / 0.05)));
     for (int k = 0; k <= n; ++k) {
       const double u = u0 + (u1 - u0) * k / n, v = v0 + (v1 - v0) * k / n;
       if (!cell_ok(x + u * c - v * s, y + u * s + v * c)) return false;
     }
-    return true;
-  };
-  return check_edge(f, w, f, -w) && check_edge(r, w, r, -w) && check_edge(r, w, f, w) && check_edge(r, -w, f, -w);
+  }
+  return true;
 }
 
 std::optional<double> Context::reverseForTurn(double x, double y, double yaw, double target_yaw, double max_reverse) const
@@ -448,10 +452,6 @@ std::optional<double> Context::reverseForTurn(double x, double y, double yaw, do
   return std::nullopt;
 }
 
-std::optional<geometry_msgs::msg::PoseStamped> Context::transitVia(const geometry_msgs::msg::PoseStamped & goal)
-{
-  if (params.transit_jitter <= 0.0) return std::nullopt;
-  const auto start = robotPose();
 std::optional<Context::Escape> Context::escapeFootprint(double x, double y, double yaw, double max_reverse) const
 {
   for (double d = 0.05; d <= max_reverse + 1e-9; d += 0.05) {
@@ -466,6 +466,10 @@ std::optional<Context::Escape> Context::escapeFootprint(double x, double y, doub
   return std::nullopt;
 }
 
+std::optional<geometry_msgs::msg::PoseStamped> Context::transitVia(const geometry_msgs::msg::PoseStamped & goal)
+{
+  if (params.transit_jitter <= 0.0) return std::nullopt;
+  const auto start = robotPose();
   if (!start) return std::nullopt;
   const double sx = start->pose.position.x, sy = start->pose.position.y;
   const double gx = goal.pose.position.x, gy = goal.pose.position.y;

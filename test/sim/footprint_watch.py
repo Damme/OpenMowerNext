@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Usage (with worx_sim.launch.py running): python3 footprint_watch.py <max_seconds> [front rear half_width]
+# Usage (with worx_sim.launch.py running): python3 footprint_watch.py <max_seconds> [front rear half_width [front_chamfer]]
 """Checks the robot's real footprint along the driven track against the
 recorded areas + rim (/map_grid: free, rim and blurred cells are allowed;
 unknown and lethal are not) and reports every violation: where, how many
@@ -18,6 +18,7 @@ from open_mower_next.msg import Map
 
 duration = float(sys.argv[1])
 front, rear, hw = (float(v) for v in sys.argv[2:5]) if len(sys.argv) >= 5 else (0.47, 0.11, 0.195)
+chamfer = float(sys.argv[5]) if len(sys.argv) >= 6 else 0.10  # front corners cut at 45 deg (round in reality)
 rclpy.init()
 n = Node('footprint_watch')
 tfb = tf2_ros.Buffer()
@@ -45,7 +46,8 @@ def cell(g, x, y):
 
 def outline():
     pts = []
-    for a, b in (((front, hw), (front, -hw)), ((-rear, hw), (-rear, -hw)), ((-rear, hw), (front, hw)), ((-rear, -hw), (front, -hw))):
+    poly = [(front, hw - chamfer), (front - chamfer, hw), (-rear, hw), (-rear, -hw), (front - chamfer, -hw), (front, -hw + chamfer)]
+    for a, b in zip(poly, poly[1:] + poly[:1]):
         k = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / 0.05)))
         pts += [(a[0] + (b[0] - a[0]) * t / k, a[1] + (b[1] - a[1]) * t / k) for t in range(k + 1)]
     return pts

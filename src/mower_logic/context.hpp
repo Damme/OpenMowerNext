@@ -71,6 +71,7 @@ struct Params
   // footprint inside an obstacle nothing can move ("Start occupied", back-up
   // refused) - a slow Digital report while turning put marks under the robot.
   double footprint_front = 0.47, footprint_rear = 0.11, footprint_half_width = 0.195;
+  double footprint_front_chamfer = 0.10;  // m cut off each front corner at 45 deg (the real corners are round)
   double bump_keep_free = 0.1;       // m around the footprint
   double corner_max_reverse = 1.0;   // m: back up at most this far to turn at a tight corner
   double bump_clearance = 0.9;       // m: pass continues at the first pose this far from the disc centre
@@ -140,7 +141,6 @@ public:
   // place to target_yaw with its whole footprint inside line + rim (checked
   // every 5 deg). nullopt: not possible within max_reverse.
   std::optional<double> reverseForTurn(double x, double y, double yaw, double target_yaw, double max_reverse) const;
-  // Random via point between the robot and goal (nullopt: go direct).
   // The robot's footprint left line + rim (FTC overshot a cut corner): the
   // shortest straight back-up (<= max_reverse), else the smallest turn in place,
   // after which it fits again. Nav2 plans nothing from there ("Start occupied").
@@ -150,6 +150,7 @@ public:
     double turn = 0.0;     // rad
   };
   std::optional<Escape> escapeFootprint(double x, double y, double yaw, double max_reverse) const;
+  // Random via point between the robot and goal (nullopt: go direct).
   std::optional<geometry_msgs::msg::PoseStamped> transitVia(const geometry_msgs::msg::PoseStamped & goal);
 
   // Bumps. Each one adds an obstacle point (published for the costmaps).

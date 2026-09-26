@@ -43,6 +43,7 @@ int main(int argc, char ** argv)
   p.corner_max_reverse = node->declare_parameter("corner_max_reverse", p.corner_max_reverse);
   p.footprint_rear = node->declare_parameter("footprint_rear", p.footprint_rear);
   p.footprint_half_width = node->declare_parameter("footprint_half_width", p.footprint_half_width);
+  p.footprint_front_chamfer = node->declare_parameter("footprint_front_chamfer", p.footprint_front_chamfer);
   p.bump_clearance = node->declare_parameter("bump_clearance", p.bump_clearance);
   p.bump_backup = node->declare_parameter("bump_backup", p.bump_backup);
   p.bump_backup_speed = node->declare_parameter("bump_backup_speed", p.bump_backup_speed);
