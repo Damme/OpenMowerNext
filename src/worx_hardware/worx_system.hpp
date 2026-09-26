@@ -109,6 +109,7 @@ private:
   std::atomic<bool> lift_{false};
   std::atomic<uint32_t> bumps_{0};
   std::chrono::steady_clock::time_point last_bump_{};  // mutex_
+  std::chrono::steady_clock::time_point last_moving_{};  // mutex_: wheel speed > bump_min_speed
   std::chrono::steady_clock::time_point last_motion_cmd_ = std::chrono::steady_clock::now();
   std::atomic<bool> emergency_{false};
   std::atomic<bool> motors_enabled_{true};

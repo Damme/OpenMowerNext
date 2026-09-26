@@ -393,13 +393,15 @@ void WorxSystem::onBoardMessage(const std::string & msg)
   std::lock_guard<std::mutex> lock(mutex_);
   if (m.motor_pulse) {
     const auto now = std::chrono::steady_clock::now();
-    // BlockForward rising while driving forward = bump. It also reads 1 whenever
-    // the robot stands still, so a start from standstill must not count.
-    const bool was_moving = 0.5 * (vel_left_ + vel_right_) > cfg_.bump_min_speed;
+    // BlockForward while driving forward = bump. It also reads 1 whenever the
+    // robot stands still, so it only counts if the robot moved within the last
+    // 0.3 s. (Not "moving in this sample": the firmware clears the latch on an
+    // all-zero command and re-arms it 1 ms later, so the first reports can show 0
+    // while the wheels already stop.)
+    if (0.5 * (vel_left_ + vel_right_) > cfg_.bump_min_speed) last_moving_ = now;
     const bool blocked = m.motor_pulse->block_forward && *m.motor_pulse->block_forward == 1;
-    const bool prev_blocked =
-      last_.motor_pulse && last_.motor_pulse->block_forward && *last_.motor_pulse->block_forward == 1;
-    if (cfg_.bump_detection && blocked && !prev_blocked && was_moving && last_pwm_l_ > 0 && last_pwm_r_ > 0) {
+    const bool moved_recently = now - last_moving_ < std::chrono::milliseconds(300);
+    if (cfg_.bump_detection && blocked && moved_recently && last_pwm_l_ > 0 && last_pwm_r_ > 0) {
       registerBump("BlockForward");
     }
     const double dl = odo_left_.update(m.motor_pulse->left, m.motor_pulse->dir_left);
