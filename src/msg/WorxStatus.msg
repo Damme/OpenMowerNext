@@ -2,7 +2,10 @@
 std_msgs/Header header
 
 bool link_ok                 # a board message arrived within link_timeout
-bool emergency               # software emergency latched via /worx/emergency
+bool emergency               # emergency latched (/worx/emergency, or lift with lift_emergency)
+bool collision               # bump latched: forward blocked, blade off (see worx-hardware docs)
+bool lift                    # Lift input active (last Digital report)
+uint32 bumps                 # bumps detected since start; a change = new bump
 string motor_state           # firmware motorState (MOTORREQ_ENABLE / _DISABLE / _SETSPEED)
 string power_state           # firmware powerState (e.g. Charging)
 

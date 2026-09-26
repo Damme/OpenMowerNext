@@ -86,6 +86,11 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.battery_full_voltage = paramD(info, "battery_full_voltage", cfg_.battery_full_voltage);
     cfg_.digital_inverted = paramSet(info, "digital_inverted", cfg_.digital_inverted);
     cfg_.log_packets = paramB(info, "log_packets", cfg_.log_packets);
+    cfg_.bump_detection = paramB(info, "bump_detection", cfg_.bump_detection);
+    cfg_.bump_min_speed = paramD(info, "bump_min_speed", cfg_.bump_min_speed);
+    cfg_.collision_hold = paramD(info, "collision_hold", cfg_.collision_hold);
+    cfg_.lift_emergency = paramB(info, "lift_emergency", cfg_.lift_emergency);
+    cfg_.resend_period = paramD(info, "resend_period", cfg_.resend_period);
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_logger(), "Invalid worx_hardware parameter: %s", e.what());
     return CallbackReturn::ERROR;
@@ -159,6 +164,18 @@ void WorxSystem::startNode()
         fake_board_->setInCharger(req->data);
         res->success = true;
       });
+    fake_collision_srv_ = node_->create_service<std_srvs::srv::SetBool>(
+      "/worx/fake/set_collision", [this](const std_srvs::srv::SetBool::Request::SharedPtr req,
+                                         std_srvs::srv::SetBool::Response::SharedPtr res) {
+        fake_board_->setCollision(req->data);
+        res->success = true;
+      });
+    fake_lift_srv_ = node_->create_service<std_srvs::srv::SetBool>(
+      "/worx/fake/set_lift", [this](const std_srvs::srv::SetBool::Request::SharedPtr req,
+                                    std_srvs::srv::SetBool::Response::SharedPtr res) {
+        fake_board_->setLift(req->data);
+        res->success = true;
+      });
     fake_battery_sub_ = node_->create_subscription<std_msgs::msg::Int32>(
       "/worx/fake/battery_mv", 10, [this](std_msgs::msg::Int32::ConstSharedPtr m) { fake_board_->setBatteryMv(m->data); });
   }
@@ -176,6 +193,8 @@ void WorxSystem::stopNode()
   emergency_srv_.reset();
   motors_srv_.reset();
   fake_charger_srv_.reset();
+  fake_collision_srv_.reset();
+  fake_lift_srv_.reset();
   fake_battery_sub_.reset();
   executor_.reset();
   node_.reset();
@@ -261,7 +280,17 @@ CallbackReturn WorxSystem::on_shutdown(const rclcpp_lifecycle::State & s)
 void WorxSystem::sendSpeed(int left, int right, int mow, bool force)
 {
   if (!link_) return;
-  if (!force && sent_once_ && left == last_pwm_l_ && right == last_pwm_r_ && mow == last_pwm_mow_) return;
+  const auto now = std::chrono::steady_clock::now();
+  // Unchanged commands are repeated every resend_period: the firmware answers a
+  // forward command while BlockForward is latched with 0 PWM (and clears the
+  // latch), so an identical follow-up must reach it again.
+  if (
+    !force && sent_once_ && left == last_pwm_l_ && right == last_pwm_r_ && mow == last_pwm_mow_ &&
+    std::chrono::duration<double>(now - last_send_).count() < cfg_.resend_period)
+  {
+    return;
+  }
+  last_send_ = now;
   last_pwm_l_ = left;
   last_pwm_r_ = right;
   last_pwm_mow_ = mow;
@@ -317,6 +346,18 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration &)
   } else if (blade <= 0.0 && blade_lockout_) {
     blade_lockout_ = false;  // blade was commanded off: it may start again on the next command
   }
+  if (collision_) {
+    // Bumped: no forward wheel motion (as the firmware), reversing/turning back is fine.
+    const bool forward = pl > 0 || pr > 0;
+    pl = std::min(pl, 0);
+    pr = std::min(pr, 0);
+    blade_lockout_ = true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!forward && std::chrono::duration<double>(now - last_bump_).count() > cfg_.collision_hold) {
+      collision_ = false;
+      RCLCPP_INFO(get_logger(), "Bump cleared");
+    }
+  }
   int pm = blade_lockout_ ? 0 : static_cast<int>(std::clamp(blade, 0.0, 1.0) * cfg_.mow_pwm);
   if (emergency_ || !motors_enabled_ || !link_ok) {
     pl = pr = pm = 0;
@@ -349,6 +390,15 @@ void WorxSystem::onBoardMessage(const std::string & msg)
   std::lock_guard<std::mutex> lock(mutex_);
   if (m.motor_pulse) {
     const auto now = std::chrono::steady_clock::now();
+    // BlockForward rising while driving forward = bump. It also reads 1 whenever
+    // the robot stands still, so a start from standstill must not count.
+    const bool was_moving = 0.5 * (vel_left_ + vel_right_) > cfg_.bump_min_speed;
+    const bool blocked = m.motor_pulse->block_forward && *m.motor_pulse->block_forward == 1;
+    const bool prev_blocked =
+      last_.motor_pulse && last_.motor_pulse->block_forward && *last_.motor_pulse->block_forward == 1;
+    if (cfg_.bump_detection && blocked && !prev_blocked && was_moving && last_pwm_l_ > 0 && last_pwm_r_ > 0) {
+      registerBump("BlockForward");
+    }
     const double dl = odo_left_.update(m.motor_pulse->left, m.motor_pulse->dir_left);
     const double dr = odo_right_.update(m.motor_pulse->right, m.motor_pulse->dir_right);
     const double dt = std::chrono::duration<double>(now - last_pulse_).count();
@@ -364,11 +414,40 @@ void WorxSystem::onBoardMessage(const std::string & msg)
   if (m.battery) battery_ = m.battery;
   if (m.motor_current) last_.motor_current = m.motor_current;
   if (m.motor_pwm) last_.motor_pwm = m.motor_pwm;
-  if (m.digital) last_.digital = m.digital;
+  if (m.digital) {
+    last_.digital = m.digital;
+    auto active = [&](const std::string & name) {
+      const auto it = m.digital->find(name);
+      if (it == m.digital->end()) return false;
+      return cfg_.digital_inverted.count(name) > 0 ? it->second == 0 : it->second != 0;
+    };
+    // Digital is up to 1.25 s old: it only starts a bump while driving forward
+    // (a stale report during the back-up must not count again).
+    if (cfg_.bump_detection && active("Collision") && (collision_ || (last_pwm_l_ > 0 && last_pwm_r_ > 0))) {
+      registerBump("Collision");
+    }
+    const bool lift = active("Lift");
+    if (lift && !lift_ && cfg_.lift_emergency && !emergency_) {
+      RCLCPP_ERROR(get_logger(), "Lift detected: emergency latched (clear with /worx/emergency false)");
+      emergency_ = true;
+      blade_lockout_ = true;
+    }
+    lift_ = lift;
+  }
   if (m.analog) last_.analog = m.analog;
   if (m.boundary) last_.boundary = m.boundary;
   if (m.motor_state) last_.motor_state = m.motor_state;
   if (m.power_state) last_.power_state = m.power_state;
+}
+
+void WorxSystem::registerBump(const char * source)
+{
+  last_bump_ = std::chrono::steady_clock::now();
+  blade_lockout_ = true;
+  if (!collision_.exchange(true)) {
+    ++bumps_;
+    RCLCPP_WARN(get_logger(), "Bump (%s): forward blocked, blade off", source);
+  }
 }
 
 void WorxSystem::publishStatus()
@@ -383,6 +462,9 @@ void WorxSystem::publishStatus()
     st.header.stamp = node_->now();
     st.link_ok = link_->secondsSinceRx() < cfg_.link_timeout;
     st.emergency = emergency_;
+    st.collision = collision_;
+    st.lift = lift_;
+    st.bumps = bumps_;
     st.motor_state = motor_state = last_.motor_state.value_or("");
     st.power_state = last_.power_state.value_or("");
     st.left_pwm_cmd = last_pwm_l_;

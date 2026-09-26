@@ -73,11 +73,17 @@ private:
     double battery_full_voltage = 28.5;
     std::set<std::string> digital_inverted{"Door", "Door2", "Lift", "Collision"};
     bool log_packets = true;           // throttled INFO dump of board traffic (bug hunting)
+    bool bump_detection = true;
+    double bump_min_speed = 0.05;      // m/s before BlockForward counts as a bump
+    double collision_hold = 1.0;       // s the bump latch holds after the last evidence
+    bool lift_emergency = true;        // Lift latches an emergency (cleared via /worx/emergency)
+    double resend_period = 0.2;        // s: repeat an unchanged SETSPEED
   };
 
   void onBoardMessage(const std::string & msg);
   void publishStatus();
   void sendSpeed(int left, int right, int mow, bool force);
+  void registerBump(const char * source);  // with mutex_ held
   void startNode();
   void stopNode();
 
@@ -95,6 +101,13 @@ private:
   // Commands.
   int last_pwm_l_ = 0, last_pwm_r_ = 0, last_pwm_mow_ = 0;
   bool sent_once_ = false;
+  std::chrono::steady_clock::time_point last_send_{};
+  // Bump latch: set by onBoardMessage, cleared in write() once the wheels were
+  // commanded non-forward and collision_hold passed without new evidence.
+  std::atomic<bool> collision_{false};
+  std::atomic<bool> lift_{false};
+  std::atomic<uint32_t> bumps_{0};
+  std::chrono::steady_clock::time_point last_bump_{};  // mutex_
   std::chrono::steady_clock::time_point last_motion_cmd_ = std::chrono::steady_clock::now();
   std::atomic<bool> emergency_{false};
   std::atomic<bool> motors_enabled_{true};
@@ -110,7 +123,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr charger_pub_;
   rclcpp::Publisher<open_mower_next::msg::WorxStatus>::SharedPtr status_pub_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_, fake_charger_srv_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_, fake_charger_srv_,
+    fake_collision_srv_, fake_lift_srv_;
   FakeBoardTransport * fake_board_ = nullptr;  // owned by link_, only with transport=fake
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr fake_battery_sub_;
   rclcpp::TimerBase::SharedPtr status_timer_;

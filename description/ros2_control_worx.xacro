@@ -20,6 +20,11 @@
             <param name="battery_full_voltage">${worx['battery_full_voltage']}</param>
             <param name="blade_idle_timeout">${worx['blade_idle_timeout']}</param>
             <param name="log_packets">${worx['log_packets']}</param>
+            <param name="bump_detection">${worx['bump_detection']}</param>
+            <param name="bump_min_speed">${worx['bump_min_speed']}</param>
+            <param name="collision_hold">${worx['collision_hold']}</param>
+            <param name="lift_emergency">${worx['lift_emergency']}</param>
+            <param name="resend_period">${worx['resend_period']}</param>
         </hardware>
         <joint name="left_wheel_joint">
             <command_interface name="velocity">
