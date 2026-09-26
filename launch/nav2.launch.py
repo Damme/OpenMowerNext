@@ -43,17 +43,19 @@ def generate_launch_description():
     stdout_linebuf_envvar = SetEnvironmentVariable(
         'RCUTILS_LOGGING_BUFFERED_STREAM', '1')
 
+    # Optional robot-specific overrides layered on top (e.g. config/hardware/worx_nav2.yaml).
+    overlay = os.getenv('OM_NAV2_PARAMS_OVERLAY', '')
+    overlay_params = [ParameterFile(overlay, allow_substs=True)] if overlay else []
+
+    # The costmaps are child nodes of the planner/controller servers and only see
+    # the container's (process-wide) parameter files, so the overlay goes here too.
     create_container = Node(
         name='nav2_container',
         package='rclcpp_components',
         executable='component_container_isolated',
-        parameters=[configured_params, {'autostart': autostart, 'use_sim_time': use_sim_time}],
+        parameters=[configured_params] + overlay_params + [{'autostart': autostart, 'use_sim_time': use_sim_time}],
         remappings=remappings,
         output='screen')
-
-    # Optional robot-specific overrides layered on top (e.g. config/hardware/worx_nav2.yaml).
-    overlay = os.getenv('OM_NAV2_PARAMS_OVERLAY', '')
-    overlay_params = [ParameterFile(overlay, allow_substs=True)] if overlay else []
     common_node_params = [configured_params] + overlay_params + [{'use_sim_time': use_sim_time}]
 
     load_composable_nodes = LoadComposableNodes(
