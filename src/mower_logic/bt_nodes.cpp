@@ -431,6 +431,67 @@ public:
       ctx_->skip_target = b;
       ctx_->skip_counts_as_bump = true;
     }
+// Before a transit or docking: when the footprint left line + rim (FTC
+// overshot the end of a cut corner), Nav2 refuses every plan ("Start
+// occupied") and the mission and docking die on the lawn. Back up straight
+// (the way FTC came), else turn in place, until the footprint fits again.
+// Always SUCCESS: the transit reports whatever is still wrong.
+class FreeFootprint : public BT::StatefulActionNode
+{
+public:
+  FreeFootprint(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
+  : BT::StatefulActionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  NodeStatus onStart() override
+  {
+    const auto pose = ctx_->robotPose();
+    if (!pose) return NodeStatus::SUCCESS;
+    const double x = pose->pose.position.x, y = pose->pose.position.y, yaw = yawOf(*pose);
+    if (ctx_->footprintFits(x, y, yaw)) return NodeStatus::SUCCESS;
+    const auto e = ctx_->escapeFootprint(x, y, yaw, ctx_->params.corner_max_reverse);
+    // Nothing fits nearby: reverse blindly the way the robot came.
+    esc_ = e.value_or(Context::Escape{ctx_->params.bump_backup, 0.0});
+    RCLCPP_WARN(ctx_->node->get_logger(), "Footprint outside line + rim at (%.2f, %.2f): back up %.2f m, turn %.0f deg%s",
+                x, y, esc_.reverse, esc_.turn * 180.0 / M_PI, e ? "" : " (no fitting pose found)");
+    start_x_ = x;
+    start_y_ = y;
+    target_ = yaw + esc_.turn;
+    deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    return onRunning();
+  }
+  NodeStatus onRunning() override
+  {
+    const auto pose = ctx_->robotPose();
+    if (!pose || std::chrono::steady_clock::now() > deadline_) {
+      ctx_->drive(0.0, 0.0);
+      return NodeStatus::SUCCESS;
+    }
+    if (std::hypot(pose->pose.position.x - start_x_, pose->pose.position.y - start_y_) < esc_.reverse) {
+      ctx_->drive(-ctx_->params.bump_backup_speed, 0.0);
+      return NodeStatus::RUNNING;
+    }
+    const double err = std::remainder(target_ - yawOf(*pose), 2.0 * M_PI);
+    if (esc_.turn == 0.0 || std::abs(err) < 0.05) {
+      ctx_->drive(0.0, 0.0);
+      return NodeStatus::SUCCESS;
+    }
+    ctx_->drive(0.0, std::clamp(2.0 * err, -0.6, 0.6));
+    return NodeStatus::RUNNING;
+  }
+  void onHalted() override { ctx_->drive(0.0, 0.0); }
+
+private:
+  static double yawOf(const geometry_msgs::msg::PoseStamped & p)
+  {
+    const auto & q = p.pose.orientation;
+    return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+  }
+  CtxPtr ctx_;
+  Context::Escape esc_;
+  double start_x_ = 0.0, start_y_ = 0.0, target_ = 0.0;
+  std::chrono::steady_clock::time_point deadline_{};
+};
+
     return NodeStatus::SUCCESS;
   }
 
@@ -542,3 +603,4 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
 }
 
 }  // namespace open_mower_next::mower_logic
+  add<FreeFootprint>(factory, ctx, "FreeFootprint");

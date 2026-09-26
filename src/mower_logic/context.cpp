@@ -452,6 +452,20 @@ std::optional<geometry_msgs::msg::PoseStamped> Context::transitVia(const geometr
 {
   if (params.transit_jitter <= 0.0) return std::nullopt;
   const auto start = robotPose();
+std::optional<Context::Escape> Context::escapeFootprint(double x, double y, double yaw, double max_reverse) const
+{
+  for (double d = 0.05; d <= max_reverse + 1e-9; d += 0.05) {
+    if (footprintFits(x - d * std::cos(yaw), y - d * std::sin(yaw), yaw)) return Escape{d, 0.0};
+  }
+  for (int deg = 10; deg <= 180; deg += 10) {
+    for (const int sign : {1, -1}) {
+      const double turn = sign * deg * M_PI / 180.0;
+      if (footprintFits(x, y, yaw + turn)) return Escape{0.0, turn};
+    }
+  }
+  return std::nullopt;
+}
+
   if (!start) return std::nullopt;
   const double sx = start->pose.position.x, sy = start->pose.position.y;
   const double gx = goal.pose.position.x, gy = goal.pose.position.y;

@@ -64,7 +64,10 @@
   <BehaviorTree ID="DockIfNeeded">
     <Fallback>
       <IsDocked/>
-      <Dock/>
+      <Sequence>
+        <FreeFootprint/>
+        <Dock/>
+      </Sequence>
       <!-- Dock gives up after max_dock_attempts; wait between attempts. -->
       <Sequence>
         <Sleep msec="5000"/>
@@ -103,7 +106,10 @@
         <Sequence>
           <Fallback>
             <IsTrue value="{pass_direct}"/>
-            <Transit goal="{pass_start}"/>
+            <Sequence>
+              <FreeFootprint/>
+              <Transit goal="{pass_start}"/>
+            </Sequence>
           </Fallback>
           <FollowPass path="{pass_path}" start_index="{pass_start_index}"/>
           <CornerTurn/>

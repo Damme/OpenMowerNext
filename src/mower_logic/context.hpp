@@ -141,6 +141,15 @@ public:
   // every 5 deg). nullopt: not possible within max_reverse.
   std::optional<double> reverseForTurn(double x, double y, double yaw, double target_yaw, double max_reverse) const;
   // Random via point between the robot and goal (nullopt: go direct).
+  // The robot's footprint left line + rim (FTC overshot a cut corner): the
+  // shortest straight back-up (<= max_reverse), else the smallest turn in place,
+  // after which it fits again. Nav2 plans nothing from there ("Start occupied").
+  struct Escape
+  {
+    double reverse = 0.0;  // m
+    double turn = 0.0;     // rad
+  };
+  std::optional<Escape> escapeFootprint(double x, double y, double yaw, double max_reverse) const;
   std::optional<geometry_msgs::msg::PoseStamped> transitVia(const geometry_msgs::msg::PoseStamped & goal);
 
   // Bumps. Each one adds an obstacle point (published for the costmaps).
