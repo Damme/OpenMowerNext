@@ -9,6 +9,7 @@ namespace open_mower_next::mower_logic
 void Mission::begin(const std::vector<std::string> & area_ids)
 {
   std::lock_guard<std::mutex> l(mutex_);
+  ++generation_;
   areas_ = area_ids;
   passes_.clear();
   planned_ = false;
@@ -23,6 +24,7 @@ void Mission::begin(const std::vector<std::string> & area_ids)
 void Mission::clear()
 {
   std::lock_guard<std::mutex> l(mutex_);
+  ++generation_;
   areas_.clear();
   passes_.clear();
   planned_ = false;
@@ -61,6 +63,7 @@ void Mission::setPlan(const std::vector<open_mower_next::msg::CoveragePath> & pa
 
 void Mission::skipArea()
 {
+  ++generation_;
   std::lock_guard<std::mutex> l(mutex_);
   ++area_;
   passes_.clear();
@@ -105,6 +108,13 @@ void Mission::setPoseIndex(size_t absolute_index)
     pose_ = absolute_index;
     no_backtrack_ = false;
   }
+}
+
+void Mission::continueAt(size_t absolute_index)
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  if (absolute_index > pose_) pose_ = absolute_index;
+  no_backtrack_ = true;
 }
 
 size_t Mission::poseIndex() const
@@ -155,7 +165,11 @@ bool Mission::passFailed(int max_attempts, double skip_step_m, int max_continuat
   return skip;
 }
 
-void Mission::skipPass() { passDone(); }
+void Mission::skipPass()
+{
+  ++generation_;
+  passDone();
+}
 
 size_t Mission::areaCount() const
 {

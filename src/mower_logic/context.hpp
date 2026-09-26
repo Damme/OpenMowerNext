@@ -16,6 +16,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <tf2_ros/buffer.h>
@@ -71,6 +72,7 @@ struct Params
   // refused) - a slow Digital report while turning put marks under the robot.
   double footprint_front = 0.47, footprint_rear = 0.11, footprint_half_width = 0.195;
   double bump_keep_free = 0.1;       // m around the footprint
+  double corner_max_reverse = 1.0;   // m: back up at most this far to turn at a tight corner
   double bump_clearance = 0.9;       // m: pass continues at the first pose this far from the disc centre
   double bump_backup = 0.3;          // m reversed after a bump
   double bump_backup_speed = 0.1;
@@ -129,6 +131,15 @@ public:
   bool needsCharging();    // latched: set below battery_low, cleared at battery_resume
   std::vector<std::string> operationAreas() const;
   std::optional<geometry_msgs::msg::PoseStamped> robotPose() const;
+  // Can the mower stand at this pose? Centre inside the areas (not in an
+  // exclusion), the whole footprint on known, non-lethal cells of /map_grid
+  // (the areas plus the rim, map_server grid.edge_band). A recorded line can
+  // turn more sharply than the 0.58 m body: the front swings out when turning.
+  bool footprintFits(double x, double y, double yaw) const;
+  // Distance to reverse straight back from (x, y, yaw) so the mower can turn in
+  // place to target_yaw with its whole footprint inside line + rim (checked
+  // every 5 deg). nullopt: not possible within max_reverse.
+  std::optional<double> reverseForTurn(double x, double y, double yaw, double target_yaw, double max_reverse) const;
   // Random via point between the robot and goal (nullopt: go direct).
   std::optional<geometry_msgs::msg::PoseStamped> transitVia(const geometry_msgs::msg::PoseStamped & goal);
 
@@ -149,6 +160,15 @@ public:
   std::optional<Bump> knownObstacleNear(double x, double y, double radius) const;
   // Behaviour tree thread only: where SkipPastBump continues the pass.
   std::optional<Bump> skip_target;
+  // Set by GetPass when the pass was cut before a corner the body can't drive:
+  // absolute pose index to continue at after this segment (SIZE_MAX: the rest
+  // of the pass is undrivable).
+  std::optional<size_t> segment_resume;
+  // Heading to turn to for the corner after a cut segment (CornerTurn).
+  std::optional<double> corner_yaw;
+  // After a corner: continue from here (turned, up to corner_max_reverse away),
+  // or force a transit (no back-up worked). Consumed by GetPass.
+  bool continue_from_here = false, force_transit = false;
   bool skip_counts_as_bump = true;
   bool avoiding_known_obstacle = false;
 
@@ -174,6 +194,7 @@ private:
   std::optional<Clock::time_point> gps_good_since_, gps_last_good_;
   bool needs_charging_ = false;
   open_mower_next::msg::Map map_;
+  nav_msgs::msg::OccupancyGrid grid_;
   std::string branch_;
   std::optional<uint32_t> bumps_seen_;
   std::mt19937 rng_{std::random_device{}()};
@@ -189,6 +210,7 @@ private:
   rclcpp::Subscription<open_mower_next::msg::WorxStatus>::SharedPtr worx_sub_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
   rclcpp::Subscription<open_mower_next::msg::Map>::SharedPtr map_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr blade_pub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr drive_pub_;
 };

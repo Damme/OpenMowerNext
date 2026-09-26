@@ -7,6 +7,7 @@
 
 #include <nav_msgs/msg/path.hpp>
 
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -41,6 +42,9 @@ public:
 
   // Progress reports while following the current pass.
   void setPoseIndex(size_t absolute_index);
+  // Continue the current pass at this pose (after a segment cut before a
+  // corner the body can't drive), without the resume backtrack.
+  void continueAt(size_t absolute_index);
   size_t poseIndex() const;
   void passDone();
   // Returns true when the pass was skipped after too many failures. A failed
@@ -57,6 +61,9 @@ public:
   bool skipPastPoint(double x, double y, double clearance_m, int max_bumps, bool count_bump = true);
 
   std::string summary() const;
+  // Changes on operator skips/resets (skipPass, skipArea, begin, clear): a
+  // transit or pass started under an older generation is stale.
+  unsigned generation() const { return generation_.load(); }
   size_t areaCount() const;
 
 private:
@@ -70,6 +77,7 @@ private:
   int continuation_steps_ = 0;  // unreachable continuation: skips so far
   bool no_backtrack_ = false;   // next resume starts exactly at pose_
   bool active_ = false;
+  std::atomic<unsigned> generation_{0};
 };
 
 }  // namespace open_mower_next::mower_logic

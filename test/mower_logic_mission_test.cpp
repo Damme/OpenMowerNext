@@ -127,3 +127,18 @@ TEST(Mission, FailedContinuationSkipsFurther)
   EXPECT_FALSE(m.passFailed(3, 1.0, 3));            // steps used up: ordinary attempts
   EXPECT_TRUE(m.passFailed(3, 1.0, 3));             // third failure: pass skipped
 }
+
+TEST(Mission, OperatorSkipsChangeGeneration)
+{
+  Mission m;
+  m.begin({"a", "b"});
+  const auto g0 = m.generation();
+  m.setPlan({straight(10), straight(10)});
+  m.passDone();  // normal progress: running actions stay valid
+  EXPECT_EQ(m.generation(), g0);
+  m.skipPass();  // operator skip: a running pass/transit is stale
+  EXPECT_NE(m.generation(), g0);
+  const auto g1 = m.generation();
+  m.skipArea();
+  EXPECT_NE(m.generation(), g1);
+}

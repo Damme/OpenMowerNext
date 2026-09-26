@@ -127,9 +127,19 @@ public:
       }
       break;
     }
-    auto pass = m.currentPass(ctx_->params.resume_backtrack);
+    std::optional<Mission::Pass> pass;
+    ctx_->segment_resume.reset();
+    ctx_->corner_yaw.reset();
+    for (int guard = 0; guard < 50; ++guard) {
+      pass = m.currentPass(ctx_->params.resume_backtrack);
+      if (!pass) return NodeStatus::FAILURE;
+      if (cutAtUndrivable(*pass)) break;
+    }
     if (!pass) return NodeStatus::FAILURE;
-    const bool direct = startNearRobot(*pass);
+    const bool from_here = std::exchange(ctx_->continue_from_here, false);
+    const bool direct = !std::exchange(ctx_->force_transit, false) &&
+      startNearRobot(*pass, from_here ? ctx_->params.corner_max_reverse + ctx_->params.resume_direct_distance
+                                      : ctx_->params.resume_direct_distance);
     RCLCPP_INFO(ctx_->node->get_logger(), "Next: %s (%zu poses%s%s)", m.summary().c_str(), pass->path.poses.size(),
                 pass->is_outline ? ", outline" : "", direct ? ", from here" : "");
     setOutput("path", pass->path);
@@ -140,14 +150,84 @@ public:
   }
 
 private:
+  static double yawOf(const geometry_msgs::msg::Pose & p)
+  {
+    const auto & q = p.orientation;
+    return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+  }
+  bool fits(const geometry_msgs::msg::PoseStamped & p) const
+  {
+    return ctx_->footprintFits(p.pose.position.x, p.pose.position.y, yawOf(p.pose));
+  }
+  // Pose i fits, and so does the turn to it from pose i-1 (at a sharp vertex FTC
+  // turns in place: every pose can fit with its own heading while the sweep
+  // between them swings the front out).
+  bool drivable(const std::vector<geometry_msgs::msg::PoseStamped> & poses, size_t i) const
+  {
+    if (!fits(poses[i])) return false;
+    if (i == 0) return true;
+    const double a = yawOf(poses[i - 1].pose);
+    const double delta = std::remainder(yawOf(poses[i].pose) - a, 2.0 * M_PI);
+    if (std::abs(delta) < 10.0 * M_PI / 180.0) return true;
+    const int steps = static_cast<int>(std::ceil(std::abs(delta) / (5.0 * M_PI / 180.0)));
+    const auto & q = poses[i].pose.position;
+    for (int k = 1; k < steps; ++k) {
+      if (!ctx_->footprintFits(q.x, q.y, a + delta * k / steps)) return false;
+    }
+    return true;
+  }
+  // Recorded lines can turn more sharply than the mower's body: at such corners
+  // the front would leave line + rim. Drive up to the last pose that fits, then
+  // continue (transit, Nav2 checks the footprint) at the next pose that fits.
+  // Returns false when the pass start doesn't fit (mission moved on; ask again).
+  bool cutAtUndrivable(Mission::Pass & pass)
+  {
+    auto & poses = pass.path.poses;
+    size_t bad = poses.size();
+    for (size_t i = 0; i < poses.size(); ++i) {
+      if (!drivable(poses, i)) {
+        bad = i;
+        break;
+      }
+    }
+    if (bad == poses.size()) return true;  // all drivable
+    size_t good = bad + 1;
+    while (good < poses.size() && !fits(poses[good])) ++good;
+    const size_t resume = good + 3 < poses.size() ? pass.start_index + good : SIZE_MAX;
+    // A segment shorter than 0.5 m isn't worth driving (FTC, forward-only, often
+    // can't settle on its end in time): go straight to the corner handling.
+    double seg_len = 0.0;
+    for (size_t i = 1; i < bad; ++i) {
+      seg_len += std::hypot(poses[i].pose.position.x - poses[i - 1].pose.position.x,
+                            poses[i].pose.position.y - poses[i - 1].pose.position.y);
+    }
+    if (bad < 3 || seg_len < 0.5) {
+      // Nothing drivable before the corner: go straight to the pose after it.
+      RCLCPP_WARN(ctx_->node->get_logger(), "No drivable segment before the corner - continuing at pose %zu",
+                  pass.start_index + good);
+      if (resume == SIZE_MAX) {
+        ctx_->mission.passDone();
+      } else {
+        ctx_->mission.continueAt(resume);
+      }
+      return false;
+    }
+    RCLCPP_INFO(ctx_->node->get_logger(), "Corner too tight for the body at poses %zu-%zu: cut there",
+                pass.start_index + bad, pass.start_index + good);
+    ctx_->corner_yaw.reset();
+    if (good < poses.size()) ctx_->corner_yaw = yawOf(poses[good].pose);
+    poses.resize(bad);
+    ctx_->segment_resume = resume;
+    return true;
+  }
+
   // Robot already on the pass (paused by GPS loss / emergency, early end, or the
   // next pass starts where the last one ended): start at the pose next to the
   // robot and skip the transit - FTC aligns in place. The backtracked start
   // can't be used here: it lies behind the robot and FTC is forward-only, so
   // its carrot would stay gated (carrot_max_lag) and the robot would never move.
-  bool startNearRobot(Mission::Pass & pass) const
+  bool startNearRobot(Mission::Pass & pass, double max_d) const
   {
-    const double max_d = ctx_->params.resume_direct_distance;
     if (max_d <= 0.0) return false;
     const auto pose = ctx_->robotPose();
     if (!pose) return false;
@@ -232,13 +312,13 @@ class ReverseAlongTrack : public BT::StatefulActionNode
 public:
   ReverseAlongTrack(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
   : BT::StatefulActionNode(n, c), ctx_(std::move(ctx)) {}
-  static BT::PortsList providedPorts() { return {}; }
+  static BT::PortsList providedPorts() { return {BT::InputPort<double>("distance", "m, default bump_backup")}; }
   NodeStatus onStart() override
   {
-    RCLCPP_WARN(ctx_->node->get_logger(), "Back-up refused - reversing %.2f m along the track", ctx_->params.bump_backup);
-    until_ = std::chrono::steady_clock::now() +
-             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-               std::chrono::duration<double>(ctx_->params.bump_backup / ctx_->params.bump_backup_speed));
+    const double d = getInput<double>("distance").value_or(ctx_->params.bump_backup);
+    RCLCPP_WARN(ctx_->node->get_logger(), "Reversing %.2f m straight back the way the robot came", d);
+    until_ = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                   std::chrono::duration<double>(d / ctx_->params.bump_backup_speed));
     return onRunning();
   }
   NodeStatus onRunning() override
@@ -255,6 +335,82 @@ public:
 private:
   CtxPtr ctx_;
   std::chrono::steady_clock::time_point until_{};
+};
+
+// After a segment cut before a corner the body can't take: back up as little
+// as needed, turn in place to the heading after the corner with the whole
+// footprint inside line + rim, then the pass continues there (FTC). Turning in
+// place at the corner itself swings the front 0.47 m out. Does nothing when no
+// corner is pending; FAILURE when no back-up within corner_max_reverse works
+// (the continuation then goes through a transit / skips further).
+class CornerTurn : public BT::StatefulActionNode
+{
+public:
+  CornerTurn(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx) : BT::StatefulActionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  NodeStatus onStart() override
+  {
+    const auto target = std::exchange(ctx_->corner_yaw, std::nullopt);
+    const auto pose = ctx_->robotPose();
+    if (!target || !pose) return NodeStatus::SUCCESS;
+    target_ = *target;
+    const double yaw = yawOf(*pose);
+    if (std::abs(std::remainder(target_ - yaw, 2.0 * M_PI)) < 0.35) return NodeStatus::SUCCESS;  // FTC handles it
+    const auto d = ctx_->reverseForTurn(pose->pose.position.x, pose->pose.position.y, yaw, target_,
+                                        ctx_->params.corner_max_reverse);
+    if (!d) {
+      RCLCPP_WARN(ctx_->node->get_logger(), "Corner: no back-up within %.1f m lets the body turn - transit instead",
+                  ctx_->params.corner_max_reverse);
+      ctx_->force_transit = true;
+      return NodeStatus::SUCCESS;
+    }
+    RCLCPP_INFO(ctx_->node->get_logger(), "Corner: back up %.1f m, turn %.0f deg in place", *d,
+                std::remainder(target_ - yaw, 2.0 * M_PI) * 180.0 / M_PI);
+    start_x_ = pose->pose.position.x;
+    start_y_ = pose->pose.position.y;
+    reverse_ = *d;
+    phase_ = reverse_ > 0.0 ? Phase::REVERSE : Phase::TURN;
+    deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    return onRunning();
+  }
+  NodeStatus onRunning() override
+  {
+    const auto pose = ctx_->robotPose();
+    if (!pose || std::chrono::steady_clock::now() > deadline_) {
+      ctx_->drive(0.0, 0.0);
+      ctx_->force_transit = true;
+      return NodeStatus::SUCCESS;
+    }
+    if (phase_ == Phase::REVERSE) {
+      if (std::hypot(pose->pose.position.x - start_x_, pose->pose.position.y - start_y_) >= reverse_) {
+        phase_ = Phase::TURN;
+      } else {
+        ctx_->drive(-ctx_->params.bump_backup_speed, 0.0);
+        return NodeStatus::RUNNING;
+      }
+    }
+    const double err = std::remainder(target_ - yawOf(*pose), 2.0 * M_PI);
+    if (std::abs(err) < 0.05) {
+      ctx_->drive(0.0, 0.0);
+      ctx_->continue_from_here = true;
+      return NodeStatus::SUCCESS;
+    }
+    ctx_->drive(0.0, std::clamp(2.0 * err, -0.6, 0.6));
+    return NodeStatus::RUNNING;
+  }
+  void onHalted() override { ctx_->drive(0.0, 0.0); }
+
+private:
+  enum class Phase { REVERSE, TURN };
+  static double yawOf(const geometry_msgs::msg::PoseStamped & p)
+  {
+    const auto & q = p.pose.orientation;
+    return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+  }
+  CtxPtr ctx_;
+  Phase phase_ = Phase::TURN;
+  double target_ = 0.0, start_x_ = 0.0, start_y_ = 0.0, reverse_ = 0.0;
+  std::chrono::steady_clock::time_point deadline_{};
 };
 
 // SUCCESS when a bump interrupted the pass or transit (consumes it).
@@ -377,6 +533,7 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   add<SkipPastBump>(factory, ctx, "SkipPastBump");
   add<AvoidingKnownObstacle>(factory, ctx, "AvoidingKnownObstacle");
   add<ReverseAlongTrack>(factory, ctx, "ReverseAlongTrack");
+  add<CornerTurn>(factory, ctx, "CornerTurn");
   add<BackUp>(factory, ctx, "BackUp");
   add<Transit>(factory, ctx, "Transit");
   add<FollowPass>(factory, ctx, "FollowPass");

@@ -40,6 +40,7 @@ int main(int argc, char ** argv)
   p.bump_obstacle_radius = node->declare_parameter("bump_obstacle_radius", p.bump_obstacle_radius);
   p.bump_keep_free = node->declare_parameter("bump_keep_free", p.bump_keep_free);
   p.footprint_front = node->declare_parameter("footprint_front", p.footprint_front);
+  p.corner_max_reverse = node->declare_parameter("corner_max_reverse", p.corner_max_reverse);
   p.footprint_rear = node->declare_parameter("footprint_rear", p.footprint_rear);
   p.footprint_half_width = node->declare_parameter("footprint_half_width", p.footprint_half_width);
   p.bump_clearance = node->declare_parameter("bump_clearance", p.bump_clearance);

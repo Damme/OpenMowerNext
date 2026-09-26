@@ -15,7 +15,9 @@
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
+#include <cstdint>
 #include <memory>
+#include <utility>
 
 namespace open_mower_next::mower_logic
 {
@@ -51,12 +53,15 @@ protected:
   virtual BT::NodeStatus beforeSend() { return BT::NodeStatus::SUCCESS; }  // RUNNING = not yet
   // Drive actions stop on a bump; the tree's bump recovery takes over.
   virtual bool abortOnBump() const { return false; }
+  // Drive actions for a pass stop when the operator skipped it meanwhile.
+  virtual bool staleOnSkip() const { return false; }
 
   BT::NodeStatus onStart() override
   {
     sent_ = false;
     state_.reset();
     started_ = Context::Clock::now();
+    generation_ = ctx_->mission.generation();
     return send();
   }
 
@@ -65,6 +70,12 @@ protected:
     if (abortOnBump() && ctx_->bumpedSince(started_)) {
       RCLCPP_WARN(ctx_->node->get_logger(), "%s: bumped - stopping", server_.c_str());
       onHalted();
+      return BT::NodeStatus::FAILURE;
+    }
+    if (staleOnSkip() && ctx_->mission.generation() != generation_) {
+      RCLCPP_INFO(ctx_->node->get_logger(), "%s: pass skipped by the operator - stopping", server_.c_str());
+      onHalted();
+      ctx_->count_failure = false;  // not a failure of the (new) current pass
       return BT::NodeStatus::FAILURE;
     }
     if (!sent_) return send();
@@ -140,6 +151,7 @@ private:
   std::shared_ptr<State> state_;
   bool sent_ = false;
   Context::Clock::time_point started_{};
+  unsigned generation_ = 0;
 };
 
 // ---- actions ------------------------------------------------------------------------
@@ -155,6 +167,7 @@ public:
 
 protected:
   bool abortOnBump() const override { return true; }
+  bool staleOnSkip() const override { return true; }
   void onCancel() override { ctx_->bump_on_pass = false; }
   bool makeGoal(Goal & g) override
   {
@@ -198,6 +211,7 @@ public:
 
 protected:
   bool abortOnBump() const override { return true; }
+  bool staleOnSkip() const override { return true; }
   BT::NodeStatus beforeSend() override
   {
     // Blade on first, drive after the spin-up time.
@@ -276,7 +290,16 @@ protected:
       ctx_->count_failure = false;
       return BT::NodeStatus::FAILURE;
     }
-    ctx_->mission.passDone();
+    if (const auto resume = std::exchange(ctx_->segment_resume, std::nullopt)) {
+      // Segment ended before a corner the body can't drive: continue after it.
+      if (*resume == SIZE_MAX) {
+        ctx_->mission.passDone();
+      } else {
+        ctx_->mission.continueAt(*resume);
+      }
+    } else {
+      ctx_->mission.passDone();
+    }
     ctx_->skipped_passes_in_row = 0;
     return BT::NodeStatus::SUCCESS;
   }

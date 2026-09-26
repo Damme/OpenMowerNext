@@ -76,10 +76,15 @@
   <BehaviorTree ID="Mow">
     <Sequence>
       <BeginMission/>
-      <!-- IsAtDock, not IsDocked: an aborted undock leaves the robot off the charger in the dock entrance. -->
+      <!-- IsAtDock, not IsDocked: an aborted undock leaves the robot off the charger in the dock
+           entrance, and Nav2 then refuses to undock ("not in the dock"): reverse straight out. -->
       <Fallback>
         <Inverter><IsAtDock/></Inverter>
         <Undock/>
+        <Sequence>
+          <Inverter><IsDocked/></Inverter>
+          <ReverseAlongTrack distance="1.5"/>
+        </Sequence>
       </Fallback>
       <Fallback>
         <KeepRunningUntilFailure>
@@ -101,6 +106,7 @@
             <Transit goal="{pass_start}"/>
           </Fallback>
           <FollowPass path="{pass_path}" start_index="{pass_start_index}"/>
+          <CornerTurn/>
         </Sequence>
         <Sequence name="avoid_known_obstacle">
           <AvoidingKnownObstacle/>

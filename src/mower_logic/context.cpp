@@ -92,6 +92,11 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
   // subscribers (and a cleared costmap) get the points again.
   obstacle_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("~/bump_obstacles", rclcpp::SensorDataQoS());
   obstacle_timer_ = node->create_wall_timer(std::chrono::seconds(1), [this]() { publishObstacles(); });
+  grid_sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    "/map_grid", rclcpp::QoS(1).transient_local().reliable(), [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr m) {
+      std::lock_guard<std::mutex> l(mutex_);
+      grid_ = *m;
+    });
   map_sub_ = node->create_subscription<open_mower_next::msg::Map>(
     "/mowing_map", rclcpp::QoS(1).transient_local().reliable(),
     [this](open_mower_next::msg::Map::ConstSharedPtr m) {
@@ -393,6 +398,55 @@ void Context::publishObstacles()
   obstacle_pub_->publish(cloud);
 }
 
+
+bool Context::footprintFits(double x, double y, double yaw) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  // Centre: inside an operation/navigation area, not in an exclusion.
+  bool in_area = false;
+  for (const auto & a : map_.areas) {
+    if (a.area.polygon.points.size() < 3 || !insidePolygon(x, y, a.area.polygon)) continue;
+    if (a.type == open_mower_next::msg::Area::TYPE_EXCLUSION) return false;
+    in_area = true;
+  }
+  if (!in_area) return false;
+  const auto & info = grid_.info;
+  if (grid_.data.empty() || info.resolution <= 0.0) return true;  // no grid yet: centre check only
+  auto cell_ok = [&](double px, double py) {
+    const int cx = static_cast<int>(std::floor((px - info.origin.position.x) / info.resolution));
+    const int cy = static_cast<int>(std::floor((py - info.origin.position.y) / info.resolution));
+    if (cx < 0 || cy < 0 || cx >= static_cast<int>(info.width) || cy >= static_cast<int>(info.height)) return false;
+    const int8_t v = grid_.data[static_cast<size_t>(cy) * info.width + static_cast<size_t>(cx)];
+    return v >= 0 && v < 100;  // free, rim or blurred edge; not unknown, not lethal
+  };
+  // The footprint's outline, every 5 cm.
+  const double c = std::cos(yaw), s = std::sin(yaw);
+  const double f = params.footprint_front, r = -params.footprint_rear, w = params.footprint_half_width;
+  auto check_edge = [&](double u0, double v0, double u1, double v1) {
+    const int n = std::max(1, static_cast<int>(std::ceil(std::hypot(u1 - u0, v1 - v0) / 0.05)));
+    for (int k = 0; k <= n; ++k) {
+      const double u = u0 + (u1 - u0) * k / n, v = v0 + (v1 - v0) * k / n;
+      if (!cell_ok(x + u * c - v * s, y + u * s + v * c)) return false;
+    }
+    return true;
+  };
+  return check_edge(f, w, f, -w) && check_edge(r, w, r, -w) && check_edge(r, w, f, w) && check_edge(r, -w, f, -w);
+}
+
+std::optional<double> Context::reverseForTurn(double x, double y, double yaw, double target_yaw, double max_reverse) const
+{
+  const double delta = std::remainder(target_yaw - yaw, 2.0 * M_PI);
+  const int steps = std::max(1, static_cast<int>(std::ceil(std::abs(delta) / (5.0 * M_PI / 180.0))));
+  for (double d = 0.0; d <= max_reverse + 1e-9; d += 0.1) {
+    const double px = x - d * std::cos(yaw), py = y - d * std::sin(yaw);
+    bool ok = true;
+    // The way back (same heading) and the turn in place.
+    for (double b = 0.0; ok && b < d; b += 0.05) ok = footprintFits(x - b * std::cos(yaw), y - b * std::sin(yaw), yaw);
+    for (int k = 0; ok && k <= steps; ++k) ok = footprintFits(px, py, yaw + delta * k / steps);
+    if (ok) return d;
+  }
+  return std::nullopt;
+}
 
 std::optional<geometry_msgs::msg::PoseStamped> Context::transitVia(const geometry_msgs::msg::PoseStamped & goal)
 {
