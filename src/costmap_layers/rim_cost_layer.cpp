@@ -10,7 +10,7 @@ void RimCostLayer::onInitialize()
   auto node = node_.lock();
   if (!node) throw std::runtime_error("RimCostLayer: node expired");
   declareParameter("enabled", rclcpp::ParameterValue(true));
-  declareParameter("from_cost", rclcpp::ParameterValue(251));
+  declareParameter("from_cost", rclcpp::ParameterValue(152));
   declareParameter("to_cost", rclcpp::ParameterValue(static_cast<int>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)));
   enabled_ = node->get_parameter(name_ + ".enabled").as_bool();
   from_ = static_cast<unsigned char>(node->get_parameter(name_ + ".from_cost").as_int());

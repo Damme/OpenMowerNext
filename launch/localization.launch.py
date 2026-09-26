@@ -55,7 +55,9 @@ def generate_launch_description():
                                     float(os.getenv("OM_DATUM_LAT")),
                                     float(os.getenv("OM_DATUM_LONG")),
                                 ],
-                                "grid.use_gaussian_blur": True,
+                                # Worx: no blur - it smears the rim value (RimCostLayer
+                                # matches it exactly) and softens exclusions below lethal.
+                                "grid.use_gaussian_blur": os.getenv("OM_HARDWARE") != "worx",
                                 # Worx robot mows on a 5 cm grid
                                 "grid.resolution": float(os.getenv(
                                     "OM_MAP_GRID_RESOLUTION",
@@ -65,7 +67,7 @@ def generate_launch_description():
                                 # centre may not (RimCostLayer in worx_nav2.yaml).
                                 "grid.edge_band": 0.25 if os.getenv("OM_HARDWARE") == "worx" else 0.0,
                                 "grid.exclusion_band": 0.25,
-                                "grid.edge_band_value": 99,
+                                "grid.edge_band_value": 60,
                             }
                         ],
                         remappings=[

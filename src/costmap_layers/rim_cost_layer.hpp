@@ -1,8 +1,8 @@
 #pragma once
 // Rewrites one cost value to another in the master costmap. Used for the rim
 // around the mowing areas (and inside exclusions): map_server paints it with
-// grid.edge_band_value, which the static layer turns into a cost just below
-// INSCRIBED_INFLATED_OBSTACLE; this layer lifts it to exactly 253. Planners and
+// grid.edge_band_value (60: drawn mid-grey, 152 in the costmap); this layer
+// lifts it to exactly INSCRIBED_INFLATED_OBSTACLE (253). Planners and
 // collision checkers then keep the robot CENTRE (GPS antenna) out of the rim but
 // let the footprint overhang into it - the recorded boundary is where the
 // antenna drove, the rim (half the mower's width) is where its body was.
@@ -23,7 +23,7 @@ public:
   bool isClearable() override { return false; }
 
 private:
-  unsigned char from_ = 251, to_ = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  unsigned char from_ = 152, to_ = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 };
 
 }  // namespace open_mower_next::costmap_layers
