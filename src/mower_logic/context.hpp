@@ -54,6 +54,7 @@ struct Params
   int max_dock_attempts = 3;
   double blade_spinup = 2.0;         // s between blade on and driving
   double resume_backtrack = 0.5;     // m re-mowed before a resume point
+  double resume_direct_distance = 0.3;  // m: robot this close to the pass -> no NavigateToPose (0 = always navigate)
   std::string dock_type = "openmower";
   std::string controller_id = "FollowPath";
   std::string goal_checker_id = "general_goal_checker";

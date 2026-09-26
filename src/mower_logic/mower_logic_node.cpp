@@ -35,6 +35,7 @@ int main(int argc, char ** argv)
   p.max_dock_attempts = static_cast<int>(node->declare_parameter("max_dock_attempts", p.max_dock_attempts));
   p.blade_spinup = node->declare_parameter("blade_spinup", p.blade_spinup);
   p.resume_backtrack = node->declare_parameter("resume_backtrack", p.resume_backtrack);
+  p.resume_direct_distance = node->declare_parameter("resume_direct_distance", p.resume_direct_distance);
   p.dock_type = node->declare_parameter("dock_type", p.dock_type);
   p.controller_id = node->declare_parameter("controller_id", p.controller_id);
   p.goal_checker_id = node->declare_parameter("goal_checker_id", p.goal_checker_id);

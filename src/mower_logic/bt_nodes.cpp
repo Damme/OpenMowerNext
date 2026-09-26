@@ -37,6 +37,14 @@ private:
   CtxPtr ctx_;
 };
 
+class IsTrue : public BT::ConditionNode
+{
+public:
+  IsTrue(const std::string & n, const BT::NodeConfig & c) : BT::ConditionNode(n, c) {}
+  static BT::PortsList providedPorts() { return {BT::InputPort<bool>("value")}; }
+  NodeStatus tick() override { return getInput<bool>("value").value_or(false) ? NodeStatus::SUCCESS : NodeStatus::FAILURE; }
+};
+
 class SetCommand : public BT::SyncActionNode
 {
 public:
@@ -105,7 +113,7 @@ public:
   static BT::PortsList providedPorts()
   {
     return {BT::OutputPort<nav_msgs::msg::Path>("path"), BT::OutputPort<geometry_msgs::msg::PoseStamped>("start"),
-            BT::OutputPort<size_t>("start_index")};
+            BT::OutputPort<size_t>("start_index"), BT::OutputPort<bool>("direct")};
   }
   NodeStatus tick() override
   {
@@ -119,15 +127,48 @@ public:
     }
     auto pass = m.currentPass(ctx_->params.resume_backtrack);
     if (!pass) return NodeStatus::FAILURE;
-    RCLCPP_INFO(ctx_->node->get_logger(), "Next: %s (%zu poses%s)", m.summary().c_str(), pass->path.poses.size(),
-                pass->is_outline ? ", outline" : "");
+    const bool direct = startNearRobot(*pass);
+    RCLCPP_INFO(ctx_->node->get_logger(), "Next: %s (%zu poses%s%s)", m.summary().c_str(), pass->path.poses.size(),
+                pass->is_outline ? ", outline" : "", direct ? ", from here" : "");
     setOutput("path", pass->path);
     setOutput("start", pass->path.poses.front());
     setOutput("start_index", pass->start_index);
+    setOutput("direct", direct);
     return NodeStatus::SUCCESS;
   }
 
 private:
+  // Robot already on the pass (paused by GPS loss / emergency, early end, or the
+  // next pass starts where the last one ended): start at the pose next to the
+  // robot and skip NavigateToPose - FTC aligns in place. The backtracked start
+  // can't be used here: it lies behind the robot and FTC is forward-only, so
+  // its carrot would stay gated (carrot_max_lag) and the robot would never move.
+  bool startNearRobot(Mission::Pass & pass) const
+  {
+    const double max_d = ctx_->params.resume_direct_distance;
+    if (max_d <= 0.0) return false;
+    const auto pose = ctx_->robotPose();
+    if (!pose) return false;
+    auto & poses = pass.path.poses;
+    const double search = ctx_->params.resume_backtrack + 1.0;  // m along the path
+    double best = max_d, along = 0.0;
+    std::optional<size_t> best_i;
+    for (size_t i = 0; i + 2 < poses.size() && along <= search; ++i) {  // keep >= 3 poses for FTC
+      const auto & q = poses[i].pose.position;
+      const double d = std::hypot(q.x - pose->pose.position.x, q.y - pose->pose.position.y);
+      if (d < best) {
+        best = d;
+        best_i = i;
+      }
+      const auto & n = poses[i + 1].pose.position;
+      along += std::hypot(n.x - q.x, n.y - q.y);
+    }
+    if (!best_i) return false;
+    poses.erase(poses.begin(), poses.begin() + static_cast<long>(*best_i));
+    pass.start_index += *best_i;
+    return true;
+  }
+
   bool plan(const std::string & area)
   {
     if (!ctx_->coverage_client->wait_for_service(std::chrono::seconds(2))) {
@@ -212,6 +253,7 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   addCheck(factory, "IsRaining", [ctx]() { return ctx->raining(); });
   addCheck(factory, "IsDocked", [ctx]() { return ctx->charging(); });
   addCheck(factory, "GpsOK", [ctx]() { return ctx->gpsOk(); });
+  factory.registerNodeType<IsTrue>("IsTrue");
   add<CommandIs>(factory, ctx, "CommandIs");
   add<SetCommand>(factory, ctx, "SetCommand");
   add<Hold>(factory, ctx, "Hold");

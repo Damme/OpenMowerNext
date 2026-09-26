@@ -79,10 +79,13 @@
   <!-- One pass: FAILURE only when the mission has no passes left. -->
   <BehaviorTree ID="MowPass">
     <Sequence>
-      <GetPass path="{pass_path}" start="{pass_start}" start_index="{pass_start_index}"/>
+      <GetPass path="{pass_path}" start="{pass_start}" start_index="{pass_start_index}" direct="{pass_direct}"/>
       <Fallback>
         <Sequence>
-          <NavigateToPose goal="{pass_start}"/>
+          <Fallback>
+            <IsTrue value="{pass_direct}"/>
+            <NavigateToPose goal="{pass_start}"/>
+          </Fallback>
           <FollowPass path="{pass_path}" start_index="{pass_start_index}"/>
         </Sequence>
         <PassFailed/>

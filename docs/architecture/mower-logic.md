@@ -24,6 +24,9 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
   (`controller_id`; FTC on Worx) and the blade on.
 - Progress is tracked along the pass, so a pause (GPS, emergency, charging) resumes where it stopped, a little
   (`resume_backtrack`) before the stop point.
+- If the robot is already within `resume_direct_distance` (0.3 m) of the pass (after a GPS or emergency pause, or when
+  the next pass starts where the last one ended), it skips `navigate_to_pose` and starts from the pose next to it.
+  FTC aligns in place. The backtracked start can't be used then: it lies behind the robot and FTC is forward-only.
 - A pass that fails `max_pass_attempts` times is skipped.
 
 Only `FollowPass` switches the blade on (after `blade_spinup`). It switches it off on success, failure and halt,
