@@ -6,6 +6,7 @@
             <plugin>open_mower_next/WorxSystem</plugin>
             <param name="transport">$(arg worx_transport)</param>
             <param name="spi_device">${worx['spi_device']}</param>
+            <param name="motors_enabled">$(optenv OM_WORX_MOTORS_ENABLED true)</param>
             <param name="spi_speed_hz">${worx['spi_speed_hz']}</param>
             <param name="wheel_radius">${robot['wheel']['radius']}</param>
             <param name="wheel_ticks_per_m">${robot['wheel']['ticks_per_m']}</param>

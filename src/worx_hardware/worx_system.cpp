@@ -68,6 +68,9 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
   try {
     cfg_.transport = param(info, "transport", cfg_.transport);
     cfg_.spi_device = param(info, "spi_device", cfg_.spi_device);
+    // false: never enable the motors (bench / first contact with a board);
+    // the /worx/motors_enabled service can still switch them on.
+    motors_enabled_ = paramB(info, "motors_enabled", true);
     cfg_.spi_speed_hz = static_cast<int>(paramD(info, "spi_speed_hz", cfg_.spi_speed_hz));
     cfg_.left_joint = param(info, "left_joint", cfg_.left_joint);
     cfg_.right_joint = param(info, "right_joint", cfg_.right_joint);
