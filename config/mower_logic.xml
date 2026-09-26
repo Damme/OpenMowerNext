@@ -4,6 +4,9 @@
   every tick, a higher branch halts a lower one):
     emergency > charging > rain > mowing (paused while GPS is bad) > go home > idle.
   The blade is only ever on inside FollowPass.
+  A bump (worx_hardware: firmware BlockForward / Collision) stops the transit or
+  pass; MowPass then backs up and continues the pass beyond the obstacle, which
+  is marked in the costmaps (~/bump_obstacles).
 -->
 <root BTCPP_format="4" main_tree_to_execute="Main">
 
@@ -87,6 +90,11 @@
             <NavigateToPose goal="{pass_start}"/>
           </Fallback>
           <FollowPass path="{pass_path}" start_index="{pass_start_index}"/>
+        </Sequence>
+        <Sequence name="bump_recovery">
+          <TakeBump/>
+          <BackUp/>
+          <SkipPastBump/>
         </Sequence>
         <PassFailed/>
       </Fallback>

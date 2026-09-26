@@ -46,6 +46,11 @@ public:
   // Returns true when the pass was skipped after too many failures.
   bool passFailed(int max_attempts);
   void skipPass();
+  // Bumped into an obstacle at (x, y) while on the current pass: continue at
+  // the first pose after it that is more than clearance_m away, without the
+  // resume backtrack. Skips the pass after max_bumps bumps on it.
+  // Returns false when the rest of the pass was skipped.
+  bool skipPastPoint(double x, double y, double clearance_m, int max_bumps);
 
   std::string summary() const;
   size_t areaCount() const;
@@ -57,6 +62,8 @@ private:
   bool planned_ = false;
   size_t area_ = 0, pass_ = 0, pose_ = 0;
   int attempts_ = 0;
+  int bumps_ = 0;               // on the current pass
+  bool no_backtrack_ = false;   // next resume starts exactly at pose_
   bool active_ = false;
 };
 

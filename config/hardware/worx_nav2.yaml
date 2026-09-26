@@ -79,14 +79,28 @@ local_costmap:
     ros__parameters:
       footprint: "[[0.47, 0.195], [0.47, -0.195], [-0.11, -0.195], [-0.11, 0.195]]"
       # Map grid (map_server: unknown outside the areas, exclusions lethal,
-      # grid.edge_band a passable high-cost rim) and inflation so transits keep clear.
-      plugins: ["static_layer", "inflation_layer"]
+      # grid.edge_band a passable high-cost rim), obstacles found by bumping
+      # (mower_logic ~/bump_obstacles) and inflation so transits keep clear.
+      plugins: ["static_layer", "bump_layer", "inflation_layer"]
       track_unknown_space: true
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: "/map_grid"
         trinary_costmap: false  # keep the edge band's cost (default maps < 100 to free)
+      bump_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        footprint_clearing_enabled: false
+        observation_sources: bumps
+        bumps:
+          topic: /mower_logic/bump_obstacles
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -1.0
+          max_obstacle_height: 1.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 1000.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.6       # > circumscribed radius 0.51
@@ -96,14 +110,28 @@ global_costmap:
     ros__parameters:
       footprint: "[[0.47, 0.195], [0.47, -0.195], [-0.11, -0.195], [-0.11, 0.195]]"
       # Map grid (map_server: unknown outside the areas, exclusions lethal,
-      # grid.edge_band a passable high-cost rim) and inflation so transits keep clear.
-      plugins: ["static_layer", "inflation_layer"]
+      # grid.edge_band a passable high-cost rim), obstacles found by bumping
+      # (mower_logic ~/bump_obstacles) and inflation so transits keep clear.
+      plugins: ["static_layer", "bump_layer", "inflation_layer"]
       track_unknown_space: true
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: "/map_grid"
         trinary_costmap: false  # keep the edge band's cost (default maps < 100 to free)
+      bump_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        footprint_clearing_enabled: false
+        observation_sources: bumps
+        bumps:
+          topic: /mower_logic/bump_obstacles
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -1.0
+          max_obstacle_height: 1.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 1000.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.6       # > circumscribed radius 0.51

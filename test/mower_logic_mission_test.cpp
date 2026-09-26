@@ -77,3 +77,36 @@ TEST(Mission, SkipAreaEndsMission)
   EXPECT_FALSE(m.active());
   EXPECT_EQ(m.summary(), "no mission");
 }
+
+TEST(Mission, SkipsPastBumpWithoutBacktrack)
+{
+  Mission m;
+  m.begin({"a"});
+  m.setPlan({straight(100, 0.1), straight(10)});
+  m.setPoseIndex(30);  // robot at x = 3.0, obstacle 0.55 m ahead
+  ASSERT_TRUE(m.skipPastPoint(3.55, 0.0, 0.7, 4));
+  auto p = m.currentPass(0.5);
+  ASSERT_TRUE(p);
+  EXPECT_EQ(p->start_index, 43u);  // first pose > 0.7 m past the obstacle (x = 4.3), no backtrack
+  EXPECT_NEAR(p->path.poses.front().pose.position.x, 4.3, 1e-9);
+  m.setPoseIndex(50);  // progress again: normal backtrack
+  EXPECT_EQ(m.currentPass(0.5)->start_index, 45u);
+}
+
+TEST(Mission, BumpAtPassEndOrTooOftenSkipsPass)
+{
+  Mission m;
+  m.begin({"a"});
+  m.setPlan({straight(100, 0.1), straight(10)});
+  m.setPoseIndex(95);
+  EXPECT_FALSE(m.skipPastPoint(9.8, 0.0, 0.7, 4));  // nothing left past the obstacle
+  EXPECT_EQ(m.currentPass(0.0)->path.poses.size(), 10u);  // next pass
+
+  Mission m2;
+  m2.begin({"a"});
+  m2.setPlan({straight(100, 0.1), straight(10)});
+  EXPECT_TRUE(m2.skipPastPoint(1.0, 0.0, 0.3, 2));
+  EXPECT_TRUE(m2.skipPastPoint(2.0, 0.0, 0.3, 2));
+  EXPECT_FALSE(m2.skipPastPoint(3.0, 0.0, 0.3, 2));  // third bump on the pass
+  EXPECT_EQ(m2.currentPass(0.0)->path.poses.size(), 10u);
+}

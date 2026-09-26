@@ -14,6 +14,8 @@ void Mission::begin(const std::vector<std::string> & area_ids)
   planned_ = false;
   area_ = pass_ = pose_ = 0;
   attempts_ = 0;
+  bumps_ = 0;
+  no_backtrack_ = false;
   active_ = !areas_.empty();
 }
 
@@ -25,6 +27,8 @@ void Mission::clear()
   planned_ = false;
   area_ = pass_ = pose_ = 0;
   attempts_ = 0;
+  bumps_ = 0;
+  no_backtrack_ = false;
   active_ = false;
 }
 
@@ -48,6 +52,8 @@ void Mission::setPlan(const std::vector<open_mower_next::msg::CoveragePath> & pa
   planned_ = true;
   pass_ = pose_ = 0;
   attempts_ = 0;
+  bumps_ = 0;
+  no_backtrack_ = false;
 }
 
 void Mission::skipArea()
@@ -58,6 +64,8 @@ void Mission::skipArea()
   planned_ = false;
   pass_ = pose_ = 0;
   attempts_ = 0;
+  bumps_ = 0;
+  no_backtrack_ = false;
   if (area_ >= areas_.size()) active_ = false;
 }
 
@@ -70,7 +78,7 @@ std::optional<Mission::Pass> Mission::currentPass(double resume_backtrack_m) con
   // Back up along the path a little so the resume overlaps the stop point.
   size_t start = std::min(pose_, full.poses.size() - 2);
   double back = 0.0;
-  while (start > 0 && back < resume_backtrack_m) {
+  while (!no_backtrack_ && start > 0 && back < resume_backtrack_m) {
     const auto & a = full.poses[start].pose.position;
     const auto & b = full.poses[start - 1].pose.position;
     back += std::hypot(a.x - b.x, a.y - b.y);
@@ -89,7 +97,10 @@ std::optional<Mission::Pass> Mission::currentPass(double resume_backtrack_m) con
 void Mission::setPoseIndex(size_t absolute_index)
 {
   std::lock_guard<std::mutex> l(mutex_);
-  if (absolute_index > pose_) pose_ = absolute_index;
+  if (absolute_index > pose_) {
+    pose_ = absolute_index;
+    no_backtrack_ = false;
+  }
 }
 
 size_t Mission::poseIndex() const
@@ -104,6 +115,8 @@ void Mission::passDone()
   ++pass_;
   pose_ = 0;
   attempts_ = 0;
+  bumps_ = 0;
+  no_backtrack_ = false;
   if (pass_ >= passes_.size()) {
     ++area_;
     passes_.clear();
@@ -142,6 +155,30 @@ std::string Mission::summary() const
   if (planned_) s << ", pass " << (pass_ + 1) << "/" << passes_.size() << ", pose " << pose_;
   if (attempts_) s << ", attempt " << (attempts_ + 1);
   return s.str();
+}
+
+bool Mission::skipPastPoint(double x, double y, double clearance_m, int max_bumps)
+{
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (!active_ || !planned_ || pass_ >= passes_.size()) return false;
+    const auto & poses = passes_[pass_].path.poses;
+    if (++bumps_ <= max_bumps) {
+      bool near = false;
+      for (size_t i = pose_; i + 2 < poses.size(); ++i) {
+        const auto & q = poses[i].pose.position;
+        if (std::hypot(q.x - x, q.y - y) <= clearance_m) {
+          near = true;
+        } else if (near) {
+          pose_ = i;
+          no_backtrack_ = true;
+          return true;
+        }
+      }
+    }
+  }
+  passDone();  // obstacle at the end of the pass, or bumped too often
+  return false;
 }
 
 }  // namespace open_mower_next::mower_logic

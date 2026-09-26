@@ -36,6 +36,12 @@ int main(int argc, char ** argv)
   p.blade_spinup = node->declare_parameter("blade_spinup", p.blade_spinup);
   p.resume_backtrack = node->declare_parameter("resume_backtrack", p.resume_backtrack);
   p.resume_direct_distance = node->declare_parameter("resume_direct_distance", p.resume_direct_distance);
+  p.bump_front_offset = node->declare_parameter("bump_front_offset", p.bump_front_offset);
+  p.bump_obstacle_radius = node->declare_parameter("bump_obstacle_radius", p.bump_obstacle_radius);
+  p.bump_clearance = node->declare_parameter("bump_clearance", p.bump_clearance);
+  p.bump_backup = node->declare_parameter("bump_backup", p.bump_backup);
+  p.bump_backup_speed = node->declare_parameter("bump_backup_speed", p.bump_backup_speed);
+  p.max_bumps_per_pass = static_cast<int>(node->declare_parameter("max_bumps_per_pass", p.max_bumps_per_pass));
   p.dock_type = node->declare_parameter("dock_type", p.dock_type);
   p.controller_id = node->declare_parameter("controller_id", p.controller_id);
   p.goal_checker_id = node->declare_parameter("goal_checker_id", p.goal_checker_id);

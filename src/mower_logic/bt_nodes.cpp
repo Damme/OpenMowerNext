@@ -96,6 +96,7 @@ public:
       return NodeStatus::FAILURE;
     }
     RCLCPP_INFO(ctx_->node->get_logger(), "Starting mission over %zu areas", areas.size());
+    ctx_->clearBumpObstacles();
     ctx_->mission.begin(areas);
     return NodeStatus::SUCCESS;
   }
@@ -214,6 +215,48 @@ private:
   CtxPtr ctx_;
 };
 
+// SUCCESS when a bump interrupted the pass or transit (consumes it).
+class TakeBump : public BT::ConditionNode
+{
+public:
+  TakeBump(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx) : BT::ConditionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  NodeStatus tick() override
+  {
+    ctx_->setBlade(false);
+    const auto b = ctx_->takeBump();
+    if (!b) return NodeStatus::FAILURE;
+    ctx_->setBranch("BUMP_RECOVERY");
+    return NodeStatus::SUCCESS;
+  }
+
+private:
+  CtxPtr ctx_;
+};
+
+// After a bump on a pass: continue the pass beyond the obstacle (the transit
+// there plans around the marked obstacle). A bump during transit just retries.
+class SkipPastBump : public BT::SyncActionNode
+{
+public:
+  SkipPastBump(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx) : BT::SyncActionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  NodeStatus tick() override
+  {
+    ctx_->setBranch("MOWING");
+    const auto b = ctx_->lastBump();
+    if (!ctx_->bump_on_pass.exchange(false) || !b || !std::isfinite(b->x)) return NodeStatus::SUCCESS;
+    const bool on_pass =
+      ctx_->mission.skipPastPoint(b->x, b->y, ctx_->params.bump_clearance, ctx_->params.max_bumps_per_pass);
+    RCLCPP_WARN(ctx_->node->get_logger(), on_pass ? "Continuing past the obstacle: %s" : "Rest of the pass skipped: %s",
+                ctx_->mission.summary().c_str());
+    return NodeStatus::SUCCESS;
+  }
+
+private:
+  CtxPtr ctx_;
+};
+
 class MissionFinished : public BT::SyncActionNode
 {
 public:
@@ -261,6 +304,9 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   add<GetPass>(factory, ctx, "GetPass");
   add<PassFailed>(factory, ctx, "PassFailed");
   add<MissionFinished>(factory, ctx, "MissionFinished");
+  add<TakeBump>(factory, ctx, "TakeBump");
+  add<SkipPastBump>(factory, ctx, "SkipPastBump");
+  add<BackUp>(factory, ctx, "BackUp");
   add<NavigateToPose>(factory, ctx, "NavigateToPose");
   add<FollowPass>(factory, ctx, "FollowPass");
   add<Undock>(factory, ctx, "Undock");

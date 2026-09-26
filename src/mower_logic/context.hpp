@@ -13,6 +13,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <tf2_ros/buffer.h>
@@ -24,6 +25,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace open_mower_next::mower_logic
 {
@@ -55,6 +57,13 @@ struct Params
   double blade_spinup = 2.0;         // s between blade on and driving
   double resume_backtrack = 0.5;     // m re-mowed before a resume point
   double resume_direct_distance = 0.3;  // m: robot this close to the pass -> no NavigateToPose (0 = always navigate)
+  // Bumps (WorxStatus.bumps): back up, mark an obstacle for Nav2, continue past it.
+  double bump_front_offset = 0.55;   // m from base_link to the obstacle (footprint front 0.47 + margin)
+  double bump_obstacle_radius = 0.25;
+  double bump_clearance = 0.7;       // m: pass continues at the first pose this far from the obstacle
+  double bump_backup = 0.3;          // m reversed after a bump
+  double bump_backup_speed = 0.1;
+  int max_bumps_per_pass = 4;
   std::string dock_type = "openmower";
   std::string controller_id = "FollowPath";
   std::string goal_checker_id = "general_goal_checker";
@@ -65,6 +74,8 @@ struct Params
 class Context
 {
 public:
+  using Clock = std::chrono::steady_clock;
+
   Context(rclcpp::Node::SharedPtr node, Params params);
 
   rclcpp::Node::SharedPtr node;
@@ -86,6 +97,19 @@ public:
   std::vector<std::string> operationAreas() const;
   std::optional<geometry_msgs::msg::PoseStamped> robotPose() const;
 
+  // Bumps. Each one adds an obstacle point (published for the costmaps).
+  struct Bump
+  {
+    Clock::time_point time;
+    double x = 0, y = 0;  // obstacle position in map
+  };
+  std::optional<Bump> lastBump() const;
+  bool bumpedSince(Clock::time_point t) const;
+  // The bump a recovery has to handle (newer than the last one handled).
+  std::optional<Bump> takeBump();
+  void clearBumpObstacles();
+  std::atomic<bool> bump_on_pass{false};  // the last interrupted action was FollowPass
+
   void setBlade(bool on);
   rclcpp::Client<open_mower_next::srv::AreaCoverage>::SharedPtr coverage_client;
 
@@ -93,7 +117,8 @@ public:
   void setBranch(const std::string & b);
 
 private:
-  using Clock = std::chrono::steady_clock;
+  void onBump();
+  void publishObstacles();
   mutable std::mutex mutex_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   double battery_ = NAN;
@@ -104,6 +129,12 @@ private:
   bool needs_charging_ = false;
   open_mower_next::msg::Map map_;
   std::string branch_;
+  std::optional<uint32_t> bumps_seen_;
+  std::optional<Bump> last_bump_;
+  Clock::time_point handled_bump_{};
+  std::vector<std::pair<double, double>> obstacles_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
+  rclcpp::TimerBase::SharedPtr obstacle_timer_;
   bool blade_on_ = false;
 
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_sub_;

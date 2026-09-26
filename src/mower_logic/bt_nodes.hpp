@@ -8,6 +8,7 @@
 #include "open_mower_next/action/dock_robot_nearest.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
+#include <nav2_msgs/action/back_up.hpp>
 #include <nav2_msgs/action/follow_path.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <nav2_msgs/action/undock_robot.hpp>
@@ -48,16 +49,24 @@ protected:
   virtual BT::NodeStatus whileRunning() { return BT::NodeStatus::RUNNING; }
   virtual void onCancel() {}
   virtual BT::NodeStatus beforeSend() { return BT::NodeStatus::SUCCESS; }  // RUNNING = not yet
+  // Drive actions stop on a bump; the tree's bump recovery takes over.
+  virtual bool abortOnBump() const { return false; }
 
   BT::NodeStatus onStart() override
   {
     sent_ = false;
     state_.reset();
+    started_ = Context::Clock::now();
     return send();
   }
 
   BT::NodeStatus onRunning() override
   {
+    if (abortOnBump() && ctx_->bumpedSince(started_)) {
+      RCLCPP_WARN(ctx_->node->get_logger(), "%s: bumped - stopping", server_.c_str());
+      onHalted();
+      return BT::NodeStatus::FAILURE;
+    }
     if (!sent_) return send();
     std::shared_ptr<State> s = state_;
     {
@@ -130,6 +139,7 @@ private:
   typename rclcpp_action::Client<ActionT>::SharedPtr client_;
   std::shared_ptr<State> state_;
   bool sent_ = false;
+  Context::Clock::time_point started_{};
 };
 
 // ---- actions ------------------------------------------------------------------------
@@ -142,6 +152,8 @@ public:
   static BT::PortsList providedPorts() { return {BT::InputPort<geometry_msgs::msg::PoseStamped>("goal")}; }
 
 protected:
+  bool abortOnBump() const override { return true; }
+  void onCancel() override { ctx_->bump_on_pass = false; }
   bool makeGoal(Goal & g) override
   {
     auto goal = getInput<geometry_msgs::msg::PoseStamped>("goal");
@@ -163,6 +175,7 @@ public:
   }
 
 protected:
+  bool abortOnBump() const override { return true; }
   BT::NodeStatus beforeSend() override
   {
     // Blade on first, drive after the spin-up time.
@@ -226,7 +239,11 @@ protected:
     ctx_->mission.passDone();
     return BT::NodeStatus::SUCCESS;
   }
-  void onCancel() override { bladeOff(); }
+  void onCancel() override
+  {
+    bladeOff();
+    ctx_->bump_on_pass = true;
+  }
 
 private:
   void bladeOff()
@@ -238,6 +255,24 @@ private:
   nav_msgs::msg::Path path_;
   size_t start_index_ = 0, search_from_ = 0;
   std::optional<std::chrono::steady_clock::time_point> blade_since_;
+};
+
+// Reverses a little after a bump (the local costmap checks behind the robot).
+class BackUp : public RosAction<nav2_msgs::action::BackUp>
+{
+public:
+  BackUp(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
+  : RosAction(n, c, std::move(ctx), "backup") {}
+  static BT::PortsList providedPorts() { return {}; }
+
+protected:
+  bool makeGoal(Goal & g) override
+  {
+    g.target.x = ctx_->params.bump_backup;
+    g.speed = ctx_->params.bump_backup_speed;
+    g.time_allowance = rclcpp::Duration::from_seconds(3.0 * ctx_->params.bump_backup / ctx_->params.bump_backup_speed);
+    return true;
+  }
 };
 
 class Undock : public RosAction<nav2_msgs::action::UndockRobot>
