@@ -43,14 +43,18 @@ public:
   void setPoseIndex(size_t absolute_index);
   size_t poseIndex() const;
   void passDone();
-  // Returns true when the pass was skipped after too many failures.
-  bool passFailed(int max_attempts);
+  // Returns true when the pass was skipped after too many failures. A failed
+  // continuation past an obstacle (no reachable start there, e.g. a dead end
+  // behind the obstacle) moves further along the pass instead - 1, 2, 4, 8,
+  // 16 m - and only then counts as a failure of the pass.
+  bool passFailed(int max_attempts, double skip_step_m = 1.0, int max_continuation_steps = 5);
   void skipPass();
   // Bumped into an obstacle at (x, y) while on the current pass: continue at
   // the first pose after it that is more than clearance_m away, without the
   // resume backtrack. Skips the pass after max_bumps bumps on it.
   // Returns false when the rest of the pass was skipped.
-  bool skipPastPoint(double x, double y, double clearance_m, int max_bumps);
+  // count_bump false: a planned skip around a known obstacle (no bump).
+  bool skipPastPoint(double x, double y, double clearance_m, int max_bumps, bool count_bump = true);
 
   std::string summary() const;
   size_t areaCount() const;
@@ -63,6 +67,7 @@ private:
   size_t area_ = 0, pass_ = 0, pose_ = 0;
   int attempts_ = 0;
   int bumps_ = 0;               // on the current pass
+  int continuation_steps_ = 0;  // unreachable continuation: skips so far
   bool no_backtrack_ = false;   // next resume starts exactly at pose_
   bool active_ = false;
 };

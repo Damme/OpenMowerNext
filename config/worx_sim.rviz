@@ -32,6 +32,27 @@ Visualization Manager:
         Durability Policy: Transient Local
         Reliability Policy: Reliable
         Depth: 5
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Virtual obstacles (sim)
+      Enabled: true
+      Topic:
+        Value: /worx_sim/obstacles
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        Depth: 5
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Bump marks
+      Enabled: true
+      Style: Squares
+      Size (m): 0.05
+      Color Transformer: FlatColor
+      Color: 255; 120; 0
+      Alpha: 0.5
+      Topic:
+        Value: /mower_logic/bump_obstacles
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        Depth: 5
     - Class: rviz_default_plugins/Path
       Name: Transit plan
       Enabled: true

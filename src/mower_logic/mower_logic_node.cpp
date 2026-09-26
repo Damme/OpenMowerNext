@@ -37,15 +37,22 @@ int main(int argc, char ** argv)
   p.resume_backtrack = node->declare_parameter("resume_backtrack", p.resume_backtrack);
   p.resume_direct_distance = node->declare_parameter("resume_direct_distance", p.resume_direct_distance);
   p.bump_front_offset = node->declare_parameter("bump_front_offset", p.bump_front_offset);
-  p.bump_obstacle_depth = node->declare_parameter("bump_obstacle_depth", p.bump_obstacle_depth);
-  p.bump_obstacle_width = node->declare_parameter("bump_obstacle_width", p.bump_obstacle_width);
+  p.bump_obstacle_radius = node->declare_parameter("bump_obstacle_radius", p.bump_obstacle_radius);
+  p.bump_keep_free = node->declare_parameter("bump_keep_free", p.bump_keep_free);
+  p.footprint_front = node->declare_parameter("footprint_front", p.footprint_front);
+  p.footprint_rear = node->declare_parameter("footprint_rear", p.footprint_rear);
+  p.footprint_half_width = node->declare_parameter("footprint_half_width", p.footprint_half_width);
   p.bump_clearance = node->declare_parameter("bump_clearance", p.bump_clearance);
   p.bump_backup = node->declare_parameter("bump_backup", p.bump_backup);
   p.bump_backup_speed = node->declare_parameter("bump_backup_speed", p.bump_backup_speed);
   p.max_bumps_per_pass = static_cast<int>(node->declare_parameter("max_bumps_per_pass", p.max_bumps_per_pass));
+  p.bump_merge_distance = node->declare_parameter("bump_merge_distance", p.bump_merge_distance);
+  p.bump_lookahead = node->declare_parameter("bump_lookahead", p.bump_lookahead);
+  p.bump_avoid_radius = node->declare_parameter("bump_avoid_radius", p.bump_avoid_radius);
   p.max_skipped_passes_in_row =
     static_cast<int>(node->declare_parameter("max_skipped_passes_in_row", p.max_skipped_passes_in_row));
   p.dock_type = node->declare_parameter("dock_type", p.dock_type);
+  p.undock_distance = node->declare_parameter("undock_distance", p.undock_distance);
   p.transit_jitter = node->declare_parameter("transit_jitter", p.transit_jitter);
   p.transit_jitter_min_distance = node->declare_parameter("transit_jitter_min_distance", p.transit_jitter_min_distance);
   p.transit_via_margin = node->declare_parameter("transit_via_margin", p.transit_via_margin);

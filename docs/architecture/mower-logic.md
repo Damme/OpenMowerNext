@@ -24,14 +24,19 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
   and the blade on.
 - The transit uses `navigate_through_poses` with `config/behavior_trees/transit_to_pass.xml`: a position-only goal
   (FTC turns to the pass heading in place), replanning only when the path becomes invalid, and on legs longer than
-  `transit_jitter_min_distance` (4 m) a random via point up to `transit_jitter` (0.6 m) to the side, at least
-  `transit_via_margin` (0.8 m) from area edges and exclusions. Repeated trips then don't wear one track into the lawn.
-- On Worx the planner (Smac lattice) checks the real footprint, and the inflation around exclusions and the area
-  edges keeps transits away from them where there is room.
-- A bump (worx_hardware) stops the transit or pass: back up `bump_backup` (0.3 m), mark the obstacle
-  (`~/bump_obstacles` → costmaps: a strip across the whole front, since the sensor doesn't say where it was hit;
-  kept clear of the robot's own footprint including the inflation), continue the pass at the first pose
-  `bump_clearance` (1.2 m) past it. More than `max_bumps_per_pass` bumps, or an obstacle at the end of a pass,
+  `transit_jitter_min_distance` (4 m) across open lawn (the straight line keeps `transit_via_margin`, 1.2 m, from
+  every edge) a random via point up to `transit_jitter` (0.35 m) to the side. Repeated trips then don't wear one
+  track into the lawn; in corridors the transit goes direct (a via point there made an S-bend).
+- Recorded boundaries are where the GPS antenna (about the robot centre) drove; the body overhung them by half the
+  mower's width, so that rim is known to be clear. On Worx the planner (Smac lattice, real footprint) keeps the
+  centre inside the line and the footprint inside line + rim (map_server `grid.edge_band`, `RimCostLayer`),
+  nothing beyond. The inflation around exclusions and area edges keeps transits well inside where there is room.
+- A bump (worx_hardware) stops the transit or pass: back up `bump_backup` (0.3 m; if Nav2 refuses at the rim,
+  straight back the way it came without costmap checks), mark the obstacle
+  (`~/bump_obstacles` → the planner's costmap: discs at the front-left corner, centre and front-right corner, since
+  the sensor doesn't say where it was hit; never under the robot's own footprint, never outside the areas), continue the pass at the first pose
+  `bump_clearance` (0.9 m) past it. Later loops/passes stop before a known obstacle (`bump_lookahead`) and go
+  around it without touching it; repeated bumps at one spot refresh it (`bump_merge_distance`). More than `max_bumps_per_pass` bumps, or an obstacle at the end of a pass,
   skips the rest of the pass.
 - Progress is tracked along the pass, so a pause (GPS, emergency, charging) resumes where it stopped, a little
   (`resume_backtrack`) before the stop point.

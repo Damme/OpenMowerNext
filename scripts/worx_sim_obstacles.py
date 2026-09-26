@@ -14,6 +14,7 @@ from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from std_srvs.srv import SetBool
 import tf2_ros
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 def yaw_of(q):
@@ -33,6 +34,9 @@ class SimObstacles(Node):
         tf2_ros.TransformListener(self.tf, self)
         self.client = self.create_client(SetBool, '/worx/fake/set_collision')
         self.create_timer(0.02, self.tick)
+        # Draw them in rviz (they are not in the map: the robot only finds them by bumping).
+        self.marker_pub = self.create_publisher(MarkerArray, '/worx_sim/obstacles', 1)
+        self.create_timer(1.0, self.publish_markers)
         self.get_logger().info(f'{len(self.obstacles)} virtual obstacles: {self.obstacles}')
 
     @staticmethod
@@ -48,6 +52,23 @@ class SimObstacles(Node):
                     return SetParametersResult(successful=False, reason=str(e))
                 self.get_logger().info(f'virtual obstacles: {self.obstacles}')
         return SetParametersResult(successful=True)
+
+    def publish_markers(self):
+        arr = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        arr.markers.append(clear)
+        for i, (x, y, r) in enumerate(self.obstacles):
+            m = Marker()
+            m.header.frame_id = 'map'
+            m.ns, m.id, m.type = 'virtual_obstacles', i, Marker.CYLINDER
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = x, y, 0.15
+            m.pose.orientation.w = 1.0
+            m.scale.x = m.scale.y = 2 * r
+            m.scale.z = 0.3
+            m.color.r, m.color.g, m.color.b, m.color.a = 0.9, 0.1, 0.9, 0.9
+            arr.markers.append(m)
+        self.marker_pub.publish(arr)
 
     def tick(self):
         try:

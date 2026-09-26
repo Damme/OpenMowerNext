@@ -161,11 +161,25 @@ protected:
     auto goal = getInput<geometry_msgs::msg::PoseStamped>("goal");
     if (!goal) return false;
     g.poses.clear();
-    if (auto via = ctx_->transitVia(goal.value())) {
+    auto target = goal.value();
+    std::optional<geometry_msgs::msg::PoseStamped> from = ctx_->robotPose();
+    if (auto via = ctx_->transitVia(target)) {
       RCLCPP_INFO(ctx_->node->get_logger(), "Transit via (%.2f, %.2f)", via->pose.position.x, via->pose.position.y);
       g.poses.push_back(*via);
+      from = via;
     }
-    g.poses.push_back(goal.value());
+    // The transit only has to reach the position (FTC turns to the pass heading
+    // in place). Demanding the pass heading made the lattice planner search for
+    // an exact arrival heading next to the edge and run out of iterations; arrive
+    // heading the way we came instead.
+    if (from) {
+      const double yaw = std::atan2(target.pose.position.y - from->pose.position.y,
+                                    target.pose.position.x - from->pose.position.x);
+      target.pose.orientation.x = target.pose.orientation.y = 0.0;
+      target.pose.orientation.z = std::sin(yaw / 2);
+      target.pose.orientation.w = std::cos(yaw / 2);
+    }
+    g.poses.push_back(target);
     g.behavior_tree = ctx_->params.transit_bt;
     return true;
   }
@@ -226,6 +240,24 @@ protected:
       if (best < 1.0) {
         search_from_ = best_i;
         ctx_->mission.setPoseIndex(start_index_ + best_i);
+      }
+    }
+    // FTC follows the pass and ignores the costmap: stop before a known bump
+    // obstacle instead of hitting it again (outline loops pass it repeatedly).
+    double along = 0.0;
+    for (size_t i = search_from_; i < path_.poses.size() && along <= ctx_->params.bump_lookahead; ++i) {
+      const auto & q = path_.poses[i].pose.position;
+      if (auto o = ctx_->knownObstacleNear(q.x, q.y, ctx_->params.bump_avoid_radius)) {
+        RCLCPP_INFO(ctx_->node->get_logger(), "Known obstacle ahead at (%.2f, %.2f) - going around it", o->x, o->y);
+        ctx_->skip_target = o;
+        ctx_->skip_counts_as_bump = false;
+        ctx_->avoiding_known_obstacle = true;
+        onHalted();
+        return BT::NodeStatus::FAILURE;
+      }
+      if (i + 1 < path_.poses.size()) {
+        const auto & n = path_.poses[i + 1].pose.position;
+        along += std::hypot(n.x - q.x, n.y - q.y);
       }
     }
     return BT::NodeStatus::RUNNING;

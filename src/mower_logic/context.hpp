@@ -15,6 +15,7 @@
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <tf2_ros/buffer.h>
@@ -60,25 +61,35 @@ struct Params
   double resume_backtrack = 0.5;     // m re-mowed before a resume point
   double resume_direct_distance = 0.3;  // m: robot this close to the pass -> no transit (0 = always transit)
   // Bumps (WorxStatus.bumps): back up, mark an obstacle for Nav2, continue past it.
-  // The sensor doesn't say where on the front it was hit, so a strip across the
-  // whole front is marked. The costmap inflates it by the inscribed radius
-  // (0.195 m, cost 253), which Smac treats as a collision for the footprint:
-  // its near edge must stay >= front edge (0.47) + 0.195 ahead of base_link, or
-  // every plan fails with "Start occupied". 0.8 +- 0.1 -> keep-out from 0.505 m.
-  double bump_front_offset = 0.8;    // m from base_link to the strip centre
-  double bump_obstacle_depth = 0.2;  // m along the heading
-  double bump_obstacle_width = 0.7;  // m across (body 0.39 + both front corners)
-  double bump_clearance = 1.2;       // m: pass continues at the first pose this far from the strip centre
+  // A bump marks the contact area: three discs along the front (left corner,
+  // centre, right corner) - the sensor doesn't say where it was hit, and when
+  // turning it is often a corner. Points outside the areas are dropped.
+  double bump_front_offset = 0.62;   // m from base_link to the disc centres (front edge 0.47)
+  double bump_obstacle_radius = 0.18;
+  // Never mark cells under the robot's current footprint (+ margin): with the
+  // footprint inside an obstacle nothing can move ("Start occupied", back-up
+  // refused) - a slow Digital report while turning put marks under the robot.
+  double footprint_front = 0.47, footprint_rear = 0.11, footprint_half_width = 0.195;
+  double bump_keep_free = 0.1;       // m around the footprint
+  double bump_clearance = 0.9;       // m: pass continues at the first pose this far from the disc centre
   double bump_backup = 0.3;          // m reversed after a bump
   double bump_backup_speed = 0.1;
   int max_bumps_per_pass = 4;
+  // Known bump obstacles are avoided on later passes/loops before touching them:
+  // the pass is checked this far ahead of the robot.
+  double bump_merge_distance = 0.4;  // m: a bump this close to a known obstacle replaces it
+  double bump_lookahead = 1.0;       // m along the pass
+  double bump_avoid_radius = 0.5;    // m from a disc centre (radius + half body + margin)
   int max_skipped_passes_in_row = 3; // then stop the mission and go home (navigation keeps failing)
   std::string dock_type = "openmower";
+  double undock_distance = 1.5;      // m from the dock pose: below this the robot counts as docked
   std::string transit_bt;            // navigate_through_poses tree for transits to a pass (empty = bt_navigator default)
   // Random via point on longer transits so repeated trips don't wear one track into the lawn.
-  double transit_jitter = 0.6;       // m: max lateral offset of the via point (0 = off)
+  double transit_jitter = 0.35;      // m: max lateral offset of the via point (0 = off)
   double transit_jitter_min_distance = 4.0;  // m: shorter transits go direct
-  double transit_via_margin = 0.8;   // m: via point clearance from area edges and exclusions
+  // Only in open lawn: the via point AND the straight line robot->goal keep this
+  // clearance (a via point in a corridor made an S-bend through it).
+  double transit_via_margin = 1.2;   // m
   std::string controller_id = "FollowPath";
   std::string goal_checker_id = "general_goal_checker";
   std::string progress_checker_id = "";  // empty = controller_server default
@@ -106,6 +117,10 @@ public:
   // ---- inputs ----
   double batteryFraction() const;
   bool charging() const;   // charger present
+  // On the charger or still within undock_distance of a docking station (an
+  // undock that aborted halfway leaves the robot off the charger but in the dock
+  // entrance, outside the areas: nothing can be planned from there).
+  bool atDock() const;
   bool emergency() const;
   // Clears the latched emergency if nothing still demands it; the message says why not.
   bool clearEmergency(std::string & message);
@@ -121,7 +136,7 @@ public:
   struct Bump
   {
     Clock::time_point time;
-    double x = 0, y = 0;  // obstacle (strip centre) in map
+    double x = 0, y = 0;  // obstacle (disc centre) in map
     double yaw = 0;       // robot heading at the bump
   };
   std::optional<Bump> lastBump() const;
@@ -130,8 +145,16 @@ public:
   std::optional<Bump> takeBump();
   void clearBumpObstacles();
   std::atomic<bool> bump_on_pass{false};  // the last interrupted action was FollowPass
+  // Known bump obstacle within radius of (x, y), if any.
+  std::optional<Bump> knownObstacleNear(double x, double y, double radius) const;
+  // Behaviour tree thread only: where SkipPastBump continues the pass.
+  std::optional<Bump> skip_target;
+  bool skip_counts_as_bump = true;
+  bool avoiding_known_obstacle = false;
 
   void setBlade(bool on);
+  // Direct drive command (twist_mux navigation input), for the last-resort reverse.
+  void drive(double linear, double angular);
   rclcpp::Client<open_mower_next::srv::AreaCoverage>::SharedPtr coverage_client;
 
   std::string lastBranch() const;
@@ -167,6 +190,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
   rclcpp::Subscription<open_mower_next::msg::Map>::SharedPtr map_sub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr blade_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr drive_pub_;
 };
 
 }  // namespace open_mower_next::mower_logic

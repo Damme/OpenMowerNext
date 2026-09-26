@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <future>
+#include <utility>
 
 namespace open_mower_next::mower_logic
 {
@@ -222,6 +223,40 @@ private:
   CtxPtr ctx_;
 };
 
+// Last resort after a refused BackUp (the footprint check at the rim, or the
+// planner's heading bins clipping it, left the robot wedged against an
+// obstacle): reverse straight back bump_backup m without costmap checks. FTC /
+// the transit just drove forward along that line, so it is the way it came.
+class ReverseAlongTrack : public BT::StatefulActionNode
+{
+public:
+  ReverseAlongTrack(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
+  : BT::StatefulActionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  NodeStatus onStart() override
+  {
+    RCLCPP_WARN(ctx_->node->get_logger(), "Back-up refused - reversing %.2f m along the track", ctx_->params.bump_backup);
+    until_ = std::chrono::steady_clock::now() +
+             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+               std::chrono::duration<double>(ctx_->params.bump_backup / ctx_->params.bump_backup_speed));
+    return onRunning();
+  }
+  NodeStatus onRunning() override
+  {
+    if (std::chrono::steady_clock::now() >= until_) {
+      ctx_->drive(0.0, 0.0);
+      return NodeStatus::SUCCESS;
+    }
+    ctx_->drive(-ctx_->params.bump_backup_speed, 0.0);
+    return NodeStatus::RUNNING;
+  }
+  void onHalted() override { ctx_->drive(0.0, 0.0); }
+
+private:
+  CtxPtr ctx_;
+  std::chrono::steady_clock::time_point until_{};
+};
+
 // SUCCESS when a bump interrupted the pass or transit (consumes it).
 class TakeBump : public BT::ConditionNode
 {
@@ -234,6 +269,12 @@ public:
     const auto b = ctx_->takeBump();
     if (!b) return NodeStatus::FAILURE;
     ctx_->setBranch("BUMP_RECOVERY");
+    // Bumped on a pass: continue it past the obstacle. In a transit: just retry.
+    ctx_->skip_target.reset();
+    if (ctx_->bump_on_pass.exchange(false)) {
+      ctx_->skip_target = b;
+      ctx_->skip_counts_as_bump = true;
+    }
     return NodeStatus::SUCCESS;
   }
 
@@ -241,8 +282,28 @@ private:
   CtxPtr ctx_;
 };
 
-// After a bump on a pass: continue the pass beyond the obstacle (the transit
-// there plans around the marked obstacle). A bump during transit just retries.
+// SUCCESS when FollowPass stopped in front of a known bump obstacle (consumes it).
+class AvoidingKnownObstacle : public BT::ConditionNode
+{
+public:
+  AvoidingKnownObstacle(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
+  : BT::ConditionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  NodeStatus tick() override
+  {
+    const bool avoiding = ctx_->avoiding_known_obstacle;
+    ctx_->avoiding_known_obstacle = false;
+    if (avoiding) ctx_->bump_on_pass = false;  // FollowPass' halt set it; no bump happened
+    return avoiding ? NodeStatus::SUCCESS : NodeStatus::FAILURE;
+  }
+
+private:
+  CtxPtr ctx_;
+};
+
+// Continue the pass beyond the obstacle in skip_target (set by TakeBump after
+// a bump on a pass, or by FollowPass in front of a known obstacle). The transit
+// there plans around the marked obstacle.
 class SkipPastBump : public BT::SyncActionNode
 {
 public:
@@ -251,10 +312,10 @@ public:
   NodeStatus tick() override
   {
     ctx_->setBranch("MOWING");
-    const auto b = ctx_->lastBump();
-    if (!ctx_->bump_on_pass.exchange(false) || !b || !std::isfinite(b->x)) return NodeStatus::SUCCESS;
-    const bool on_pass =
-      ctx_->mission.skipPastPoint(b->x, b->y, ctx_->params.bump_clearance, ctx_->params.max_bumps_per_pass);
+    const auto b = std::exchange(ctx_->skip_target, std::nullopt);
+    if (!b || !std::isfinite(b->x)) return NodeStatus::SUCCESS;
+    const bool on_pass = ctx_->mission.skipPastPoint(
+      b->x, b->y, ctx_->params.bump_clearance, ctx_->params.max_bumps_per_pass, ctx_->skip_counts_as_bump);
     RCLCPP_WARN(ctx_->node->get_logger(), on_pass ? "Continuing past the obstacle: %s" : "Rest of the pass skipped: %s",
                 ctx_->mission.summary().c_str());
     return NodeStatus::SUCCESS;
@@ -302,6 +363,7 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   addCheck(factory, "NeedsCharging", [ctx]() { return ctx->needsCharging(); });
   addCheck(factory, "IsRaining", [ctx]() { return ctx->raining(); });
   addCheck(factory, "IsDocked", [ctx]() { return ctx->charging(); });
+  addCheck(factory, "IsAtDock", [ctx]() { return ctx->atDock(); });
   addCheck(factory, "GpsOK", [ctx]() { return ctx->gpsOk(); });
   factory.registerNodeType<IsTrue>("IsTrue");
   add<CommandIs>(factory, ctx, "CommandIs");
@@ -313,6 +375,8 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   add<MissionFinished>(factory, ctx, "MissionFinished");
   add<TakeBump>(factory, ctx, "TakeBump");
   add<SkipPastBump>(factory, ctx, "SkipPastBump");
+  add<AvoidingKnownObstacle>(factory, ctx, "AvoidingKnownObstacle");
+  add<ReverseAlongTrack>(factory, ctx, "ReverseAlongTrack");
   add<BackUp>(factory, ctx, "BackUp");
   add<Transit>(factory, ctx, "Transit");
   add<FollowPass>(factory, ctx, "FollowPass");

@@ -110,3 +110,20 @@ TEST(Mission, BumpAtPassEndOrTooOftenSkipsPass)
   EXPECT_FALSE(m2.skipPastPoint(3.0, 0.0, 0.3, 2));  // third bump on the pass
   EXPECT_EQ(m2.currentPass(0.0)->path.poses.size(), 10u);
 }
+
+TEST(Mission, FailedContinuationSkipsFurther)
+{
+  Mission m;
+  m.begin({"a"});
+  m.setPlan({straight(100, 0.1)});
+  m.setPoseIndex(30);
+  ASSERT_TRUE(m.skipPastPoint(3.55, 0.0, 0.7, 4));  // continue at 43, no backtrack
+  EXPECT_FALSE(m.passFailed(3, 1.0, 3));            // unreachable: 1 m further
+  EXPECT_EQ(m.currentPass(0.5)->start_index, 53u);
+  EXPECT_FALSE(m.passFailed(3, 1.0, 3));            // then 2 m
+  EXPECT_EQ(m.currentPass(0.5)->start_index, 73u);
+  EXPECT_FALSE(m.passFailed(3, 1.0, 3));            // then 4 m: hits the pass end, counts as attempt 1
+  EXPECT_EQ(m.currentPass(0.5)->start_index, 97u);
+  EXPECT_FALSE(m.passFailed(3, 1.0, 3));            // steps used up: ordinary attempts
+  EXPECT_TRUE(m.passFailed(3, 1.0, 3));             // third failure: pass skipped
+}

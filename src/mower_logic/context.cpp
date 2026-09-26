@@ -8,6 +8,32 @@
 namespace open_mower_next::mower_logic
 {
 
+namespace
+{
+bool insidePolygon(double x, double y, const geometry_msgs::msg::Polygon & poly)
+{
+  bool c = false;
+  const auto & p = poly.points;
+  for (size_t i = 0, j = p.size() - 1; i < p.size(); j = i++) {
+    if ((p[i].y > y) != (p[j].y > y) && x < (p[j].x - p[i].x) * (y - p[i].y) / (p[j].y - p[i].y) + p[i].x) c = !c;
+  }
+  return c;
+}
+
+double distanceToEdges(double x, double y, const geometry_msgs::msg::Polygon & poly)
+{
+  double best = 1e9;
+  const auto & p = poly.points;
+  for (size_t i = 0, j = p.size() - 1; i < p.size(); j = i++) {
+    const double dx = p[i].x - p[j].x, dy = p[i].y - p[j].y;
+    const double l2 = dx * dx + dy * dy;
+    const double t = l2 > 0 ? std::clamp(((x - p[j].x) * dx + (y - p[j].y) * dy) / l2, 0.0, 1.0) : 0.0;
+    best = std::min(best, std::hypot(x - p[j].x - t * dx, y - p[j].y - t * dy));
+  }
+  return best;
+}
+}  // namespace
+
 Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), params(std::move(p))
 {
   tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
@@ -15,6 +41,7 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
   coverage_client = node->create_client<open_mower_next::srv::AreaCoverage>("/area_coverage");
   emergency_client_ = node->create_client<std_srvs::srv::SetBool>("/worx/emergency");
   blade_pub_ = node->create_publisher<std_msgs::msg::Float64MultiArray>("/mower_controller/commands", 10);
+  drive_pub_ = node->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel_nav", 10);
 
   battery_sub_ = node->create_subscription<sensor_msgs::msg::BatteryState>(
     "/power", 10, [this](sensor_msgs::msg::BatteryState::ConstSharedPtr m) {
@@ -83,6 +110,19 @@ bool Context::charging() const
 {
   std::lock_guard<std::mutex> l(mutex_);
   return charger_;
+}
+
+bool Context::atDock() const
+{
+  if (charging()) return true;
+  const auto pose = robotPose();
+  std::lock_guard<std::mutex> l(mutex_);
+  if (!pose) return false;
+  for (const auto & d : map_.docking_stations) {
+    const auto & p = d.pose.pose.position;
+    if (std::hypot(p.x - pose->pose.position.x, p.y - pose->pose.position.y) < params.undock_distance) return true;
+  }
+  return false;
 }
 
 bool Context::emergency() const
@@ -181,6 +221,16 @@ std::optional<geometry_msgs::msg::PoseStamped> Context::robotPose() const
   }
 }
 
+void Context::drive(double linear, double angular)
+{
+  geometry_msgs::msg::TwistStamped t;
+  t.header.stamp = node->now();
+  t.header.frame_id = "base_link";
+  t.twist.linear.x = linear;
+  t.twist.angular.z = angular;
+  drive_pub_->publish(t);
+}
+
 void Context::setBlade(bool on)
 {
   {
@@ -228,9 +278,27 @@ void Context::onBump()
   {
     std::lock_guard<std::mutex> l(mutex_);
     last_bump_ = b;
-    obstacles_.push_back(b);
+    // Repeated bumps at the same obstacle refresh it instead of stacking strips
+    // (four stacked strips closed a narrow corridor in the sim).
+    auto same = std::find_if(obstacles_.begin(), obstacles_.end(), [&](const Bump & o) {
+      return std::hypot(o.x - b.x, o.y - b.y) < params.bump_merge_distance;
+    });
+    if (same != obstacles_.end()) {
+      *same = b;
+    } else {
+      obstacles_.push_back(b);
+    }
   }
   publishObstacles();
+}
+
+std::optional<Context::Bump> Context::knownObstacleNear(double x, double y, double radius) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  for (const auto & o : obstacles_) {
+    if (std::hypot(o.x - x, o.y - y) <= radius) return o;
+  }
+  return std::nullopt;
 }
 
 std::optional<Context::Bump> Context::lastBump() const
@@ -263,15 +331,48 @@ void Context::clearBumpObstacles()
 void Context::publishObstacles()
 {
   std::vector<std::pair<double, double>> pts;
+  const auto robot = robotPose();
+  double rc = 1.0, rs = 0.0;
+  if (robot) {
+    const auto & q = robot->pose.orientation;
+    const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    rc = std::cos(yaw);
+    rs = std::sin(yaw);
+  }
+  // Inside the robot's current footprint grown by bump_keep_free?
+  auto near_robot = [&](double px, double py) {
+    if (!robot) return false;
+    const double dx = px - robot->pose.position.x, dy = py - robot->pose.position.y;
+    const double u = dx * rc + dy * rs, v = -dx * rs + dy * rc;
+    const double m = params.bump_keep_free;
+    return u > -params.footprint_rear - m && u < params.footprint_front + m &&
+           std::abs(v) < params.footprint_half_width + m;
+  };
   {
     std::lock_guard<std::mutex> l(mutex_);
-    // A strip across the robot's front per bump (5 cm spacing, the costmap resolution).
-    const double hd = 0.5 * params.bump_obstacle_depth, hw = 0.5 * params.bump_obstacle_width;
+    // Per bump: discs at the front-left corner, centre and front-right corner
+    // (5 cm spacing, the costmap resolution). Points outside every area are
+    // useless (already blocked) and dropped.
+    const double r = params.bump_obstacle_radius, hw = params.footprint_half_width;
+    auto inside_areas = [&](double px, double py) {
+      bool in = false;
+      for (const auto & a : map_.areas) {
+        if (a.area.polygon.points.size() < 3 || !insidePolygon(px, py, a.area.polygon)) continue;
+        if (a.type == open_mower_next::msg::Area::TYPE_EXCLUSION) return false;
+        in = true;
+      }
+      return in;
+    };
     for (const auto & o : obstacles_) {
+      // o.x/o.y is the centre disc; the corner discs sit hw to either side.
       const double c = std::cos(o.yaw), s = std::sin(o.yaw);
-      for (double u = -hd; u <= hd + 1e-9; u += 0.05) {
-        for (double v = -hw; v <= hw + 1e-9; v += 0.05) {
-          pts.emplace_back(o.x + u * c - v * s, o.y + u * s + v * c);
+      for (double side : {-hw, 0.0, hw}) {
+        const double cx = o.x - side * s, cy = o.y + side * c;
+        for (double dx = -r; dx <= r + 1e-9; dx += 0.05) {
+          for (double dy = -r; dy <= r + 1e-9; dy += 0.05) {
+            const double px = cx + dx, py = cy + dy;
+            if (dx * dx + dy * dy <= r * r && !near_robot(px, py) && inside_areas(px, py)) pts.emplace_back(px, py);
+          }
         }
       }
     }
@@ -292,31 +393,6 @@ void Context::publishObstacles()
   obstacle_pub_->publish(cloud);
 }
 
-namespace
-{
-bool insidePolygon(double x, double y, const geometry_msgs::msg::Polygon & poly)
-{
-  bool c = false;
-  const auto & p = poly.points;
-  for (size_t i = 0, j = p.size() - 1; i < p.size(); j = i++) {
-    if ((p[i].y > y) != (p[j].y > y) && x < (p[j].x - p[i].x) * (y - p[i].y) / (p[j].y - p[i].y) + p[i].x) c = !c;
-  }
-  return c;
-}
-
-double distanceToEdges(double x, double y, const geometry_msgs::msg::Polygon & poly)
-{
-  double best = 1e9;
-  const auto & p = poly.points;
-  for (size_t i = 0, j = p.size() - 1; i < p.size(); j = i++) {
-    const double dx = p[i].x - p[j].x, dy = p[i].y - p[j].y;
-    const double l2 = dx * dx + dy * dy;
-    const double t = l2 > 0 ? std::clamp(((x - p[j].x) * dx + (y - p[j].y) * dy) / l2, 0.0, 1.0) : 0.0;
-    best = std::min(best, std::hypot(x - p[j].x - t * dx, y - p[j].y - t * dy));
-  }
-  return best;
-}
-}  // namespace
 
 std::optional<geometry_msgs::msg::PoseStamped> Context::transitVia(const geometry_msgs::msg::PoseStamped & goal)
 {
@@ -329,20 +405,29 @@ std::optional<geometry_msgs::msg::PoseStamped> Context::transitVia(const geometr
   if (len < params.transit_jitter_min_distance) return std::nullopt;
   const double nx = -(gy - sy) / len, ny = (gx - sx) / len;  // left normal
   std::lock_guard<std::mutex> l(mutex_);
+  // Point inside a non-exclusion area and >= margin from every area edge.
+  auto open_lawn = [&](double x, double y) {
+    bool in_area = false;
+    for (const auto & a : map_.areas) {
+      if (a.area.polygon.points.size() < 3) continue;
+      const bool inside = insidePolygon(x, y, a.area.polygon);
+      if (a.type == open_mower_next::msg::Area::TYPE_EXCLUSION && inside) return false;
+      if (a.type != open_mower_next::msg::Area::TYPE_EXCLUSION && inside) in_area = true;
+      if (distanceToEdges(x, y, a.area.polygon) < params.transit_via_margin) return false;
+    }
+    return in_area;
+  };
+  // Only vary transits across open lawn; in corridors a via point makes an S-bend.
+  const int steps = static_cast<int>(len / 0.5);
+  for (int i = 1; i < steps; ++i) {
+    const double u = static_cast<double>(i) / steps;
+    if (!open_lawn(sx + u * (gx - sx), sy + u * (gy - sy))) return std::nullopt;
+  }
   std::uniform_real_distribution<double> along(0.35, 0.65), side(-params.transit_jitter, params.transit_jitter);
   for (int attempt = 0; attempt < 8; ++attempt) {
     const double u = along(rng_), o = side(rng_);
     const double x = sx + u * (gx - sx) + o * nx, y = sy + u * (gy - sy) + o * ny;
-    bool in_area = false, ok = true;
-    for (const auto & a : map_.areas) {
-      if (a.area.polygon.points.size() < 3) continue;
-      const bool inside = insidePolygon(x, y, a.area.polygon);
-      if (a.type == open_mower_next::msg::Area::TYPE_EXCLUSION && inside) ok = false;
-      if (a.type != open_mower_next::msg::Area::TYPE_EXCLUSION && inside) in_area = true;
-      if (distanceToEdges(x, y, a.area.polygon) < params.transit_via_margin) ok = false;
-      if (!ok) break;
-    }
-    if (!ok || !in_area) continue;
+    if (!open_lawn(x, y)) continue;
     geometry_msgs::msg::PoseStamped via = goal;
     via.pose.position.x = x;
     via.pose.position.y = y;

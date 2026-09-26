@@ -76,8 +76,9 @@
   <BehaviorTree ID="Mow">
     <Sequence>
       <BeginMission/>
+      <!-- IsAtDock, not IsDocked: an aborted undock leaves the robot off the charger in the dock entrance. -->
       <Fallback>
-        <Inverter><IsDocked/></Inverter>
+        <Inverter><IsAtDock/></Inverter>
         <Undock/>
       </Fallback>
       <Fallback>
@@ -101,9 +102,18 @@
           </Fallback>
           <FollowPass path="{pass_path}" start_index="{pass_start_index}"/>
         </Sequence>
+        <Sequence name="avoid_known_obstacle">
+          <AvoidingKnownObstacle/>
+          <SkipPastBump/>
+        </Sequence>
         <Sequence name="bump_recovery">
           <TakeBump/>
-          <ForceSuccess><BackUp/></ForceSuccess>
+          <ForceSuccess>
+            <Fallback>
+              <BackUp/>
+              <ReverseAlongTrack/>
+            </Fallback>
+          </ForceSuccess>
           <SkipPastBump/>
         </Sequence>
         <Sequence>

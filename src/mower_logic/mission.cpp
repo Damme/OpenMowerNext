@@ -15,6 +15,7 @@ void Mission::begin(const std::vector<std::string> & area_ids)
   area_ = pass_ = pose_ = 0;
   attempts_ = 0;
   bumps_ = 0;
+  continuation_steps_ = 0;
   no_backtrack_ = false;
   active_ = !areas_.empty();
 }
@@ -28,6 +29,7 @@ void Mission::clear()
   area_ = pass_ = pose_ = 0;
   attempts_ = 0;
   bumps_ = 0;
+  continuation_steps_ = 0;
   no_backtrack_ = false;
   active_ = false;
 }
@@ -53,6 +55,7 @@ void Mission::setPlan(const std::vector<open_mower_next::msg::CoveragePath> & pa
   pass_ = pose_ = 0;
   attempts_ = 0;
   bumps_ = 0;
+  continuation_steps_ = 0;
   no_backtrack_ = false;
 }
 
@@ -65,6 +68,7 @@ void Mission::skipArea()
   pass_ = pose_ = 0;
   attempts_ = 0;
   bumps_ = 0;
+  continuation_steps_ = 0;
   no_backtrack_ = false;
   if (area_ >= areas_.size()) active_ = false;
 }
@@ -116,6 +120,7 @@ void Mission::passDone()
   pose_ = 0;
   attempts_ = 0;
   bumps_ = 0;
+  continuation_steps_ = 0;
   no_backtrack_ = false;
   if (pass_ >= passes_.size()) {
     ++area_;
@@ -126,11 +131,24 @@ void Mission::passDone()
   }
 }
 
-bool Mission::passFailed(int max_attempts)
+bool Mission::passFailed(int max_attempts, double skip_step_m, int max_continuation_steps)
 {
   bool skip = false;
   {
     std::lock_guard<std::mutex> l(mutex_);
+    if (no_backtrack_ && pass_ < passes_.size() && continuation_steps_ < max_continuation_steps) {
+      // Continuation past an obstacle unreachable: try further along the pass.
+      const double step = skip_step_m * static_cast<double>(1 << continuation_steps_++);
+      const auto & poses = passes_[pass_].path.poses;
+      double along = 0.0;
+      while (pose_ + 3 < poses.size() && along < step) {
+        const auto & a = poses[pose_].pose.position;
+        const auto & b = poses[pose_ + 1].pose.position;
+        along += std::hypot(b.x - a.x, b.y - a.y);
+        ++pose_;
+      }
+      if (pose_ + 3 < poses.size()) return false;
+    }
     skip = ++attempts_ >= max_attempts;
   }
   if (skip) passDone();
@@ -157,13 +175,13 @@ std::string Mission::summary() const
   return s.str();
 }
 
-bool Mission::skipPastPoint(double x, double y, double clearance_m, int max_bumps)
+bool Mission::skipPastPoint(double x, double y, double clearance_m, int max_bumps, bool count_bump)
 {
   {
     std::lock_guard<std::mutex> l(mutex_);
     if (!active_ || !planned_ || pass_ >= passes_.size()) return false;
     const auto & poses = passes_[pass_].path.poses;
-    if (++bumps_ <= max_bumps) {
+    if (!count_bump || ++bumps_ <= max_bumps) {
       bool near = false;
       for (size_t i = pose_; i + 2 < poses.size(); ++i) {
         const auto & q = poses[i].pose.position;
