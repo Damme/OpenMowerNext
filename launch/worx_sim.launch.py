@@ -81,7 +81,8 @@ def launch_setup(context):
                          'controller_id': LaunchConfiguration('pass_controller').perform(context),
                          'goal_checker_id': 'ftc_goal_checker' if LaunchConfiguration('pass_controller').perform(context) == 'FTC' else 'general_goal_checker',
                          'progress_checker_id': 'ftc_progress_checker' if LaunchConfiguration('pass_controller').perform(context) == 'FTC' else '',
-                          'areas': LaunchConfiguration('areas').perform(context)}]),
+                          'areas': LaunchConfiguration('areas').perform(context),
+                          'edge_corrections_file': LaunchConfiguration('edge_corrections').perform(context)}]),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'nav2.launch.py')),
             launch_arguments={'use_sim_time': 'false', 'autostart': 'true'}.items()),
@@ -98,6 +99,8 @@ def generate_launch_description():
         DeclareLaunchArgument('start_y', default_value='0.0'),
         DeclareLaunchArgument('start_yaw', default_value='0.0'),
         DeclareLaunchArgument('areas', default_value='', description='comma separated area ids (default all)'),
+        DeclareLaunchArgument('edge_corrections', default_value='',
+                              description='file for perimeter bump corrections (default: memory only)'),
         DeclareLaunchArgument('pass_controller', default_value='FTC', description='FTC | FollowPath (RPP)'),
         DeclareLaunchArgument('rviz', default_value='false', description='start rviz2 with config/worx_sim.rviz'),
         DeclareLaunchArgument('obstacles', default_value='',

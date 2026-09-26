@@ -61,6 +61,12 @@ void Mission::setPlan(const std::vector<open_mower_next::msg::CoveragePath> & pa
   no_backtrack_ = false;
 }
 
+void Mission::editPlan(const std::function<void(std::vector<open_mower_next::msg::CoveragePath> &)> & fn)
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  if (planned_) fn(passes_);
+}
+
 void Mission::skipArea()
 {
   ++generation_;

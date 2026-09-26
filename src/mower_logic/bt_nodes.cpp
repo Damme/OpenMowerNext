@@ -142,6 +142,7 @@ public:
                                       : ctx_->params.resume_direct_distance);
     RCLCPP_INFO(ctx_->node->get_logger(), "Next: %s (%zu poses%s%s)", m.summary().c_str(), pass->path.poses.size(),
                 pass->is_outline ? ", outline" : "", direct ? ", from here" : "");
+    ctx_->pass_is_outline = pass->is_outline;
     setOutput("path", pass->path);
     setOutput("start", pass->path.poses.front());
     setOutput("start_index", pass->start_index);
@@ -270,7 +271,9 @@ private:
       return false;
     }
     RCLCPP_INFO(ctx_->node->get_logger(), "Planned %s: %zu passes", area.c_str(), res->paths.size());
-    ctx_->mission.setPlan(res->paths);
+    auto passes = res->paths;
+    ctx_->applyEdgeCorrections(passes);
+    ctx_->mission.setPlan(passes);
     return true;
   }
   CtxPtr ctx_;
@@ -507,6 +510,18 @@ public:
     // Bumped on a pass: continue it past the obstacle. In a transit: just retry.
     ctx_->skip_target.reset();
     if (ctx_->bump_on_pass.exchange(false)) {
+      // At the perimeter it is the edge (plants, GPS a few cm off), not an
+      // obstacle: shift the outline inward there and keep following it.
+      if (ctx_->pass_is_outline && std::isfinite(b->x)) {
+        const double rx = b->x - ctx_->params.bump_front_offset * std::cos(b->yaw);
+        const double ry = b->y - ctx_->params.bump_front_offset * std::sin(b->yaw);
+        if (const auto off = ctx_->addEdgeCorrection(rx, ry, b->yaw)) {
+          RCLCPP_WARN(ctx_->node->get_logger(), "Perimeter bump at (%.2f, %.2f): outline %.0f cm inward there (remembered)",
+                      rx, ry, *off * 100.0);
+          ctx_->dropBumpObstacle(*b);
+          return NodeStatus::SUCCESS;  // back up, then the pass resumes a little before the spot
+        }
+      }
       ctx_->skip_target = b;
       ctx_->skip_counts_as_bump = true;
     }

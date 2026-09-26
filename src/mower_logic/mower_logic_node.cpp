@@ -51,6 +51,15 @@ int main(int argc, char ** argv)
   p.bump_merge_distance = node->declare_parameter("bump_merge_distance", p.bump_merge_distance);
   p.bump_lookahead = node->declare_parameter("bump_lookahead", p.bump_lookahead);
   p.bump_avoid_radius = node->declare_parameter("bump_avoid_radius", p.bump_avoid_radius);
+  p.edge_bump_distance = node->declare_parameter("edge_bump_distance", p.edge_bump_distance);
+  p.edge_correction_step = node->declare_parameter("edge_correction_step", p.edge_correction_step);
+  p.edge_correction_max = node->declare_parameter("edge_correction_max", p.edge_correction_max);
+  p.edge_correction_radius = node->declare_parameter("edge_correction_radius", p.edge_correction_radius);
+  p.edge_correction_ramp = node->declare_parameter("edge_correction_ramp", p.edge_correction_ramp);
+  p.edge_correction_ahead = node->declare_parameter("edge_correction_ahead", p.edge_correction_ahead);
+  p.edge_correction_loop_distance =
+    node->declare_parameter("edge_correction_loop_distance", p.edge_correction_loop_distance);
+  p.edge_corrections_file = node->declare_parameter("edge_corrections_file", p.edge_corrections_file);
   p.max_skipped_passes_in_row =
     static_cast<int>(node->declare_parameter("max_skipped_passes_in_row", p.max_skipped_passes_in_row));
   p.dock_type = node->declare_parameter("dock_type", p.dock_type);

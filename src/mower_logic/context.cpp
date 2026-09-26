@@ -4,6 +4,8 @@
 #include <tf2/LinearMath/Quaternion.h>
 
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 
 namespace open_mower_next::mower_logic
 {
@@ -103,6 +105,143 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
       std::lock_guard<std::mutex> l(mutex_);
       map_ = *m;
     });
+  loadEdgeCorrections();
+}
+
+void Context::loadEdgeCorrections()
+{
+  if (params.edge_corrections_file.empty()) return;
+  std::ifstream f(params.edge_corrections_file);
+  std::string line;
+  std::lock_guard<std::mutex> l(mutex_);
+  while (std::getline(f, line)) {
+    if (line.empty() || line[0] == '#') continue;
+    std::istringstream s(line);
+    EdgeCorrection c;
+    if (s >> c.x >> c.y >> c.offset) edge_corrections_.push_back(c);
+  }
+  RCLCPP_INFO(node->get_logger(), "%zu edge corrections from %s", edge_corrections_.size(),
+              params.edge_corrections_file.c_str());
+}
+
+void Context::saveEdgeCorrections() const
+{
+  if (params.edge_corrections_file.empty()) return;
+  // Write a temp file and rename it, so a crash never leaves half a file.
+  const auto tmp = params.edge_corrections_file + ".tmp";
+  {
+    std::ofstream f(tmp);
+    f << "# x y inward_offset (m, map frame) - perimeter bump corrections, see mower_logic\n";
+    for (const auto & c : edge_corrections_) f << c.x << ' ' << c.y << ' ' << c.offset << '\n';
+  }
+  std::rename(tmp.c_str(), params.edge_corrections_file.c_str());
+}
+
+double Context::distanceToLines(double x, double y) const
+{
+  double best = 1e9;
+  for (const auto & a : map_.areas) {
+    if (a.area.polygon.points.size() >= 3) best = std::min(best, distanceToEdges(x, y, a.area.polygon));
+  }
+  return best;
+}
+
+bool Context::insideAreas(double x, double y) const
+{
+  bool in = false;
+  for (const auto & a : map_.areas) {
+    if (a.area.polygon.points.size() < 3 || !insidePolygon(x, y, a.area.polygon)) continue;
+    if (a.type == open_mower_next::msg::Area::TYPE_EXCLUSION) return false;
+    in = true;
+  }
+  return in;
+}
+
+void Context::shiftOutline(std::vector<open_mower_next::msg::CoveragePath> & passes, double cx, double cy,
+                           double delta) const
+{
+  const double full = params.edge_correction_radius, fade = params.edge_correction_ramp;
+  for (auto & pass : passes) {
+    if (!pass.is_outline) continue;
+    auto & poses = pass.path.poses;
+    bool changed = false;
+    for (auto & ps : poses) {
+      auto & p = ps.pose.position;
+      const double d = std::hypot(p.x - cx, p.y - cy);
+      if (d >= full + fade) continue;
+      // Only the loop riding the line; inner loops are further in already.
+      const double edge = distanceToLines(p.x, p.y);
+      if (edge > params.edge_correction_loop_distance) continue;
+      const double w = d <= full ? 1.0 : 1.0 - (d - full) / fade;
+      const auto & q = ps.pose.orientation;
+      const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+      // Inward = the side of the path moving away from the nearest line.
+      const double nx = -std::sin(yaw), ny = std::cos(yaw);
+      const double left = distanceToLines(p.x + 0.05 * nx, p.y + 0.05 * ny);
+      const double right = distanceToLines(p.x - 0.05 * nx, p.y - 0.05 * ny);
+      const double side = left >= right ? 1.0 : -1.0;
+      const double sx = p.x + side * delta * w * nx, sy = p.y + side * delta * w * ny;
+      if (!insideAreas(sx, sy)) continue;
+      p.x = sx;
+      p.y = sy;
+      changed = true;
+    }
+    if (!changed) continue;
+    // Headings follow the shifted path.
+    for (size_t i = 0; i < poses.size(); ++i) {
+      const auto & a = poses[i == 0 ? 0 : i - 1].pose.position;
+      const auto & b = poses[i + 1 < poses.size() ? i + 1 : i].pose.position;
+      if (std::hypot(b.x - a.x, b.y - a.y) < 1e-6) continue;
+      const double yaw = std::atan2(b.y - a.y, b.x - a.x);
+      poses[i].pose.orientation.x = poses[i].pose.orientation.y = 0.0;
+      poses[i].pose.orientation.z = std::sin(yaw / 2.0);
+      poses[i].pose.orientation.w = std::cos(yaw / 2.0);
+    }
+  }
+}
+
+std::optional<double> Context::addEdgeCorrection(double x, double y, double yaw)
+{
+  const double cx = x + params.edge_correction_ahead * std::cos(yaw);
+  const double cy = y + params.edge_correction_ahead * std::sin(yaw);
+  double delta = 0.0, total = 0.0;
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (distanceToLines(x, y) > params.edge_bump_distance) return std::nullopt;
+    auto it = std::find_if(edge_corrections_.begin(), edge_corrections_.end(), [&](const EdgeCorrection & c) {
+      return std::hypot(c.x - cx, c.y - cy) < params.edge_correction_radius;
+    });
+    if (it == edge_corrections_.end()) {
+      edge_corrections_.push_back({cx, cy, 0.0});
+      it = std::prev(edge_corrections_.end());
+    }
+    if (it->offset + 1e-6 >= params.edge_correction_max) return std::nullopt;
+    total = std::min(params.edge_correction_max, it->offset + params.edge_correction_step);
+    delta = total - it->offset;
+    it->offset = total;
+    saveEdgeCorrections();
+    // The existing spot keeps its centre so the shift already applied stays consistent.
+    const double sx = it->x, sy = it->y;
+    mission.editPlan([&](auto & passes) { shiftOutline(passes, sx, sy, delta); });
+  }
+  return total;
+}
+
+void Context::applyEdgeCorrections(std::vector<open_mower_next::msg::CoveragePath> & passes) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  for (const auto & c : edge_corrections_) shiftOutline(passes, c.x, c.y, c.offset);
+}
+
+void Context::dropBumpObstacle(const Bump & b)
+{
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    obstacles_.erase(std::remove_if(obstacles_.begin(), obstacles_.end(),
+                                    [&](const Bump & o) { return o.time == b.time; }),
+                     obstacles_.end());
+  }
+  publishObstacles();
 }
 
 double Context::batteryFraction() const

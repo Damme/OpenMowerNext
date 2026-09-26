@@ -38,6 +38,13 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
   `bump_clearance` (0.9 m) past it. Later loops/passes stop before a known obstacle (`bump_lookahead`) and go
   around it without touching it; repeated bumps at one spot refresh it (`bump_merge_distance`). More than `max_bumps_per_pass` bumps, or an obstacle at the end of a pass,
   skips the rest of the pass.
+- A bump on an outline pass with the robot centre within `edge_bump_distance` (0.35 m) of a recorded line is the
+  edge itself (overgrown plants, GPS a few cm off), not an obstacle: the outline is shifted inward around the spot
+  (`edge_correction_step` 0.10 m per bump, at most `edge_correction_max` 0.20 m, full within
+  `edge_correction_radius`, fading out over `edge_correction_ramp`), and the mower backs up and keeps following the
+  edge. Corrections are saved in `edge_corrections_file` (robot: `edge_corrections.txt` next to the map;
+  `x y offset` per line) and applied to every new plan, so later loops and missions don't bump there again. A bump
+  beyond the maximum is handled as an obstacle.
 - Progress is tracked along the pass, so a pause (GPS, emergency, charging) resumes where it stopped, a little
   (`resume_backtrack`) before the stop point.
 - If the robot is already within `resume_direct_distance` (0.3 m) of the pass (after a GPS or emergency pause, or when

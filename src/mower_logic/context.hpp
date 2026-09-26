@@ -83,6 +83,18 @@ struct Params
   double bump_merge_distance = 0.4;  // m: a bump this close to a known obstacle replaces it
   double bump_lookahead = 1.0;       // m along the pass
   double bump_avoid_radius = 0.5;    // m from a disc centre (radius + half body + margin)
+  // Perimeter bumps (overgrown plants, GPS a few cm off): on an outline pass
+  // with the centre this close to an edge, the outline is shifted inward
+  // around the spot instead of going around an obstacle, and the correction is
+  // remembered (edge_corrections_file) for later loops and missions.
+  double edge_bump_distance = 0.35;       // m: centre to the nearest recorded line
+  double edge_correction_step = 0.10;     // m inward per bump at the same spot
+  double edge_correction_max = 0.20;      // m; bumped again beyond it: obstacle handling
+  double edge_correction_radius = 0.5;    // m around the spot shifted fully
+  double edge_correction_ramp = 0.5;      // m over which the shift fades out
+  double edge_correction_ahead = 0.35;    // m: spot = robot centre + this along its heading
+  double edge_correction_loop_distance = 0.25;  // m: only outline poses this close to a line are shifted
+  std::string edge_corrections_file;      // empty: kept in memory only
   int max_skipped_passes_in_row = 3; // then stop the mission and go home (navigation keeps failing)
   std::string dock_type = "openmower";
   double undock_distance = 1.5;      // m from the dock pose: below this the robot counts as docked
@@ -150,6 +162,12 @@ public:
     double turn = 0.0;     // rad
   };
   std::optional<Escape> escapeFootprint(double x, double y, double yaw, double max_reverse) const;
+  // Perimeter bump at robot pose (x, y, yaw) on an outline pass: records or
+  // grows the edge correction there and shifts the current plan by the
+  // increase. nullopt: not at an edge, or the correction is at its maximum.
+  std::optional<double> addEdgeCorrection(double x, double y, double yaw);
+  // Shift the outline passes of a new plan by all remembered corrections.
+  void applyEdgeCorrections(std::vector<open_mower_next::msg::CoveragePath> & passes) const;
   // Random via point between the robot and goal (nullopt: go direct).
   std::optional<geometry_msgs::msg::PoseStamped> transitVia(const geometry_msgs::msg::PoseStamped & goal);
 
@@ -165,7 +183,10 @@ public:
   // The bump a recovery has to handle (newer than the last one handled).
   std::optional<Bump> takeBump();
   void clearBumpObstacles();
+  // Forget the obstacle marked for this bump (handled as an edge correction).
+  void dropBumpObstacle(const Bump & b);
   std::atomic<bool> bump_on_pass{false};  // the last interrupted action was FollowPass
+  std::atomic<bool> pass_is_outline{false};  // the pass GetPass handed out last
   // Known bump obstacle within radius of (x, y), if any.
   std::optional<Bump> knownObstacleNear(double x, double y, double radius) const;
   // Behaviour tree thread only: where SkipPastBump continues the pass.
@@ -211,6 +232,18 @@ private:
   std::optional<Bump> last_bump_;
   Clock::time_point handled_bump_{};
   std::vector<Bump> obstacles_;
+  struct EdgeCorrection
+  {
+    double x = 0, y = 0, offset = 0;  // spot in map, inward shift (m)
+  };
+  std::vector<EdgeCorrection> edge_corrections_;
+  void loadEdgeCorrections();
+  void saveEdgeCorrections() const;
+  // Shift outline poses near (cx, cy) inward by delta (tapered). mutex_ held.
+  void shiftOutline(std::vector<open_mower_next::msg::CoveragePath> & passes, double cx, double cy,
+                    double delta) const;
+  double distanceToLines(double x, double y) const;  // nearest recorded line; mutex_ held
+  bool insideAreas(double x, double y) const;        // mutex_ held
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
   rclcpp::TimerBase::SharedPtr obstacle_timer_;
   bool blade_on_ = false;

@@ -138,6 +138,9 @@ def generate_launch_description():
                 'battery_low': float(os.getenv('OM_BATTERY_LOW_FRACTION', '0.2')),
                 'battery_resume': float(os.getenv('OM_BATTERY_RESUME_FRACTION', '0.95')),
                 'areas': os.getenv('OM_MOWING_AREAS', ''),
+                # Perimeter bump corrections, remembered next to the map.
+                'edge_corrections_file': os.getenv('OM_EDGE_CORRECTIONS_PATH', os.path.join(
+                    os.path.dirname(os.getenv('OM_MAP_PATH', '/tmp/map.geojson')), 'edge_corrections.txt')),
                 # Worx: mow passes with the FTC controller (config/hardware/worx_nav2.yaml).
                 'controller_id': 'FTC' if hardware_name() == 'worx' else 'FollowPath',
                 'goal_checker_id': 'ftc_goal_checker' if hardware_name() == 'worx' else 'general_goal_checker',

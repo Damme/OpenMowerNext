@@ -8,6 +8,7 @@
 #include <nav_msgs/msg/path.hpp>
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -35,6 +36,8 @@ public:
   std::optional<std::string> areaNeedingPlan() const;
   void setPlan(const std::vector<open_mower_next::msg::CoveragePath> & passes);
   void skipArea();  // also used when planning fails
+  // Modify the current area's plan in place (edge corrections); progress is kept.
+  void editPlan(const std::function<void(std::vector<open_mower_next::msg::CoveragePath> &)> & fn);
 
   // The pass to mow next (remaining part), nullopt when the mission is done.
   // resume_backtrack_m re-mows a little before the stop point.
