@@ -25,6 +25,7 @@
 #include <cmath>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -57,15 +58,27 @@ struct Params
   int max_dock_attempts = 3;
   double blade_spinup = 2.0;         // s between blade on and driving
   double resume_backtrack = 0.5;     // m re-mowed before a resume point
-  double resume_direct_distance = 0.3;  // m: robot this close to the pass -> no NavigateToPose (0 = always navigate)
+  double resume_direct_distance = 0.3;  // m: robot this close to the pass -> no transit (0 = always transit)
   // Bumps (WorxStatus.bumps): back up, mark an obstacle for Nav2, continue past it.
-  double bump_front_offset = 0.55;   // m from base_link to the obstacle (footprint front 0.47 + margin)
-  double bump_obstacle_radius = 0.25;
-  double bump_clearance = 0.7;       // m: pass continues at the first pose this far from the obstacle
+  // The sensor doesn't say where on the front it was hit, so a strip across the
+  // whole front is marked. The costmap inflates it by the inscribed radius
+  // (0.195 m, cost 253), which Smac treats as a collision for the footprint:
+  // its near edge must stay >= front edge (0.47) + 0.195 ahead of base_link, or
+  // every plan fails with "Start occupied". 0.8 +- 0.1 -> keep-out from 0.505 m.
+  double bump_front_offset = 0.8;    // m from base_link to the strip centre
+  double bump_obstacle_depth = 0.2;  // m along the heading
+  double bump_obstacle_width = 0.7;  // m across (body 0.39 + both front corners)
+  double bump_clearance = 1.2;       // m: pass continues at the first pose this far from the strip centre
   double bump_backup = 0.3;          // m reversed after a bump
   double bump_backup_speed = 0.1;
   int max_bumps_per_pass = 4;
+  int max_skipped_passes_in_row = 3; // then stop the mission and go home (navigation keeps failing)
   std::string dock_type = "openmower";
+  std::string transit_bt;            // navigate_through_poses tree for transits to a pass (empty = bt_navigator default)
+  // Random via point on longer transits so repeated trips don't wear one track into the lawn.
+  double transit_jitter = 0.6;       // m: max lateral offset of the via point (0 = off)
+  double transit_jitter_min_distance = 4.0;  // m: shorter transits go direct
+  double transit_via_margin = 0.8;   // m: via point clearance from area edges and exclusions
   std::string controller_id = "FollowPath";
   std::string goal_checker_id = "general_goal_checker";
   std::string progress_checker_id = "";  // empty = controller_server default
@@ -85,6 +98,8 @@ public:
   std::shared_ptr<tf2_ros::Buffer> tf;
   std::atomic<Command> command{Command::IDLE};
   std::atomic<int> dock_failures{0};
+  std::atomic<int> undock_failures{0};
+  std::atomic<int> skipped_passes_in_row{0};
   std::atomic<bool> blade_in_use{false};  // set by FollowPass while it runs
   std::atomic<bool> count_failure{true};  // false: last pass "failure" was an early end, resume without counting
 
@@ -99,12 +114,15 @@ public:
   bool needsCharging();    // latched: set below battery_low, cleared at battery_resume
   std::vector<std::string> operationAreas() const;
   std::optional<geometry_msgs::msg::PoseStamped> robotPose() const;
+  // Random via point between the robot and goal (nullopt: go direct).
+  std::optional<geometry_msgs::msg::PoseStamped> transitVia(const geometry_msgs::msg::PoseStamped & goal);
 
   // Bumps. Each one adds an obstacle point (published for the costmaps).
   struct Bump
   {
     Clock::time_point time;
-    double x = 0, y = 0;  // obstacle position in map
+    double x = 0, y = 0;  // obstacle (strip centre) in map
+    double yaw = 0;       // robot heading at the bump
   };
   std::optional<Bump> lastBump() const;
   bool bumpedSince(Clock::time_point t) const;
@@ -135,9 +153,10 @@ private:
   open_mower_next::msg::Map map_;
   std::string branch_;
   std::optional<uint32_t> bumps_seen_;
+  std::mt19937 rng_{std::random_device{}()};
   std::optional<Bump> last_bump_;
   Clock::time_point handled_bump_{};
-  std::vector<std::pair<double, double>> obstacles_;
+  std::vector<Bump> obstacles_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
   rclcpp::TimerBase::SharedPtr obstacle_timer_;
   bool blade_on_ = false;

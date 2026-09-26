@@ -37,12 +37,20 @@ int main(int argc, char ** argv)
   p.resume_backtrack = node->declare_parameter("resume_backtrack", p.resume_backtrack);
   p.resume_direct_distance = node->declare_parameter("resume_direct_distance", p.resume_direct_distance);
   p.bump_front_offset = node->declare_parameter("bump_front_offset", p.bump_front_offset);
-  p.bump_obstacle_radius = node->declare_parameter("bump_obstacle_radius", p.bump_obstacle_radius);
+  p.bump_obstacle_depth = node->declare_parameter("bump_obstacle_depth", p.bump_obstacle_depth);
+  p.bump_obstacle_width = node->declare_parameter("bump_obstacle_width", p.bump_obstacle_width);
   p.bump_clearance = node->declare_parameter("bump_clearance", p.bump_clearance);
   p.bump_backup = node->declare_parameter("bump_backup", p.bump_backup);
   p.bump_backup_speed = node->declare_parameter("bump_backup_speed", p.bump_backup_speed);
   p.max_bumps_per_pass = static_cast<int>(node->declare_parameter("max_bumps_per_pass", p.max_bumps_per_pass));
+  p.max_skipped_passes_in_row =
+    static_cast<int>(node->declare_parameter("max_skipped_passes_in_row", p.max_skipped_passes_in_row));
   p.dock_type = node->declare_parameter("dock_type", p.dock_type);
+  p.transit_jitter = node->declare_parameter("transit_jitter", p.transit_jitter);
+  p.transit_jitter_min_distance = node->declare_parameter("transit_jitter_min_distance", p.transit_jitter_min_distance);
+  p.transit_via_margin = node->declare_parameter("transit_via_margin", p.transit_via_margin);
+  p.transit_bt = node->declare_parameter(
+    "transit_bt", ament_index_cpp::get_package_share_directory("open_mower_next") + "/config/behavior_trees/transit_to_pass.xml");
   p.controller_id = node->declare_parameter("controller_id", p.controller_id);
   p.goal_checker_id = node->declare_parameter("goal_checker_id", p.goal_checker_id);
   p.progress_checker_id = node->declare_parameter("progress_checker_id", p.progress_checker_id);

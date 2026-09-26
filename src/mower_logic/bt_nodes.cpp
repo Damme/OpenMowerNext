@@ -141,7 +141,7 @@ public:
 private:
   // Robot already on the pass (paused by GPS loss / emergency, early end, or the
   // next pass starts where the last one ended): start at the pose next to the
-  // robot and skip NavigateToPose - FTC aligns in place. The backtracked start
+  // robot and skip the transit - FTC aligns in place. The backtracked start
   // can't be used here: it lies behind the robot and FTC is forward-only, so
   // its carrot would stay gated (carrot_max_lag) and the robot would never move.
   bool startNearRobot(Mission::Pass & pass) const
@@ -208,6 +208,13 @@ public:
     }
     const bool skipped = ctx_->mission.passFailed(ctx_->params.max_pass_attempts);
     RCLCPP_WARN(ctx_->node->get_logger(), skipped ? "Pass failed too often - skipping it" : "Pass failed - retrying");
+    if (skipped && ++ctx_->skipped_passes_in_row >= ctx_->params.max_skipped_passes_in_row) {
+      // Something is wrong beyond one pass (localization, costmap, planner): don't burn the mission.
+      RCLCPP_ERROR(ctx_->node->get_logger(), "%d passes in a row skipped - stopping the mission, going home",
+                   ctx_->skipped_passes_in_row.load());
+      ctx_->skipped_passes_in_row = 0;
+      ctx_->command = Command::HOME;
+    }
     return NodeStatus::SUCCESS;
   }
 
@@ -307,7 +314,7 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   add<TakeBump>(factory, ctx, "TakeBump");
   add<SkipPastBump>(factory, ctx, "SkipPastBump");
   add<BackUp>(factory, ctx, "BackUp");
-  add<NavigateToPose>(factory, ctx, "NavigateToPose");
+  add<Transit>(factory, ctx, "Transit");
   add<FollowPass>(factory, ctx, "FollowPass");
   add<Undock>(factory, ctx, "Undock");
   add<Dock>(factory, ctx, "Dock");

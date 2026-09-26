@@ -40,7 +40,12 @@
             <GpsOK/>
             <SubTree ID="Mow" _autoremap="true"/>
           </ReactiveSequence>
-          <Hold state="WAITING_FOR_GPS"/>
+          <ReactiveSequence>
+            <Inverter><GpsOK/></Inverter>
+            <Hold state="WAITING_FOR_GPS"/>
+          </ReactiveSequence>
+          <!-- Mow failed with good GPS (e.g. undocking): retried next tick, Undock gives up after max_dock_attempts. -->
+          <Hold state="RETRYING"/>
         </ReactiveFallback>
       </ReactiveSequence>
 
@@ -60,6 +65,11 @@
     <Fallback>
       <IsDocked/>
       <Dock/>
+      <!-- Dock gives up after max_dock_attempts; wait between attempts. -->
+      <Sequence>
+        <Sleep msec="5000"/>
+        <AlwaysFailure/>
+      </Sequence>
     </Fallback>
   </BehaviorTree>
 
@@ -87,16 +97,19 @@
         <Sequence>
           <Fallback>
             <IsTrue value="{pass_direct}"/>
-            <NavigateToPose goal="{pass_start}"/>
+            <Transit goal="{pass_start}"/>
           </Fallback>
           <FollowPass path="{pass_path}" start_index="{pass_start_index}"/>
         </Sequence>
         <Sequence name="bump_recovery">
           <TakeBump/>
-          <BackUp/>
+          <ForceSuccess><BackUp/></ForceSuccess>
           <SkipPastBump/>
         </Sequence>
-        <PassFailed/>
+        <Sequence>
+          <PassFailed/>
+          <Sleep msec="2000"/>
+        </Sequence>
       </Fallback>
     </Sequence>
   </BehaviorTree>

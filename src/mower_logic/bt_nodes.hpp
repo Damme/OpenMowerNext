@@ -10,7 +10,7 @@
 #include <behaviortree_cpp/bt_factory.h>
 #include <nav2_msgs/action/back_up.hpp>
 #include <nav2_msgs/action/follow_path.hpp>
-#include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/action/navigate_through_poses.hpp>
 #include <nav2_msgs/action/undock_robot.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -144,11 +144,13 @@ private:
 
 // ---- actions ------------------------------------------------------------------------
 
-class NavigateToPose : public RosAction<nav2_msgs::action::NavigateToPose>
+// Drives to a pass start (transit controller), through a random via point on
+// longer transits (Context::transitVia).
+class Transit : public RosAction<nav2_msgs::action::NavigateThroughPoses>
 {
 public:
-  NavigateToPose(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
-  : RosAction(n, c, std::move(ctx), "navigate_to_pose") {}
+  Transit(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
+  : RosAction(n, c, std::move(ctx), "navigate_through_poses") {}
   static BT::PortsList providedPorts() { return {BT::InputPort<geometry_msgs::msg::PoseStamped>("goal")}; }
 
 protected:
@@ -158,7 +160,13 @@ protected:
   {
     auto goal = getInput<geometry_msgs::msg::PoseStamped>("goal");
     if (!goal) return false;
-    g.pose = goal.value();
+    g.poses.clear();
+    if (auto via = ctx_->transitVia(goal.value())) {
+      RCLCPP_INFO(ctx_->node->get_logger(), "Transit via (%.2f, %.2f)", via->pose.position.x, via->pose.position.y);
+      g.poses.push_back(*via);
+    }
+    g.poses.push_back(goal.value());
+    g.behavior_tree = ctx_->params.transit_bt;
     return true;
   }
 };
@@ -237,6 +245,7 @@ protected:
       return BT::NodeStatus::FAILURE;
     }
     ctx_->mission.passDone();
+    ctx_->skipped_passes_in_row = 0;
     return BT::NodeStatus::SUCCESS;
   }
   void onCancel() override
@@ -287,6 +296,21 @@ protected:
   {
     g.dock_type = ctx_->params.dock_type;
     return true;
+  }
+  BT::NodeStatus onResult(const Result & r) override
+  {
+    if (r.code == rclcpp_action::ResultCode::SUCCEEDED) {
+      ctx_->undock_failures = 0;
+      return BT::NodeStatus::SUCCESS;
+    }
+    const int n = ++ctx_->undock_failures;
+    RCLCPP_WARN(ctx_->node->get_logger(), "Undocking failed (%d/%d)", n, ctx_->params.max_dock_attempts);
+    if (n >= ctx_->params.max_dock_attempts) {
+      RCLCPP_ERROR(ctx_->node->get_logger(), "Giving up undocking; staying IDLE");
+      ctx_->command = Command::IDLE;
+      ctx_->undock_failures = 0;
+    }
+    return BT::NodeStatus::FAILURE;
   }
 };
 

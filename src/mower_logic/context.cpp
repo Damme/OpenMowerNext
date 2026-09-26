@@ -124,6 +124,7 @@ bool Context::clearEmergency(std::string & message)
   message = "emergency cleared";
   return true;
 }
+
 bool Context::raining()
 {
   if (!params.dock_on_rain) return false;
@@ -222,11 +223,12 @@ void Context::onBump()
   b.time = Clock::now();
   b.x = pose->pose.position.x + params.bump_front_offset * std::cos(yaw);
   b.y = pose->pose.position.y + params.bump_front_offset * std::sin(yaw);
+  b.yaw = yaw;
   RCLCPP_WARN(node->get_logger(), "Bump: obstacle marked at (%.2f, %.2f)", b.x, b.y);
   {
     std::lock_guard<std::mutex> l(mutex_);
     last_bump_ = b;
-    obstacles_.emplace_back(b.x, b.y);
+    obstacles_.push_back(b);
   }
   publishObstacles();
 }
@@ -263,12 +265,13 @@ void Context::publishObstacles()
   std::vector<std::pair<double, double>> pts;
   {
     std::lock_guard<std::mutex> l(mutex_);
-    // A disc of points per obstacle (5 cm spacing, the costmap resolution).
-    const double r = params.bump_obstacle_radius;
-    for (const auto & [cx, cy] : obstacles_) {
-      for (double dx = -r; dx <= r + 1e-9; dx += 0.05) {
-        for (double dy = -r; dy <= r + 1e-9; dy += 0.05) {
-          if (dx * dx + dy * dy <= r * r) pts.emplace_back(cx + dx, cy + dy);
+    // A strip across the robot's front per bump (5 cm spacing, the costmap resolution).
+    const double hd = 0.5 * params.bump_obstacle_depth, hw = 0.5 * params.bump_obstacle_width;
+    for (const auto & o : obstacles_) {
+      const double c = std::cos(o.yaw), s = std::sin(o.yaw);
+      for (double u = -hd; u <= hd + 1e-9; u += 0.05) {
+        for (double v = -hw; v <= hw + 1e-9; v += 0.05) {
+          pts.emplace_back(o.x + u * c - v * s, o.y + u * s + v * c);
         }
       }
     }
@@ -287,6 +290,68 @@ void Context::publishObstacles()
     ++x, ++y, ++z;
   }
   obstacle_pub_->publish(cloud);
+}
+
+namespace
+{
+bool insidePolygon(double x, double y, const geometry_msgs::msg::Polygon & poly)
+{
+  bool c = false;
+  const auto & p = poly.points;
+  for (size_t i = 0, j = p.size() - 1; i < p.size(); j = i++) {
+    if ((p[i].y > y) != (p[j].y > y) && x < (p[j].x - p[i].x) * (y - p[i].y) / (p[j].y - p[i].y) + p[i].x) c = !c;
+  }
+  return c;
+}
+
+double distanceToEdges(double x, double y, const geometry_msgs::msg::Polygon & poly)
+{
+  double best = 1e9;
+  const auto & p = poly.points;
+  for (size_t i = 0, j = p.size() - 1; i < p.size(); j = i++) {
+    const double dx = p[i].x - p[j].x, dy = p[i].y - p[j].y;
+    const double l2 = dx * dx + dy * dy;
+    const double t = l2 > 0 ? std::clamp(((x - p[j].x) * dx + (y - p[j].y) * dy) / l2, 0.0, 1.0) : 0.0;
+    best = std::min(best, std::hypot(x - p[j].x - t * dx, y - p[j].y - t * dy));
+  }
+  return best;
+}
+}  // namespace
+
+std::optional<geometry_msgs::msg::PoseStamped> Context::transitVia(const geometry_msgs::msg::PoseStamped & goal)
+{
+  if (params.transit_jitter <= 0.0) return std::nullopt;
+  const auto start = robotPose();
+  if (!start) return std::nullopt;
+  const double sx = start->pose.position.x, sy = start->pose.position.y;
+  const double gx = goal.pose.position.x, gy = goal.pose.position.y;
+  const double len = std::hypot(gx - sx, gy - sy);
+  if (len < params.transit_jitter_min_distance) return std::nullopt;
+  const double nx = -(gy - sy) / len, ny = (gx - sx) / len;  // left normal
+  std::lock_guard<std::mutex> l(mutex_);
+  std::uniform_real_distribution<double> along(0.35, 0.65), side(-params.transit_jitter, params.transit_jitter);
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    const double u = along(rng_), o = side(rng_);
+    const double x = sx + u * (gx - sx) + o * nx, y = sy + u * (gy - sy) + o * ny;
+    bool in_area = false, ok = true;
+    for (const auto & a : map_.areas) {
+      if (a.area.polygon.points.size() < 3) continue;
+      const bool inside = insidePolygon(x, y, a.area.polygon);
+      if (a.type == open_mower_next::msg::Area::TYPE_EXCLUSION && inside) ok = false;
+      if (a.type != open_mower_next::msg::Area::TYPE_EXCLUSION && inside) in_area = true;
+      if (distanceToEdges(x, y, a.area.polygon) < params.transit_via_margin) ok = false;
+      if (!ok) break;
+    }
+    if (!ok || !in_area) continue;
+    geometry_msgs::msg::PoseStamped via = goal;
+    via.pose.position.x = x;
+    via.pose.position.y = y;
+    const double yaw = std::atan2(gy - sy, gx - sx);  // heading along the transit
+    via.pose.orientation.z = std::sin(yaw / 2);
+    via.pose.orientation.w = std::cos(yaw / 2);
+    return via;
+  }
+  return std::nullopt;
 }
 
 }  // namespace open_mower_next::mower_logic
