@@ -377,10 +377,12 @@ nav_msgs::msg::OccupancyGrid MapServerNode::mapToOccupancyGrid(msg::Map map)
   // so a footprint-checking planner accepts poses whose body overhangs an area
   // edge (outline passes do) but still routes transits away from it.
   const double edge_band = param("grid.edge_band", 0.0);
+  // Exclusions (trees, beds) only get the body overhang, not the full rim.
+  const double exclusion_band = param("grid.exclusion_band", 0.1);
   const auto edge_value = static_cast<int8_t>(std::clamp<int64_t>(param("grid.edge_band_value", int64_t{60}), 1, 99));
   if (edge_band > 0.0)
   {
-    paintEdgeBand(occupancy_grid, edge_band, edge_value);
+    paintEdgeBand(occupancy_grid, edge_band, std::min(edge_band, exclusion_band), edge_value);
   }
 
   RCLCPP_INFO(get_logger(), "Occupancy grid size: %.2fm x %.2fm (%.2fm resolution, %dx%d cells)",
@@ -397,11 +399,13 @@ nav_msgs::msg::OccupancyGrid MapServerNode::mapToOccupancyGrid(msg::Map map)
   return occupancy_grid;
 }
 
-void MapServerNode::paintEdgeBand(nav_msgs::msg::OccupancyGrid& grid, double band_m, int8_t value)
+void MapServerNode::paintEdgeBand(nav_msgs::msg::OccupancyGrid& grid, double band_m, double exclusion_band_m,
+                                  int8_t value)
 {
   const int w = static_cast<int>(grid.info.width);
   const int h = static_cast<int>(grid.info.height);
   const int r = static_cast<int>(std::ceil(band_m / grid.info.resolution));
+  const int re = static_cast<int>(std::ceil(exclusion_band_m / grid.info.resolution));
   if (r <= 0 || w <= 0 || h <= 0)
   {
     return;
@@ -433,7 +437,12 @@ void MapServerNode::paintEdgeBand(nav_msgs::msg::OccupancyGrid& grid, double ban
             continue;
           }
           auto& cell = grid.data[ny * w + nx];
-          if (src[ny * w + nx] != 0 && (cell == -1 || cell > value))
+          const int8_t orig = src[ny * w + nx];
+          if (orig == 100 && dx * dx + dy * dy > re * re)
+          {
+            continue;
+          }
+          if (orig != 0 && (cell == -1 || cell > value))
           {
             cell = value;
           }

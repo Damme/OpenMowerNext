@@ -61,7 +61,7 @@ def launch_setup(context):
         Node(package='open_mower_next', executable='map_server_node', name='map_server', output='screen',
              parameters=[{'path': os.environ['OM_MAP_PATH'], 'datum': datum,
                           'grid.resolution': 0.05, 'grid.max_size': 4000,
-                          'grid.edge_band': 0.3}],
+                          'grid.edge_band': 0.45, 'grid.edge_band_value': 90}],
              remappings=[('map_grid', 'map_grid'), ('map', 'mowing_map')]),
         Node(package='open_mower_next', executable='coverage_server', output='screen'),
         Node(package='open_mower_next', executable='docking_helper', name='docking_helper', output='screen'),

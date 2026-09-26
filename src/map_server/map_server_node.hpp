@@ -35,7 +35,7 @@ public:
 private:
   std::vector<msg::Area> areasWithExclusionsLast(std::vector<msg::Area> areas);
   nav_msgs::msg::OccupancyGrid mapToOccupancyGrid(msg::Map map);
-  static void paintEdgeBand(nav_msgs::msg::OccupancyGrid& grid, double band_m, int8_t value);
+  static void paintEdgeBand(nav_msgs::msg::OccupancyGrid& grid, double band_m, double exclusion_band_m, int8_t value);
   visualization_msgs::msg::MarkerArray mapToVisualizationMarkers(msg::Map map);
   geometry_msgs::msg::PoseArray dockingStationsToPoseArray(msg::Map map);
 

@@ -5,9 +5,10 @@
   loaded (config/hardware/worx_nav2.yaml adds the FTC ones) controller_server
   rejects goals that leave them empty.
 
-  This Behavior Tree replans the global path periodically at 1 Hz and it also has
-  recovery actions specific to planning / control as well as general system issues.
-  This will be continuous if a kinematically valid planner is selected.
+  Replanning: only when the goal changes or the path becomes invalid (blocked
+  in the costmap, e.g. by a bump obstacle). With the Smac lattice planner
+  (16 heading bins) every fresh plan takes a slightly different route: Nav2's
+  1 Hz replanning gave a wiggly track, even a 10 s refresh a kink each time.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -15,7 +16,11 @@
       <PipelineSequence name="NavigateWithReplanning">
         <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
-        <RateController hz="1.0">
+        <Fallback name="KeepPathWhileValid">
+          <ReactiveSequence>
+            <Inverter><GlobalUpdatedGoal/></Inverter>
+            <IsPathValid path="{path}"/>
+          </ReactiveSequence>
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
             <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
             <Sequence>
@@ -23,7 +28,7 @@
               <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
             </Sequence>
           </RecoveryNode>
-        </RateController>
+        </Fallback>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="{selected_controller}" goal_checker_id="general_goal_checker" progress_checker_id="progress_checker" error_code_id="{follow_path_error_code}"/>
           <Sequence>

@@ -62,7 +62,8 @@ def generate_launch_description():
                                     "0.05" if os.getenv("OM_HARDWARE") == "worx" else "0.1")),
                                 # Passable rim outside the areas: the Worx body overhangs
                                 # the edge on outline passes (see worx_nav2.yaml planner).
-                                "grid.edge_band": 0.3 if os.getenv("OM_HARDWARE") == "worx" else 0.0,
+                                "grid.edge_band": 0.45 if os.getenv("OM_HARDWARE") == "worx" else 0.0,
+                                "grid.edge_band_value": 90,
                             }
                         ],
                         remappings=[
