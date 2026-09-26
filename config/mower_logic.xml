@@ -111,6 +111,7 @@
               <Transit goal="{pass_start}"/>
             </Sequence>
           </Fallback>
+          <CornerTurn path="{pass_path}"/>
           <FollowPass path="{pass_path}" start_index="{pass_start_index}"/>
           <CornerTurn/>
         </Sequence>

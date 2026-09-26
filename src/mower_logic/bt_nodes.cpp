@@ -343,14 +343,24 @@ private:
 // place at the corner itself swings the front 0.47 m out. Does nothing when no
 // corner is pending; FAILURE when no back-up within corner_max_reverse works
 // (the continuation then goes through a transit / skips further).
+// With `path` (before FollowPass): align with the pass start the same way.
+// Transits end facing the travel direction and FTC's pre-rotate turned in
+// place there unchecked - up to 160 deg with the front swinging out of line + rim.
 class CornerTurn : public BT::StatefulActionNode
 {
 public:
   CornerTurn(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx) : BT::StatefulActionNode(n, c), ctx_(std::move(ctx)) {}
-  static BT::PortsList providedPorts() { return {}; }
+  static BT::PortsList providedPorts() { return {BT::InputPort<nav_msgs::msg::Path>("path")}; }
   NodeStatus onStart() override
   {
-    const auto target = std::exchange(ctx_->corner_yaw, std::nullopt);
+    const auto path = getInput<nav_msgs::msg::Path>("path");
+    align_ = path.has_value();
+    std::optional<double> target;
+    if (align_) {
+      if (!path->poses.empty()) target = yawOf(path->poses.front());
+    } else {
+      target = std::exchange(ctx_->corner_yaw, std::nullopt);
+    }
     const auto pose = ctx_->robotPose();
     if (!target || !pose) return NodeStatus::SUCCESS;
     target_ = *target;
@@ -358,13 +368,20 @@ public:
     if (std::abs(std::remainder(target_ - yaw, 2.0 * M_PI)) < 0.35) return NodeStatus::SUCCESS;  // FTC handles it
     const auto d = ctx_->reverseForTurn(pose->pose.position.x, pose->pose.position.y, yaw, target_,
                                         ctx_->params.corner_max_reverse);
+    const char * what = align_ ? "Pass start" : "Corner";
     if (!d) {
+      if (align_) {
+        // Nothing better nearby: FTC turns as before.
+        RCLCPP_WARN(ctx_->node->get_logger(), "Pass start: no back-up within %.1f m lets the body turn",
+                    ctx_->params.corner_max_reverse);
+        return NodeStatus::SUCCESS;
+      }
       RCLCPP_WARN(ctx_->node->get_logger(), "Corner: no back-up within %.1f m lets the body turn - transit instead",
                   ctx_->params.corner_max_reverse);
       ctx_->force_transit = true;
       return NodeStatus::SUCCESS;
     }
-    RCLCPP_INFO(ctx_->node->get_logger(), "Corner: back up %.1f m, turn %.0f deg in place", *d,
+    RCLCPP_INFO(ctx_->node->get_logger(), "%s: back up %.1f m, turn %.0f deg in place", what, *d,
                 std::remainder(target_ - yaw, 2.0 * M_PI) * 180.0 / M_PI);
     start_x_ = pose->pose.position.x;
     start_y_ = pose->pose.position.y;
@@ -378,7 +395,7 @@ public:
     const auto pose = ctx_->robotPose();
     if (!pose || std::chrono::steady_clock::now() > deadline_) {
       ctx_->drive(0.0, 0.0);
-      ctx_->force_transit = true;
+      if (!align_) ctx_->force_transit = true;
       return NodeStatus::SUCCESS;
     }
     if (phase_ == Phase::REVERSE) {
@@ -392,7 +409,7 @@ public:
     const double err = std::remainder(target_ - yawOf(*pose), 2.0 * M_PI);
     if (std::abs(err) < 0.05) {
       ctx_->drive(0.0, 0.0);
-      ctx_->continue_from_here = true;
+      if (!align_) ctx_->continue_from_here = true;
       return NodeStatus::SUCCESS;
     }
     ctx_->drive(0.0, std::clamp(2.0 * err, -0.6, 0.6));
@@ -409,28 +426,11 @@ private:
   }
   CtxPtr ctx_;
   Phase phase_ = Phase::TURN;
+  bool align_ = false;
   double target_ = 0.0, start_x_ = 0.0, start_y_ = 0.0, reverse_ = 0.0;
   std::chrono::steady_clock::time_point deadline_{};
 };
 
-// SUCCESS when a bump interrupted the pass or transit (consumes it).
-class TakeBump : public BT::ConditionNode
-{
-public:
-  TakeBump(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx) : BT::ConditionNode(n, c), ctx_(std::move(ctx)) {}
-  static BT::PortsList providedPorts() { return {}; }
-  NodeStatus tick() override
-  {
-    ctx_->setBlade(false);
-    const auto b = ctx_->takeBump();
-    if (!b) return NodeStatus::FAILURE;
-    ctx_->setBranch("BUMP_RECOVERY");
-    // Bumped on a pass: continue it past the obstacle. In a transit: just retry.
-    ctx_->skip_target.reset();
-    if (ctx_->bump_on_pass.exchange(false)) {
-      ctx_->skip_target = b;
-      ctx_->skip_counts_as_bump = true;
-    }
 // Before a transit or docking: when the footprint left line + rim (FTC
 // overshot the end of a cut corner), Nav2 refuses every plan ("Start
 // occupied") and the mission and docking die on the lawn. Back up straight
@@ -492,6 +492,24 @@ private:
   std::chrono::steady_clock::time_point deadline_{};
 };
 
+// SUCCESS when a bump interrupted the pass or transit (consumes it).
+class TakeBump : public BT::ConditionNode
+{
+public:
+  TakeBump(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx) : BT::ConditionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  NodeStatus tick() override
+  {
+    ctx_->setBlade(false);
+    const auto b = ctx_->takeBump();
+    if (!b) return NodeStatus::FAILURE;
+    ctx_->setBranch("BUMP_RECOVERY");
+    // Bumped on a pass: continue it past the obstacle. In a transit: just retry.
+    ctx_->skip_target.reset();
+    if (ctx_->bump_on_pass.exchange(false)) {
+      ctx_->skip_target = b;
+      ctx_->skip_counts_as_bump = true;
+    }
     return NodeStatus::SUCCESS;
   }
 
@@ -595,6 +613,7 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   add<AvoidingKnownObstacle>(factory, ctx, "AvoidingKnownObstacle");
   add<ReverseAlongTrack>(factory, ctx, "ReverseAlongTrack");
   add<CornerTurn>(factory, ctx, "CornerTurn");
+  add<FreeFootprint>(factory, ctx, "FreeFootprint");
   add<BackUp>(factory, ctx, "BackUp");
   add<Transit>(factory, ctx, "Transit");
   add<FollowPass>(factory, ctx, "FollowPass");
@@ -603,4 +622,3 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
 }
 
 }  // namespace open_mower_next::mower_logic
-  add<FreeFootprint>(factory, ctx, "FreeFootprint");
