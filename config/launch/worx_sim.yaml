@@ -1,0 +1,129 @@
+# Kinematic Worx simulation without python on the robot side (om_launch):
+# the same nodes as launch/worx_sim.launch.py, composed into three processes.
+#
+#   OM_MAP_PATH=map.geojson OM_DATUM_LAT=57.174598 OM_DATUM_LONG=12.468556 \
+#     ros2 run open_mower_next om_launch $(ros2 pkg prefix open_mower_next)/share/open_mower_next/config/launch/worx_sim.yaml
+#   ros2 service call /mower_logic/start_mowing std_srvs/srv/Trigger
+#
+# Start pose (map -> odom, default = the dock of the real map): OM_SIM_X, OM_SIM_Y,
+# OM_SIM_QZ, OM_SIM_QW (yaw as quaternion). Areas: OM_MOWING_AREAS (comma separated).
+env:
+  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+  ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+  # glibc: one malloc arena per thread, and big blocks kept in the heap after free,
+  # held ~150 MB of freed memory in the whole stack (Nav2: Smac's search graph and
+  # heuristic, costmap messages). Two arenas; blocks >= 512 KiB come from their own
+  # mapping and go back to the system when freed.
+  MALLOC_ARENA_MAX: "2"
+  MALLOC_MMAP_THRESHOLD_: "524288"
+  OM_HARDWARE: worx
+
+processes:
+  # ros2_control (Worx plugin with the firmware emulator) + the robot model.
+  - name: control
+    components:
+      - plugin: robot_state_publisher::RobotStatePublisher
+        name: robot_state_publisher
+        params:
+          - robot_description@file: $(find-pkg-share open_mower_next)/generated/worx_fake.urdf
+      # Controllers get the controller manager's arguments (not process-wide ones).
+      - plugin: controller_manager
+        name: controller_manager
+        remap: {"~/robot_description": /robot_description}
+        params: [$(find-pkg-share open_mower_next)/generated/worx_controllers_sim.yaml]
+        args: [-r, /diff_drive_base_controller/odom:=/odometry/filtered/map]
+        activate: [joint_state_broadcaster, diff_drive_base_controller, mower_controller]
+      - plugin: tf2_ros::StaticTransformBroadcasterNode
+        name: map_to_odom
+        params:
+          - frame_id: map
+            child_frame_id: odom
+            translation.x: $(env OM_SIM_X 2.184)
+            translation.y: $(env OM_SIM_Y 7.456)
+            translation.z: 0.0
+            rotation.x: 0.0
+            rotation.y: 0.0
+            rotation.z: $(env OM_SIM_QZ -0.927624)
+            rotation.w: $(env OM_SIM_QW 0.373516)
+
+  # Nav2. Its costmaps are child nodes: they only see process-wide parameter files.
+  - name: nav
+    ros_args:
+      - --params-file
+      - $(find-pkg-share open_mower_next)/config/nav2_params.yaml
+      - --params-file
+      - $(find-pkg-share open_mower_next)/config/hardware/worx_nav2.yaml
+      - --params-file
+      - $(find-pkg-share open_mower_next)/config/hardware/worx_nav2_robot.yaml
+      - -p
+      - use_sim_time:=false
+    components:
+      - plugin: nav2_controller::ControllerServer
+        name: controller_server
+        remap: {cmd_vel: cmd_vel_raw}
+      - plugin: nav2_bt_navigator::BtNavigator
+        name: bt_navigator
+      - plugin: behavior_server::BehaviorServer
+        name: behavior_server
+        remap: {cmd_vel: cmd_vel_raw}
+      - plugin: nav2_planner::PlannerServer
+        name: planner_server
+      - plugin: nav2_velocity_smoother::VelocitySmoother
+        name: velocity_smoother
+        remap: {cmd_vel: cmd_vel_raw, cmd_vel_smoothed: cmd_vel_nav}
+      - plugin: opennav_docking::DockingServer
+        name: docking_server
+        remap: {cmd_vel: cmd_vel_raw}
+      - plugin: nav2_lifecycle_manager::LifecycleManager
+        name: lifecycle_manager_navigation
+        params:
+          - autostart: true
+            node_names: [controller_server, planner_server, behavior_server, bt_navigator, velocity_smoother,
+                         docking_server]
+
+  # Map, coverage planning, docking helper and the mission.
+  - name: core
+    components:
+      - plugin: open_mower_next::map_server::MapServerNode
+        name: map_server
+        remap: {map_grid: map_grid, map: mowing_map}
+        params:
+          - path: $(env OM_MAP_PATH)
+            datum: [$(env OM_DATUM_LAT), $(env OM_DATUM_LONG)]
+            grid.resolution: 0.05
+            grid.max_size: 4000
+            grid.edge_band: 0.25
+            grid.exclusion_band: 0.25
+            grid.edge_band_value: 60
+            grid.stance_front: 0.47
+            grid.stance_rear: 0.11
+            grid.stance_half_width: 0.195
+            grid.stance_front_chamfer: 0.10
+      - plugin: open_mower_next::coverage_server::CoverageServerNode
+        name: coverage_server
+      - plugin: open_mower_next::docking_helper::DockingHelperNode
+        name: docking_helper
+      - plugin: open_mower_next::mower_logic::MowerLogicNode
+        name: mower_logic
+        executor: multi
+        threads: 2
+        params:
+          - require_gps: false
+            gps_settle: 5.0
+            controller_id: FTC
+            goal_checker_id: ftc_goal_checker
+            progress_checker_id: ftc_progress_checker
+            areas: $(env OM_MOWING_AREAS "")
+            edge_corrections_file: $(env OM_EDGE_CORRECTIONS_PATH "")
+
+  - name: twist_mux
+    cmd: [/opt/ros/jazzy/lib/twist_mux/twist_mux, --ros-args,
+          --params-file, $(find-pkg-share open_mower_next)/config/twist_mux.yaml,
+          -r, /cmd_vel_out:=/diff_drive_base_controller/cmd_vel]
+
+  # Simulation only (python): charger contacts at the dock, virtual obstacles.
+  - name: sim_dock
+    cmd: [python3, $(find-pkg-share open_mower_next)/../../lib/open_mower_next/worx_sim_dock.py]
+  - name: sim_obstacles
+    cmd: [python3, $(find-pkg-share open_mower_next)/../../lib/open_mower_next/worx_sim_obstacles.py,
+          --ros-args, -p, "obstacles:='$(env OM_SIM_OBSTACLES \"\")'"]

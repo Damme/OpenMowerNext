@@ -26,6 +26,10 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
   <depend>rclcpp_components</depend>
+  <depend>class_loader</depend>
+  <depend>controller_manager</depend>
+  <depend>realtime_tools</depend>
+  <depend>yaml_cpp_vendor</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
@@ -46,7 +50,6 @@
 
   <exec_depend>vesc_hw_interface</exec_depend>
   <exec_depend>control_msgs</exec_depend>
-  <exec_depend>controller_manager</exec_depend>
   <exec_depend>diff_drive_controller</exec_depend>
   <exec_depend>effort_controllers</exec_depend>
   <exec_depend>imu_sensor_broadcaster</exec_depend>

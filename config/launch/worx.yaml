@@ -1,0 +1,143 @@
+# The Worx robot without python (om_launch): what launch/openmower.launch.py starts
+# for OM_HARDWARE=worx, composed into four processes.
+#
+#   OM_MAP_PATH=... OM_DATUM_LAT=... OM_DATUM_LONG=... \
+#     /ws/install/open_mower_next/lib/open_mower_next/om_launch \
+#     /ws/install/open_mower_next/share/open_mower_next/config/launch/worx.yaml
+#
+# Options (environment): OM_WORX_MOTORS_ENABLED (true), OM_IMU_I2C_DEVICE (/dev/i2c-1),
+# OM_GPS_ENABLED (true: ublox_f9p on config/gps.yaml's port), OM_GPS_FIX_TOPIC,
+# OM_GPS_WAIT_TIME_SEC, OM_GPS_RECENT_TIMEOUT_SEC, OM_BATTERY_LOW_FRACTION,
+# OM_BATTERY_RESUME_FRACTION, OM_MOWING_AREAS, OM_EDGE_CORRECTIONS_PATH.
+env:
+  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+  ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+  # glibc: one malloc arena per thread, and big blocks kept in the heap after free,
+  # held ~150 MB of freed memory in the whole stack (Nav2: Smac's search graph and
+  # heuristic, costmap messages). Two arenas; blocks >= 512 KiB come from their own
+  # mapping and go back to the system when freed.
+  MALLOC_ARENA_MAX: "2"
+  MALLOC_MMAP_THRESHOLD_: "524288"
+  OM_HARDWARE: worx
+
+processes:
+  # ros2_control with the Worx board over SPI + the robot model.
+  - name: control
+    components:
+      - plugin: robot_state_publisher::RobotStatePublisher
+        name: robot_state_publisher
+        params:
+          - robot_description@file: $(find-pkg-share open_mower_next)/generated/worx_spidev.urdf
+      # Controllers get the controller manager's arguments (not process-wide ones).
+      - plugin: controller_manager
+        name: controller_manager
+        remap: {"~/robot_description": /robot_description}
+        params: [$(find-pkg-share open_mower_next)/generated/worx_controllers.yaml]
+        activate: [joint_state_broadcaster, diff_drive_base_controller, mower_controller]
+
+  # Nav2. Its costmaps are child nodes: they only see process-wide parameter files.
+  - name: nav
+    ros_args:
+      - --params-file
+      - $(find-pkg-share open_mower_next)/config/nav2_params.yaml
+      - --params-file
+      - $(find-pkg-share open_mower_next)/config/hardware/worx_nav2.yaml
+      - --params-file
+      - $(find-pkg-share open_mower_next)/config/hardware/worx_nav2_robot.yaml
+      - -p
+      - use_sim_time:=false
+    components:
+      - plugin: nav2_controller::ControllerServer
+        name: controller_server
+        remap: {cmd_vel: cmd_vel_raw}
+      - plugin: nav2_bt_navigator::BtNavigator
+        name: bt_navigator
+      - plugin: behavior_server::BehaviorServer
+        name: behavior_server
+        remap: {cmd_vel: cmd_vel_raw}
+      - plugin: nav2_planner::PlannerServer
+        name: planner_server
+      - plugin: nav2_velocity_smoother::VelocitySmoother
+        name: velocity_smoother
+        remap: {cmd_vel: cmd_vel_raw, cmd_vel_smoothed: cmd_vel_nav}
+      - plugin: opennav_docking::DockingServer
+        name: docking_server
+        remap: {cmd_vel: cmd_vel_raw}
+      - plugin: nav2_lifecycle_manager::LifecycleManager
+        name: lifecycle_manager_navigation
+        params:
+          - autostart: true
+            node_names: [controller_server, planner_server, behavior_server, bt_navigator, velocity_smoother,
+                         docking_server]
+
+  # Sensors, localization, map, coverage planning, docking helper and the mission.
+  - name: core
+    ros_args:
+      - --params-file
+      - $(find-pkg-share open_mower_next)/config/robot_localization.yaml
+      - -p
+      - use_sim_time:=false
+    components:
+      - plugin: open_mower_next::lsm6dsv_imu::Lsm6dsvImuNode
+        name: lsm6dsv_imu
+        params:
+          - i2c_device: $(env OM_IMU_I2C_DEVICE /dev/i2c-1)
+      - plugin: open_mower_next::localization_components::Ekf
+        name: ekf_se_odom
+        remap: {imu/data: imu/data_raw}
+      - plugin: open_mower_next::localization_components::Ekf
+        name: ekf_se_map
+        remap: {imu/data: imu/data_raw, odometry/filtered: odometry/filtered/map}
+      - plugin: robot_localization::NavSatTransform
+        name: navsat_transform_node
+        remap: {odometry/filtered: odometry/filtered/map, imu: gps/orientation}
+        params:
+          - datum: [$(env OM_DATUM_LAT), $(env OM_DATUM_LONG), 0.0]
+      - plugin: open_mower_next::map_server::MapServerNode
+        name: map_server
+        remap: {map_grid: map_grid, map: mowing_map}
+        params:
+          - path: $(env OM_MAP_PATH)
+            datum: [$(env OM_DATUM_LAT), $(env OM_DATUM_LONG)]
+            grid.use_gaussian_blur: false
+            grid.resolution: $(env OM_MAP_GRID_RESOLUTION 0.05)
+            grid.edge_band: 0.25
+            grid.exclusion_band: 0.25
+            grid.edge_band_value: 60
+            grid.stance_front: 0.47
+            grid.stance_rear: 0.11
+            grid.stance_half_width: 0.195
+            grid.stance_front_chamfer: 0.10
+      - plugin: open_mower_next::map_recorder::MapRecorderNode
+        name: map_recorder
+      - plugin: open_mower_next::docking_helper::DockingHelperNode
+        name: docking_helper
+      - plugin: open_mower_next::coverage_server::CoverageServerNode
+        name: coverage_server
+      - plugin: open_mower_next::mower_logic::MowerLogicNode
+        name: mower_logic
+        executor: multi
+        threads: 2
+        params:
+          - gps_fix_topic: $(env OM_GPS_FIX_TOPIC /gps/fix)
+            gps_settle: $(env OM_GPS_WAIT_TIME_SEC 10.0)
+            gps_timeout: $(env OM_GPS_RECENT_TIMEOUT_SEC 1.5)
+            battery_low: $(env OM_BATTERY_LOW_FRACTION 0.2)
+            battery_resume: $(env OM_BATTERY_RESUME_FRACTION 0.95)
+            areas: $(env OM_MOWING_AREAS "")
+            edge_corrections_file: $(env OM_EDGE_CORRECTIONS_PATH /data/edge_corrections.txt)
+            controller_id: FTC
+            goal_checker_id: ftc_goal_checker
+            progress_checker_id: ftc_progress_checker
+
+  - name: twist_mux
+    cmd: [/opt/ros/jazzy/lib/twist_mux/twist_mux, --ros-args,
+          --params-file, $(find-pkg-share open_mower_next)/config/twist_mux.yaml,
+          -r, /cmd_vel_out:=/diff_drive_base_controller/cmd_vel]
+
+  # u-blox F9P on a serial port (config/gps.yaml). The Worx Pi feeds the F9P
+  # through str2str today; set OM_GPS_ENABLED=false while that stays outside ROS.
+  - name: gps
+    enabled: $(env OM_GPS_ENABLED true)
+    cmd: [$(find-pkg-share ublox_f9p)/../../lib/ublox_f9p/ublox_f9p, --ros-args,
+          --params-file, $(find-pkg-share open_mower_next)/config/gps.yaml]

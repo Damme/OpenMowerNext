@@ -82,6 +82,7 @@ include(cmake/lsm6dsv_imu.cmake)
 include(cmake/mower_logic.cmake)
 include(cmake/ftc_controller.cmake)
 include(cmake/costmap_layers.cmake)
+include(cmake/om_launch.cmake)
 include(cmake/lean_smac.cmake)
 include(cmake/localization_components.cmake)
 
