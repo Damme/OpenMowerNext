@@ -164,7 +164,7 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
     switch (status_slot_) {
       case 0:
         b["Battery"] = {
-          {"mV", static_cast<int>(battery_mv_)}, {"mA", opt_.in_charger && battery_mv_ < opt_.full_mv ? 1200 : 0},
+          {"mV", static_cast<int>(battery_mv_)}, {"mA", opt_.in_charger ? (battery_mv_ < opt_.full_mv ? 1200 : 30) : 0},
           {"Temp", 215}, {"CellLow", 1}, {"CellHigh", 1}, {"InCharger", opt_.in_charger ? 1 : 0}};
         break;
       case 1:
