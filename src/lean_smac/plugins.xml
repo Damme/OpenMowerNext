@@ -1,0 +1,5 @@
+<library path="lean_smac_planner">
+  <class type="open_mower_next::lean_smac::LeanSmacPlannerLattice" base_class_type="nav2_core::GlobalPlanner">
+    <description>nav2_smac_planner::SmacPlannerLattice that releases its search memory after every plan.</description>
+  </class>
+</library>

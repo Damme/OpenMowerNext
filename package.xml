@@ -17,6 +17,7 @@
   <depend>pluginlib</depend>
   <depend>nav2_core</depend>
   <depend>nav2_costmap_2d</depend>
+  <depend>nav2_smac_planner</depend>
   <depend>nav2_util</depend>
   <depend>tf2_eigen</depend>
   <depend>eigen</depend>

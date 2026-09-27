@@ -1,0 +1,25 @@
+# Worx robot (Pi Zero 2, 512 MB), layered on nav2_params.yaml + worx_nav2.yaml by the
+# om_launch manifests (config/launch/worx*.yaml). Memory/CPU, not behaviour.
+planner_server:
+  ros__parameters:
+    GridBased:
+      # Same Smac lattice planner, but the search graph and the obstacle heuristic
+      # (25 MB queue + 6 MB table at 5 cm on the Worx map) are released after each
+      # plan instead of being kept until the next one.
+      plugin: "open_mower_next::lean_smac::LeanSmacPlannerLattice"
+      # The heuristic cache only helps replanning to the same goal; the transit BT
+      # replans only when the path becomes invalid.
+      cache_obstacle_heuristic: false
+
+# The mowing BTs use spin, backup and wait only.
+behavior_server:
+  ros__parameters:
+    behavior_plugins: ["spin", "backup", "wait"]
+
+# Nothing on the robot reads the full global costmap (1.5 M cells): converting and
+# sending it every second cost CPU and ~12 MB of message buffers. Planning uses it
+# in-process. (rviz in the sim: use launch/worx_sim.launch.py.)
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      publish_frequency: 0.0
