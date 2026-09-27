@@ -45,6 +45,7 @@ export default withMermaid({
           { text: 'Coverage planner', link: '/architecture/coverage-planner' },
           { text: 'Mowing logic', link: '/architecture/mower-logic' },
           { text: 'Worx hardware', link: '/architecture/worx-hardware' },
+          { text: 'om_launch (robot launcher)', link: '/architecture/om-launch' },
           { text: 'Sim node', link: '/architecture/sim-node' },
         ]
       },
