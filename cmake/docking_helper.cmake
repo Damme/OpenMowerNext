@@ -18,6 +18,7 @@ ament_target_dependencies(docking_helper_component
         tf2_geometry_msgs
         nav2_msgs
         geometry_msgs
+        sensor_msgs
         std_msgs
 )
 

@@ -8,6 +8,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <nav2_msgs/action/dock_robot.hpp>
 #include "open_mower_next/msg/map.hpp"
 #include "open_mower_next/msg/docking_station.hpp"
@@ -75,6 +76,13 @@ private:
   rclcpp::TimerBase::SharedPtr set_pose_timer_;
   std::atomic<bool> charger_present_{false};
   std::atomic<bool> docked_pose_set_{false};
+
+  // GPS gate for localization: fixes pass only off the charger (and RTK fixed).
+  void gateGps(sensor_msgs::msg::NavSatFix::ConstSharedPtr m);
+  rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr gps_pub_;
+  bool gps_require_rtk_fixed_ = true;
+  std::string gps_gate_reason_ = "starting";
 
   template <typename ActionT, typename GoalHandleT>
   void executeDockingAction(const std::shared_ptr<GoalHandleT>& goal_handle,

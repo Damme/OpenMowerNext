@@ -34,17 +34,50 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
       std::bind(&DockingHelperNode::handleDockRobotToCancel, this, _1),
       std::bind(&DockingHelperNode::handleDockRobotToAccepted, this, _1));
 
-  if (declare_parameter("set_pose_when_docked", false))
+  const bool set_pose = declare_parameter("set_pose_when_docked", false);
+  const bool gps_gate = declare_parameter("gps_gate", false);
+  if (set_pose || gps_gate)
   {
-    set_pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        declare_parameter("set_pose_topic", std::string("/ekf_se_map/set_pose")), 10);
     charger_sub_ = create_subscription<std_msgs::msg::Bool>(
         "/power/charger_present", 10, [this](std_msgs::msg::Bool::ConstSharedPtr m) {
           charger_present_ = m->data;
           if (!m->data) docked_pose_set_ = false;
         });
+  }
+  if (set_pose)
+  {
+    set_pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        declare_parameter("set_pose_topic", std::string("/ekf_se_map/set_pose")), 10);
     set_pose_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { setPoseWhenDocked(); });
   }
+  if (gps_gate)
+  {
+    // The dock has a roof: RTK there is spotty, and float sat 1.2 m off while
+    // reporting 14 mm accuracy. On the charger the dock pose is the truth, so
+    // localization only gets fixes off the charger, and (by default) only RTK fixed.
+    gps_require_rtk_fixed_ = declare_parameter("gps_require_rtk_fixed", true);
+    gps_pub_ = create_publisher<sensor_msgs::msg::NavSatFix>(
+        declare_parameter("gps_gate_out", std::string("/gps/fix_filtered")), 10);
+    gps_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
+        declare_parameter("gps_gate_in", std::string("/gps/fix")), 10,
+        [this](sensor_msgs::msg::NavSatFix::ConstSharedPtr m) { gateGps(m); });
+  }
+}
+
+void open_mower_next::docking_helper::DockingHelperNode::gateGps(sensor_msgs::msg::NavSatFix::ConstSharedPtr m)
+{
+  std::string why;
+  if (charger_present_)
+    why = "on the charger";
+  else if (gps_require_rtk_fixed_ && m->status.status != sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX)
+    why = "no RTK fixed solution";
+  if (why != gps_gate_reason_)
+  {
+    RCLCPP_INFO(get_logger(), "GPS to localization: %s", why.empty() ? "on" : ("off (" + why + ")").c_str());
+    gps_gate_reason_ = why;
+  }
+  if (why.empty())
+    gps_pub_->publish(*m);
 }
 
 void open_mower_next::docking_helper::DockingHelperNode::setPoseWhenDocked()
