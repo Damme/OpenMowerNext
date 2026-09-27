@@ -1,5 +1,12 @@
 # Worx robot (Pi Zero 2, 512 MB), layered on nav2_params.yaml + worx_nav2.yaml by the
-# om_launch manifests (config/launch/worx*.yaml). Memory/CPU, not behaviour.
+# om_launch manifests (config/launch/worx*.yaml). Memory/CPU of the Pi Zero 2, not behaviour.
+
+# The BT gives a server 20 ms (nav2_params.yaml) to accept a goal. The Pi's cores often
+# need longer: transits failed with "Timed out while waiting for action server to
+# acknowledge goal request for follow_path".
+bt_navigator:
+  ros__parameters:
+    default_server_timeout: 500
 planner_server:
   ros__parameters:
     GridBased:
