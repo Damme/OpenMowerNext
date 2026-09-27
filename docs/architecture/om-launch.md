@@ -93,3 +93,7 @@ Measured in the kinematic sim (mow_6, CycloneDDS, x86 limited to 0.5 CPU, PSS mi
 | python launch, glibc defaults | 193 MB | 307 MB | 50 MB |
 | python launch + both malloc settings | 61 MB | 158 MB | 49 MB |
 | om_launch (composed) + lean planner + malloc settings | 52–55 MB | 103–105 MB | 0.6 MB |
+
+On the Pi Zero 2 W (same kinematic sim with the software Worx board, mow_6): 143 MB PSS+swap for the whole stack
+mid-mission, 283 MB of the 455 MB still available, ~90 % CPU of 400 % (with Nav2's lifecycle bonds off – see
+`worx_nav2_robot.yaml`; they took ~25 % of a core in the lifecycle manager alone).
