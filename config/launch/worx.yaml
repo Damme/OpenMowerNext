@@ -32,7 +32,8 @@ processes:
       - plugin: controller_manager
         name: controller_manager
         remap: {"~/robot_description": /robot_description}
-        params: [$(find-pkg-share open_mower_next)/generated/worx_controllers.yaml]
+        # 50 Hz: the board reports every 50 ms; 100 Hz overran on the Pi Zero 2.
+        params: [$(find-pkg-share open_mower_next)/generated/worx_controllers.yaml, {update_rate: 50}]
         activate: [joint_state_broadcaster, diff_drive_base_controller, mower_controller]
 
   # Nav2. Its costmaps are child nodes: they only see process-wide parameter files.
@@ -84,14 +85,18 @@ processes:
           - i2c_device: $(env OM_IMU_I2C_DEVICE /dev/i2c-1)
       - plugin: open_mower_next::localization_components::Ekf
         name: ekf_se_odom
+        # 25 Hz (robot_localization.yaml: 50): 50 Hz missed its rate on the Pi Zero 2.
+        params: [{frequency: 25.0, sensor_timeout: 0.1}]
         # Both EKFs would listen on the same set_pose: one topic each.
         remap: {imu/data: imu/data_raw, set_pose: /ekf_se_odom/set_pose}
       - plugin: open_mower_next::localization_components::Ekf
         name: ekf_se_map
+        params: [{frequency: 25.0, sensor_timeout: 0.1}]
         remap: {imu/data: imu/data_raw, odometry/filtered: odometry/filtered/map, set_pose: /ekf_se_map/set_pose}
       - plugin: robot_localization::NavSatTransform
         name: navsat_transform_node
-        remap: {odometry/filtered: odometry/filtered/map, imu: gps/orientation}
+        # GPS through docking_helper's gate: nothing on the charger, only RTK fixed.
+        remap: {odometry/filtered: odometry/filtered/map, imu: gps/orientation, gps/fix: /gps/fix_filtered}
         params:
           - datum: [$(env OM_DATUM_LAT), $(env OM_DATUM_LONG), 0.0]
       - plugin: open_mower_next::map_server::MapServerNode
@@ -115,6 +120,7 @@ processes:
         name: docking_helper
         params:
           - set_pose_when_docked: true   # on the charger: heading and position from the recorded dock
+            gps_gate: true               # /gps/fix -> /gps/fix_filtered (navsat) off the charger, RTK fixed only
       - plugin: open_mower_next::coverage_server::CoverageServerNode
         name: coverage_server
       - plugin: open_mower_next::mower_logic::MowerLogicNode
@@ -149,9 +155,9 @@ processes:
           - host: $(env OM_GPS_HOST 127.0.0.1)
             port: $(env OM_GPS_PORT 5015)
 
-  # Test recording (OM_RECORD=true): every topic except the big grids, into an
-  # MCAP bag at OM_RECORD_URI (a directory that must not exist yet). /rosout is
-  # in it, so the bag also holds every node's log.
+  # Test recording (OM_RECORD=true) into an MCAP bag at OM_RECORD_URI (a
+  # directory that must not exist yet). Only what drive/dock tests need: all
+  # topics took ~50 % of a Pi Zero 2 core. /rosout holds every node's log.
   - name: record
     enabled: $(env OM_RECORD false)
     components:
@@ -161,6 +167,6 @@ processes:
           - storage.uri: $(env OM_RECORD_URI)
             storage.storage_id: mcap
             storage.max_cache_size: 2000000
-            record.all_topics: true
+            record.all_topics: false
             record.include_hidden_topics: true   # action feedback/status (docking progress)
-            record.exclude_regex: ".*costmap.*|/map_grid|/map_visualization|/robot_description|/parameter_events|.*/transition_event|/controller_manager/(introspection_data|statistics)/.*|/dynamic_joint_states"
+            record.regex: "/tf|/tf_static|/joint_states|/rosout|/imu/data_raw|/gps/fix|/gps/fix_filtered|/odometry/gps|/odometry/filtered.*|/diff_drive_base_controller/(cmd_vel|odom)|/cmd_vel_.*|/worx/status|/power.*|/mower_logic/state|/plan|/received_global_plan|/FTC/.*|/docking_trajectory|/staging_pose|/dock_pose|.*/_action/(feedback|status)"
