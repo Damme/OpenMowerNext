@@ -127,3 +127,19 @@ processes:
   - name: sim_obstacles
     cmd: [python3, $(find-pkg-share open_mower_next)/../../lib/open_mower_next/worx_sim_obstacles.py,
           --ros-args, -p, "obstacles:='$(env OM_SIM_OBSTACLES \"\")'"]
+
+  # Test recording (OM_RECORD=true): every topic except the big grids, into an
+  # MCAP bag at OM_RECORD_URI (a directory that must not exist yet). /rosout is
+  # in it, so the bag also holds every node's log.
+  - name: record
+    enabled: $(env OM_RECORD false)
+    components:
+      - plugin: rosbag2_transport::Recorder
+        name: recorder
+        params:
+          - storage.uri: $(env OM_RECORD_URI)
+            storage.storage_id: mcap
+            storage.max_cache_size: 2000000
+            record.all_topics: true
+            record.include_hidden_topics: true   # action feedback/status (docking progress)
+            record.exclude_regex: ".*costmap.*|/map_grid|/map_visualization|/robot_description|/parameter_events|.*/transition_event|/controller_manager/(introspection_data|statistics)/.*|/dynamic_joint_states"

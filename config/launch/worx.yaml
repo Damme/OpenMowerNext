@@ -6,7 +6,7 @@
 #     /ws/install/open_mower_next/share/open_mower_next/config/launch/worx.yaml
 #
 # Options (environment): OM_WORX_MOTORS_ENABLED (true), OM_IMU_I2C_DEVICE (/dev/i2c-1),
-# OM_GPS_ENABLED (true: ublox_f9p on config/gps.yaml's port), OM_GPS_FIX_TOPIC,
+# OM_GPS_ENABLED (true), OM_GPS_HOST/OM_GPS_PORT (str2str's UBX server, 127.0.0.1:5015), OM_GPS_FIX_TOPIC,
 # OM_GPS_WAIT_TIME_SEC, OM_GPS_RECENT_TIMEOUT_SEC, OM_BATTERY_LOW_FRACTION,
 # OM_BATTERY_RESUME_FRACTION, OM_MOWING_AREAS, OM_EDGE_CORRECTIONS_PATH.
 env:
@@ -84,10 +84,11 @@ processes:
           - i2c_device: $(env OM_IMU_I2C_DEVICE /dev/i2c-1)
       - plugin: open_mower_next::localization_components::Ekf
         name: ekf_se_odom
-        remap: {imu/data: imu/data_raw}
+        # Both EKFs would listen on the same set_pose: one topic each.
+        remap: {imu/data: imu/data_raw, set_pose: /ekf_se_odom/set_pose}
       - plugin: open_mower_next::localization_components::Ekf
         name: ekf_se_map
-        remap: {imu/data: imu/data_raw, odometry/filtered: odometry/filtered/map}
+        remap: {imu/data: imu/data_raw, odometry/filtered: odometry/filtered/map, set_pose: /ekf_se_map/set_pose}
       - plugin: robot_localization::NavSatTransform
         name: navsat_transform_node
         remap: {odometry/filtered: odometry/filtered/map, imu: gps/orientation}
@@ -112,6 +113,8 @@ processes:
         name: map_recorder
       - plugin: open_mower_next::docking_helper::DockingHelperNode
         name: docking_helper
+        params:
+          - set_pose_when_docked: true   # on the charger: heading and position from the recorded dock
       - plugin: open_mower_next::coverage_server::CoverageServerNode
         name: coverage_server
       - plugin: open_mower_next::mower_logic::MowerLogicNode
@@ -135,9 +138,29 @@ processes:
           --params-file, $(find-pkg-share open_mower_next)/config/twist_mux.yaml,
           -r, /cmd_vel_out:=/diff_drive_base_controller/cmd_vel]
 
-  # u-blox F9P on a serial port (config/gps.yaml). The Worx Pi feeds the F9P
-  # through str2str today; set OM_GPS_ENABLED=false while that stays outside ROS.
+  # u-blox F9P: str2str owns the serial port (and feeds it NTRIP corrections)
+  # and serves the receiver's UBX on TCP; ubx_gps reads NAV-PVT from there.
   - name: gps
     enabled: $(env OM_GPS_ENABLED true)
-    cmd: [$(find-pkg-share ublox_f9p)/../../lib/ublox_f9p/ublox_f9p, --ros-args,
-          --params-file, $(find-pkg-share open_mower_next)/config/gps.yaml]
+    components:
+      - plugin: open_mower_next::ubx_gps::UbxGpsNode
+        name: ubx_gps
+        params:
+          - host: $(env OM_GPS_HOST 127.0.0.1)
+            port: $(env OM_GPS_PORT 5015)
+
+  # Test recording (OM_RECORD=true): every topic except the big grids, into an
+  # MCAP bag at OM_RECORD_URI (a directory that must not exist yet). /rosout is
+  # in it, so the bag also holds every node's log.
+  - name: record
+    enabled: $(env OM_RECORD false)
+    components:
+      - plugin: rosbag2_transport::Recorder
+        name: recorder
+        params:
+          - storage.uri: $(env OM_RECORD_URI)
+            storage.storage_id: mcap
+            storage.max_cache_size: 2000000
+            record.all_topics: true
+            record.include_hidden_topics: true   # action feedback/status (docking progress)
+            record.exclude_regex: ".*costmap.*|/map_grid|/map_visualization|/robot_description|/parameter_events|.*/transition_event|/controller_manager/(introspection_data|statistics)/.*|/dynamic_joint_states"

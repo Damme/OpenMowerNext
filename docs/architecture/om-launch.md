@@ -72,6 +72,24 @@ OM_MAP_PATH=map.geojson OM_DATUM_LAT=.. OM_DATUM_LONG=.. OM_GPS_ENABLED=false \
   install/open_mower_next/share/open_mower_next/config/launch/worx.yaml
 ```
 
+## Robot options
+
+Set in the environment when starting `worx.yaml`:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `OM_WORX_MOTORS_ENABLED` | `true` | `false`: motors stay disabled (`/worx/motors_enabled` can switch them on later) |
+| `OM_WORX_BLADE_ENABLED` | `true` | `false`: blade PWM is always 0, whatever is requested (tests near the dock) |
+| `OM_GPS_ENABLED` | `true` | `ubx_gps` reads the F9P's NAV-PVT from str2str's TCP server (`OM_GPS_HOST`, `OM_GPS_PORT`, default 127.0.0.1:5015) |
+| `OM_RECORD` | `false` | `true`: MCAP bag of all topics except the grids and ros2_control introspection, into `OM_RECORD_URI` (a directory that must not exist yet; ~4 MB per minute, `/rosout` included) |
+
+On the charger, `docking_helper` (`set_pose_when_docked`) sets `ekf_se_map` to the recorded pose of the docking
+station, heading included: nothing else gives the robot an absolute heading. Each EKF has its own `set_pose` topic
+(`/ekf_se_map/set_pose`, `/ekf_se_odom/set_pose`).
+
+`scripts/worx_monitor.py` prints a status line per second (GPS, pose, charger, motors, commanded vs measured wheel
+speed, PWM and current, mission state, docking progress) and every warning or error of any node.
+
 ## Memory settings
 
 Both manifests set:
