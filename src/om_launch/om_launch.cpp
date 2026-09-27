@@ -206,6 +206,10 @@ int main(int argc, char ** argv)
   ::sigaction(SIGINT, &sa, nullptr);
   ::sigaction(SIGTERM, &sa, nullptr);
   ::sigaction(SIGCHLD, &sa, nullptr);
+  // A closed stdout (e.g. `om_launch ... | tee` with tee gone) must not kill the
+  // supervisor and, through their broken output pipes, the robot's processes
+  // before they could stop the motors. Inherited: children ignore it too.
+  ::signal(SIGPIPE, SIG_IGN);
 
   bool stopping = false;
   Clock::time_point stop_time;
