@@ -66,6 +66,7 @@ private:
     double pwm_per_mps = 1230.0;       // ROS1 MAXSPEED
     int max_pwm = 1230;
     int mow_pwm = 1850;                // blade PWM at effort 1.0
+    bool blade_enabled = true;         // false: blade PWM always 0 (tests near the dock)
     bool invert_left = false;
     bool invert_right = false;
     double link_timeout = 1.0;         // s without board messages -> link_ok false

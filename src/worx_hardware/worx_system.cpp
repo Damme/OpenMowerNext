@@ -81,6 +81,7 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.pwm_per_mps = paramD(info, "pwm_per_mps", cfg_.pwm_per_mps);
     cfg_.max_pwm = static_cast<int>(paramD(info, "max_pwm", cfg_.max_pwm));
     cfg_.mow_pwm = static_cast<int>(paramD(info, "mow_pwm", cfg_.mow_pwm));
+    cfg_.blade_enabled = paramB(info, "blade_enabled", cfg_.blade_enabled);
     cfg_.invert_left = paramB(info, "invert_left", cfg_.invert_left);
     cfg_.invert_right = paramB(info, "invert_right", cfg_.invert_right);
     cfg_.link_timeout = paramD(info, "link_timeout", cfg_.link_timeout);
@@ -122,6 +123,7 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     get_logger(), "Worx hardware: transport=%s device=%s ticks/m=%.1f pwm/mps=%.0f max_pwm=%d mow_pwm=%d",
     cfg_.transport.c_str(), cfg_.spi_device.c_str(), cfg_.wheel_ticks_per_m, cfg_.pwm_per_mps,
     cfg_.max_pwm, cfg_.mow_pwm);
+  if (!cfg_.blade_enabled) RCLCPP_WARN(get_logger(), "Blade disabled (blade_enabled=false): blade PWM stays 0");
   return CallbackReturn::SUCCESS;
 }
 
@@ -364,7 +366,7 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration &)
       RCLCPP_INFO(get_logger(), "Bump cleared");
     }
   }
-  int pm = blade_lockout_ ? 0 : static_cast<int>(std::clamp(blade, 0.0, 1.0) * cfg_.mow_pwm);
+  int pm = blade_lockout_ || !cfg_.blade_enabled ? 0 : static_cast<int>(std::clamp(blade, 0.0, 1.0) * cfg_.mow_pwm);
   if (emergency_ || !motors_enabled_ || !link_ok) {
     pl = pr = pm = 0;
   }
