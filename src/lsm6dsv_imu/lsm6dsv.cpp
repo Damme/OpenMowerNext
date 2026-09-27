@@ -217,37 +217,51 @@ bool Lsm6dsv::configureFifo()
 
 void Lsm6dsv::onSflpBias(const int16_t raw[3])
 {
-  // Convergence is judged on the raw estimate; once it agreed, the bias used is
-  // low-passed (SFLP_ODR 15 Hz): it flips between 4.375 mdps steps.
-  const double a = fifo_opts_.bias_tau > 0 ? std::min(1.0, 1.0 / (15.0 * fifo_opts_.bias_tau)) : 1.0;
+  // SFLP's absolute bias sat ~0.003 dps below the stationary truth on the robot,
+  // so only its CHANGE is used: bias = startup calibration + (SFLP - SFLP reference).
+  // Convergence is judged on the raw estimate. The reference is the plain mean of
+  // the outputs over the following 2 tau (15 Hz, 4.375 mdps steps); after that the
+  // estimate is low-passed (tau), starting from the reference.
+  double v[3];
   bool agree = true;
   for (int i = 0; i < 3; i++) {
-    const double v = raw[i] * SFLP_GBIAS_TO_GYRO_LSB;
-    agree = agree && std::abs(v - bias_[i]) * GYRO_DEG_PER_LSB <= fifo_opts_.bias_agree_dps;
-    sflp_bias_[i] = sflp_agreed_ ? sflp_bias_[i] + a * (v - sflp_bias_[i]) : v;
+    v[i] = raw[i] * SFLP_GBIAS_TO_GYRO_LSB;
+    agree = agree && std::abs(v[i] - bias_[i]) * GYRO_DEG_PER_LSB <= fifo_opts_.bias_agree_dps;
+  }
+  sflp_seen_ = true;
+  if (sflp_ref_set_) {
+    const double a = fifo_opts_.bias_tau > 0 ? std::min(1.0, 1.0 / (15.0 * fifo_opts_.bias_tau)) : 1.0;
+    for (int i = 0; i < 3; i++) sflp_bias_[i] += a * (v[i] - sflp_bias_[i]);
+  } else {
+    for (int i = 0; i < 3; i++) sflp_bias_[i] = v[i];
+    if (!sflp_agreed_) {
+      if (!agree) return;
+      sflp_agreed_ = true;
+      const auto b = sflpBiasDps();
+      log_(0, fmt("SFLP gyro bias converged to the startup calibration (dps): %+.4f %+.4f %+.4f", b.x, b.y, b.z));
+    }
+    for (int i = 0; i < 3; i++) sflp_sum_[i] += v[i];
+    if (++sflp_sum_n_ < std::max(1, static_cast<int>(2.0 * 15.0 * fifo_opts_.bias_tau))) return;
+    for (int i = 0; i < 3; i++) sflp_bias_[i] = sflp_ref_[i] = sflp_sum_[i] / sflp_sum_n_;
+    sflp_ref_set_ = true;
+    const auto b = sflpBiasDps();
+    log_(0, fmt("SFLP reference taken, tracking bias changes from now (dps): %+.4f %+.4f %+.4f", b.x, b.y, b.z));
   }
   bool in_band = true;
   for (int i = 0; i < 3; i++) {
-    in_band = in_band && std::abs(sflp_bias_[i] - bias_[i]) * GYRO_DEG_PER_LSB <= fifo_opts_.bias_band_dps;
+    in_band = in_band && std::abs(sflp_bias_[i] - sflp_ref_[i]) * GYRO_DEG_PER_LSB <= fifo_opts_.bias_band_dps;
   }
-  sflp_seen_ = true;
-  bool first = false;
-  if (!sflp_agreed_ && agree) {
-    sflp_agreed_ = first = true;
+  const bool use = fifo_opts_.sflp_bias && in_band;
+  if (use != sflp_in_use_ && (sflp_in_use_ || sflp_band_left_)) {
     const auto b = sflpBiasDps();
-    log_(0, fmt("SFLP gyro bias converged to the startup calibration - tracking it (dps): %+.4f %+.4f %+.4f",
-                b.x, b.y, b.z));
-  }
-  const bool use = fifo_opts_.sflp_bias && sflp_agreed_ && in_band;
-  if (use != sflp_in_use_ && sflp_agreed_ && !first) {
-    const auto b = sflpBiasDps();
-    log_(use ? 0 : 1, fmt(use ? "SFLP gyro bias back within the band (dps): %+.4f %+.4f %+.4f"
-                              : "SFLP gyro bias left the band around the startup calibration, using the startup "
-                                "bias (dps): %+.4f %+.4f %+.4f",
+    log_(use ? 0 : 1, fmt(use ? "SFLP gyro bias change back within the band (dps): %+.4f %+.4f %+.4f"
+                              : "SFLP gyro bias changed by more than the band, using the startup bias "
+                                "(dps): %+.4f %+.4f %+.4f",
                           b.x, b.y, b.z));
+    sflp_band_left_ = !use;
   }
   sflp_in_use_ = use;
-  for (int i = 0; i < 3; i++) active_bias_[i] = use ? sflp_bias_[i] : bias_[i];
+  for (int i = 0; i < 3; i++) active_bias_[i] = use ? bias_[i] + sflp_bias_[i] - sflp_ref_[i] : bias_[i];
 }
 
 Vec3 Lsm6dsv::sflpBiasDps() const

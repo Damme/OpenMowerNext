@@ -12,9 +12,10 @@
 // estimate (15 Hz). read() then returns the MEAN of everything since the last
 // call - no single-sample aliasing (blade vibration near the publish rate) - with
 // the bias removed. SFLP's bias is NOT applied by the chip to the output registers
-// (ST); it is used here only after it once agreed with the startup calibration
-// (proves convergence, axes and sign) and only within a band around it; before
-// that, or outside the band, the startup bias is used.
+// (ST). Its absolute value sat ~0.003 dps off the stationary truth, so only its
+// change is used: bias = startup calibration + (SFLP - SFLP reference), the
+// reference taken once SFLP agreed with the startup calibration (convergence,
+// axes, sign) and settled; within a band, else the startup bias.
 
 #include <array>
 #include <cstdint>
@@ -56,7 +57,7 @@ struct FifoOptions
 {
   bool sflp_bias = true;        // track SFLP's gyro-bias estimate
   double bias_agree_dps = 0.05; // SFLP must once come this close to the startup bias (all axes)
-  double bias_band_dps = 0.5;   // and then stay within this of it (all axes)
+  double bias_band_dps = 0.5;   // max change of SFLP's bias from its reference (all axes)
   double bias_tau = 30.0;       // s: low-pass on SFLP's bias (4.375 mdps steps -> sub-step resolution)
 };
 
@@ -108,7 +109,11 @@ private:
   double bias_[3] = {0, 0, 0};  // raw LSB, startup calibration
   double active_bias_[3] = {0, 0, 0};  // raw LSB, subtracted by read()
   double sflp_bias_[3] = {0, 0, 0};    // raw gyro LSB (converted from SFLP's 4.375 mdps/LSB), low-passed
+  double sflp_ref_[3] = {0, 0, 0};     // sflp_bias_ when it had settled after convergence
   bool sflp_seen_ = false, sflp_agreed_ = false, sflp_in_use_ = false;
+  bool sflp_ref_set_ = false, sflp_band_left_ = false;
+  double sflp_sum_[3] = {0, 0, 0};     // for the reference: mean over 2 tau after convergence
+  int sflp_sum_n_ = 0;
   bool fifo_ = false;
   bool burst_ = true;  // several FIFO words per I2C transaction
   FifoOptions fifo_opts_;

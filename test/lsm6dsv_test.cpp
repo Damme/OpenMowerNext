@@ -170,7 +170,7 @@ TEST(Lsm6dsv, FifoAveragesAndTracksSflpBias)
   EXPECT_NEAR(s.accel.z, 9.8, 0.02);
   EXPECT_FALSE(imu.sflpBiasInUse());
 
-  // SFLP bias (4.375 mdps/LSB = gyro LSB / 4) far from the startup bias: not used.
+  // SFLP bias (4.375 mdps/LSB = gyro LSB / 4) far from the startup bias: not converged, not used.
   c->push(0x16, 0, 0, 0);
   c->push(0x01, 10, -20, 5);
   ASSERT_TRUE(imu.read(s));
@@ -178,18 +178,20 @@ TEST(Lsm6dsv, FifoAveragesAndTracksSflpBias)
   EXPECT_FALSE(imu.sflpBiasInUse());
   EXPECT_NEAR(s.gyro.z, 0.0, 1e-9);
 
-  // Converged (agrees with the startup bias): tracked from now on.
-  c->push(0x16, 40, -80, 20);
+  // Converged (agrees with the startup bias; tau 0: reference taken at once), 1 LSB off
+  // the startup value: its offset is NOT used, only later changes are.
+  c->push(0x16, 40, -84, 20);
   c->push(0x01, 10, -20, 5);
   ASSERT_TRUE(imu.read(s));
   EXPECT_TRUE(imu.sflpBiasInUse());
-  // Drifts a little (Z bias sensor -Y: -20 -> -24 LSB): follows it.
-  c->push(0x16, 40, -96, 20);
+  EXPECT_NEAR(s.gyro.z, 0.0, 1e-9);
+  // Drifts a little (Z bias sensor -Y: -20 -> -24 LSB, SFLP -84 -> -100): follows the change.
+  c->push(0x16, 40, -100, 20);
   c->push(0x01, 10, -24, 5);
   ASSERT_TRUE(imu.read(s));
   EXPECT_TRUE(imu.sflpBiasInUse());
   EXPECT_NEAR(s.gyro.z, 0.0, 1e-9);
-  // Runs away (> 0.5 dps from the startup bias): back to the startup bias.
+  // Runs away (changes > 0.5 dps from its reference): back to the startup bias.
   c->push(0x16, 40, -2000, 20);
   c->push(0x01, 10, -20, 5);
   ASSERT_TRUE(imu.read(s));
