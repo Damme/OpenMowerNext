@@ -741,3 +741,6 @@ void MapServerNode::fillGridWithPolygon(nav_msgs::msg::OccupancyGrid& occupancy_
   }
 }
 }  // namespace open_mower_next::map_server
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(open_mower_next::map_server::MapServerNode)

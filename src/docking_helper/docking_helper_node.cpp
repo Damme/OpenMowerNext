@@ -435,3 +435,6 @@ void open_mower_next::docking_helper::DockingHelperNode::handleDockRobotToAccept
     executeDockingAction<DockRobotToAction>(goal_handle, docking_station);
   } }.detach();
 }
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(open_mower_next::docking_helper::DockingHelperNode)

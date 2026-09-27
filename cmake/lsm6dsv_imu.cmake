@@ -5,10 +5,14 @@ add_library(lsm6dsv STATIC src/lsm6dsv_imu/lsm6dsv.cpp)
 target_compile_features(lsm6dsv PUBLIC cxx_std_17)
 target_include_directories(lsm6dsv PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
 
-add_executable(lsm6dsv_imu_node src/lsm6dsv_imu/lsm6dsv_imu_node.cpp)
-target_link_libraries(lsm6dsv_imu_node lsm6dsv)
-ament_target_dependencies(lsm6dsv_imu_node rclcpp sensor_msgs)
-install(TARGETS lsm6dsv_imu_node DESTINATION lib/${PROJECT_NAME})
+set_target_properties(lsm6dsv PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(lsm6dsv_imu_component SHARED src/lsm6dsv_imu/lsm6dsv_imu_node.cpp)
+target_link_libraries(lsm6dsv_imu_component lsm6dsv)
+ament_target_dependencies(lsm6dsv_imu_component rclcpp rclcpp_components sensor_msgs)
+rclcpp_components_register_node(lsm6dsv_imu_component
+  PLUGIN "open_mower_next::lsm6dsv_imu::Lsm6dsvImuNode"
+  EXECUTABLE lsm6dsv_imu_node)
+install(TARGETS lsm6dsv_imu_component DESTINATION lib)
 
 if (BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

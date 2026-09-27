@@ -685,3 +685,6 @@ bool MapRecorderNode::validateAreaBoundary()
   return utils::isValidPolygon(current_boundary_points_);
 }
 }  // namespace open_mower_next::map_recorder
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(open_mower_next::map_recorder::MapRecorderNode)

@@ -278,3 +278,6 @@ visualization_msgs::msg::MarkerArray CoverageServerNode::createVisualizationMark
 }
 
 }  // namespace open_mower_next::coverage_server
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(open_mower_next::coverage_server::CoverageServerNode)

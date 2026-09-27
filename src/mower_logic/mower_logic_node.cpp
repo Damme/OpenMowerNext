@@ -3,24 +3,26 @@
 //
 // Commands (std_srvs/Trigger): ~/start_mowing, ~/go_home, ~/stop (idle where it
 // is), ~/skip_pass, ~/skip_area, ~/reset_mission. State: ~/state (String, 1 Hz).
+#include "mower_logic/mower_logic_node.hpp"
+
 #include "mower_logic/bt_nodes.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <behaviortree_cpp/loggers/bt_cout_logger.h>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 #include <cstdio>
 #include <sstream>
-#include <thread>
 
-using namespace open_mower_next::mower_logic;
-
-int main(int argc, char ** argv)
+namespace open_mower_next::mower_logic
 {
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<rclcpp::Node>("mower_logic");
 
+MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
+: node_(std::make_shared<rclcpp::Node>("mower_logic", options))
+{
+  auto & node = node_;
   Params p;
   p.battery_low = node->declare_parameter("battery_low", p.battery_low);
   p.battery_resume = node->declare_parameter("battery_resume", p.battery_resume);
@@ -84,32 +86,33 @@ int main(int argc, char ** argv)
   const double rate = node->declare_parameter("tick_rate", 10.0);
   const bool log_tree = node->declare_parameter("log_tree_transitions", false);
 
-  auto ctx = std::make_shared<Context>(node, p);
+  ctx_ = std::make_shared<Context>(node, p);
+  auto ctx = ctx_;
 
-  auto trigger = [&node](const std::string & name, std::function<std::string()> fn) {
-    return node->create_service<std_srvs::srv::Trigger>(
-      "~/" + name, [fn, name, &node](const std_srvs::srv::Trigger::Request::SharedPtr,
-                                     std_srvs::srv::Trigger::Response::SharedPtr res) {
+  auto trigger = [this](const std::string & name, std::function<std::string()> fn) {
+    return node_->create_service<std_srvs::srv::Trigger>(
+      "~/" + name, [fn, name, this](const std_srvs::srv::Trigger::Request::SharedPtr,
+                                    std_srvs::srv::Trigger::Response::SharedPtr res) {
         res->message = fn();
         res->success = true;
-        RCLCPP_INFO(node->get_logger(), "%s: %s", name.c_str(), res->message.c_str());
+        RCLCPP_INFO(node_->get_logger(), "%s: %s", name.c_str(), res->message.c_str());
       });
   };
-  auto s1 = trigger("start_mowing", [ctx]() { ctx->command = Command::MOW; return "mowing"; });
-  auto s2 = trigger("go_home", [ctx]() { ctx->command = Command::HOME; return "going home (mission kept)"; });
-  auto s3 = trigger("stop", [ctx]() { ctx->command = Command::IDLE; return "idle (mission kept)"; });
-  auto s4 = trigger("skip_pass", [ctx]() { ctx->mission.skipPass(); return ctx->mission.summary(); });
-  auto s5 = trigger("skip_area", [ctx]() { ctx->mission.skipArea(); return ctx->mission.summary(); });
-  auto s6 = trigger("reset_mission", [ctx]() { ctx->mission.clear(); return "mission cleared"; });
-  auto s7 = node->create_service<std_srvs::srv::Trigger>(
-    "~/clear_emergency", [ctx, &node](const std_srvs::srv::Trigger::Request::SharedPtr,
-                                      std_srvs::srv::Trigger::Response::SharedPtr res) {
+  services_.push_back(trigger("start_mowing", [ctx]() { ctx->command = Command::MOW; return "mowing"; }));
+  services_.push_back(trigger("go_home", [ctx]() { ctx->command = Command::HOME; return "going home (mission kept)"; }));
+  services_.push_back(trigger("stop", [ctx]() { ctx->command = Command::IDLE; return "idle (mission kept)"; }));
+  services_.push_back(trigger("skip_pass", [ctx]() { ctx->mission.skipPass(); return ctx->mission.summary(); }));
+  services_.push_back(trigger("skip_area", [ctx]() { ctx->mission.skipArea(); return ctx->mission.summary(); }));
+  services_.push_back(trigger("reset_mission", [ctx]() { ctx->mission.clear(); return "mission cleared"; }));
+  services_.push_back(node_->create_service<std_srvs::srv::Trigger>(
+    "~/clear_emergency", [ctx, this](const std_srvs::srv::Trigger::Request::SharedPtr,
+                                     std_srvs::srv::Trigger::Response::SharedPtr res) {
       res->success = ctx->clearEmergency(res->message);
-      RCLCPP_WARN(node->get_logger(), "clear_emergency: %s", res->message.c_str());
-    });
+      RCLCPP_WARN(node_->get_logger(), "clear_emergency: %s", res->message.c_str());
+    }));
 
-  auto state_pub = node->create_publisher<std_msgs::msg::String>("~/state", rclcpp::QoS(1).transient_local());
-  auto state_timer = node->create_wall_timer(std::chrono::seconds(1), [&]() {
+  auto state_pub = node_->create_publisher<std_msgs::msg::String>("~/state", rclcpp::QoS(1).transient_local());
+  state_timer_ = node_->create_wall_timer(std::chrono::seconds(1), [ctx, state_pub]() {
     std::ostringstream s;
     const double b = ctx->batteryFraction();
     s << "{\"state\":\"" << ctx->lastBranch() << "\",\"command\":\"" << toString(ctx->command.load())
@@ -121,37 +124,41 @@ int main(int argc, char ** argv)
     state_pub->publish(m);
   });
 
-  rclcpp::executors::MultiThreadedExecutor exec;
-  exec.add_node(node);
-  std::thread spinner([&exec]() { exec.spin(); });
+  tick_thread_ = std::thread([this, tree_file, rate, log_tree]() { run(tree_file, rate, log_tree); });
+}
 
+MowerLogicNode::~MowerLogicNode()
+{
+  stop_ = true;
+  if (tick_thread_.joinable()) tick_thread_.join();
+}
+
+void MowerLogicNode::run(const std::string & tree_file, double rate, bool log_tree)
+{
   BT::BehaviorTreeFactory factory;
-  registerNodes(factory, ctx);
+  registerNodes(factory, ctx_);
   BT::Tree tree;
   try {
     tree = factory.createTreeFromFile(tree_file);
   } catch (const std::exception & e) {
-    RCLCPP_FATAL(node->get_logger(), "Cannot load behaviour tree %s: %s", tree_file.c_str(), e.what());
-    exec.cancel();
-    spinner.join();
-    rclcpp::shutdown();
-    return 1;
+    RCLCPP_FATAL(node_->get_logger(), "Cannot load behaviour tree %s: %s", tree_file.c_str(), e.what());
+    return;
   }
   std::unique_ptr<BT::StdCoutLogger> logger;
   if (log_tree) logger = std::make_unique<BT::StdCoutLogger>(tree);
-  RCLCPP_INFO(node->get_logger(), "mower_logic ready (%s)", tree_file.c_str());
+  RCLCPP_INFO(node_->get_logger(), "mower_logic ready (%s)", tree_file.c_str());
 
   rclcpp::WallRate loop(rate);
-  while (rclcpp::ok()) {
+  while (rclcpp::ok() && !stop_) {
     tree.tickOnce();
     // Belt and braces: nothing but FollowPass may keep the blade on.
-    if (!ctx->blade_in_use) ctx->setBlade(false);
+    if (!ctx_->blade_in_use) ctx_->setBlade(false);
     loop.sleep();
   }
   tree.haltTree();
-  ctx->setBlade(false);
-  exec.cancel();
-  spinner.join();
-  rclcpp::shutdown();
-  return 0;
+  ctx_->setBlade(false);
 }
+
+}  // namespace open_mower_next::mower_logic
+
+RCLCPP_COMPONENTS_REGISTER_NODE(open_mower_next::mower_logic::MowerLogicNode)
