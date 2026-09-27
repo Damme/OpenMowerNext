@@ -85,6 +85,7 @@ include(cmake/costmap_layers.cmake)
 include(cmake/om_launch.cmake)
 include(cmake/lean_smac.cmake)
 include(cmake/localization_components.cmake)
+include(cmake/ubx_gps.cmake)
 
 install(PROGRAMS scripts/worx_sim_dock.py scripts/worx_sim_obstacles.py scripts/worx_map_to_geojson.py DESTINATION lib/${PROJECT_NAME})
 
