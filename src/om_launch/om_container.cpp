@@ -33,12 +33,14 @@
 #include <rclcpp_components/node_factory.hpp>
 #include <realtime_tools/realtime_helpers.hpp>
 
+#include <pthread.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -53,6 +55,24 @@ namespace
 {
 
 rclcpp::Logger logger() { return rclcpp::get_logger("om_container"); }
+
+// Thread names show in top -H / /proc/<pid>/task/*/comm (15 characters).
+void nameThread(std::thread & t, const std::string & name)
+{
+  pthread_setname_np(t.native_handle(), name.substr(0, 15).c_str());
+}
+
+// All nodes are gone and rclcpp is shut down: leave without running static
+// destructors. With many component libraries in one process their order is
+// fragile - Nav2 lifecycle nodes leave shutdown callbacks in rclcpp's global
+// context, and nav2_smac_planner's libraries each define the same static
+// members, which then get destroyed more than once (segfault at exit).
+[[noreturn]] void quickExit(int code)
+{
+  std::fflush(stdout);
+  std::fflush(stderr);
+  ::_exit(code);
+}
 
 // ---- parameters ----------------------------------------------------------
 
@@ -260,6 +280,9 @@ public:
     spin_thread_ = std::thread([this]() { executor_->spin(); });
     loop_thread_ = std::thread([this]() { loop(); });
     setup_thread_ = std::thread([this]() { setupControllers(); });
+    nameThread(spin_thread_, "cm_executor");
+    nameThread(loop_thread_, "cm_loop");
+    nameThread(setup_thread_, "cm_setup");
   }
 
   ~ControlManager()
@@ -404,6 +427,7 @@ int main(int argc, char ** argv)
       loaded->executor->add_node(loaded->wrapper.get_node_base_interface());
       auto * exec = loaded->executor.get();
       loaded->thread = std::thread([exec]() { exec->spin(); });
+      nameThread(loaded->thread, name);
       RCLCPP_INFO(logger(), "Loaded %s (%s)", name.c_str(), plugin.c_str());
       nodes.push_back(std::move(loaded));
     }
@@ -412,8 +436,7 @@ int main(int argc, char ** argv)
     rclcpp::shutdown();
     for (auto & n : nodes) n->thread.join();
     control.clear();  // joins the control loop threads
-    for (auto & loader : g_loaders) (void)loader.release();
-    return 1;
+    quickExit(1);
   }
 
   while (rclcpp::ok()) std::this_thread::sleep_for(200ms);
@@ -428,8 +451,5 @@ int main(int argc, char ** argv)
   nodes.clear();
   control.clear();
   rclcpp::shutdown();
-  // Component libraries stay loaded until exit: rclcpp's context still holds
-  // (pre-)shutdown callbacks registered by their code (Nav2 lifecycle nodes).
-  for (auto & loader : g_loaders) (void)loader.release();
-  return 0;
+  quickExit(0);
 }
