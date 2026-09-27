@@ -30,3 +30,14 @@ global_costmap:
   global_costmap:
     ros__parameters:
       publish_frequency: 0.0
+
+# No bonds: all of Nav2 runs in one process (om_launch restarts it as a whole), so the
+# lifecycle manager's heartbeat check can't catch anything. The bonds share one /bond
+# topic - every endpoint gets every 10 Hz heartbeat - which took ~25 % of a Pi core in
+# the lifecycle manager and ~5 % in each server while idle.
+/**:
+  ros__parameters:
+    bond_heartbeat_period: 0.0
+lifecycle_manager_navigation:
+  ros__parameters:
+    bond_timeout: 0.0
