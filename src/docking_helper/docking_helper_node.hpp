@@ -2,9 +2,12 @@
 
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <atomic>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <nav2_msgs/action/dock_robot.hpp>
 #include "open_mower_next/msg/map.hpp"
 #include "open_mower_next/msg/docking_station.hpp"
@@ -63,6 +66,15 @@ private:
   void handleDockRobotToAccepted(const std::shared_ptr<DockRobotToGoalHandle> goal_handle);
 
   std::shared_ptr<open_mower_next::msg::DockingStation> findDockingStationById(const std::string& id);
+
+  // On the charger the robot stands at its docking station's recorded pose:
+  // localization (ekf_se_map) is set to it, heading included, once per docking.
+  void setPoseWhenDocked();
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr charger_sub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr set_pose_pub_;
+  rclcpp::TimerBase::SharedPtr set_pose_timer_;
+  std::atomic<bool> charger_present_{false};
+  std::atomic<bool> docked_pose_set_{false};
 
   template <typename ActionT, typename GoalHandleT>
   void executeDockingAction(const std::shared_ptr<GoalHandleT>& goal_handle,

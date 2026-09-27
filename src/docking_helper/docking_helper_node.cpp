@@ -3,6 +3,7 @@
 #include <functional>
 #include <future>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2/utils.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
 using namespace std::placeholders;
@@ -32,6 +33,58 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
       this, "dock_robot_to", std::bind(&DockingHelperNode::handleDockRobotToGoal, this, _1, _2),
       std::bind(&DockingHelperNode::handleDockRobotToCancel, this, _1),
       std::bind(&DockingHelperNode::handleDockRobotToAccepted, this, _1));
+
+  if (declare_parameter("set_pose_when_docked", false))
+  {
+    set_pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        declare_parameter("set_pose_topic", std::string("/ekf_se_map/set_pose")), 10);
+    charger_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "/power/charger_present", 10, [this](std_msgs::msg::Bool::ConstSharedPtr m) {
+          charger_present_ = m->data;
+          if (!m->data) docked_pose_set_ = false;
+        });
+    set_pose_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { setPoseWhenDocked(); });
+  }
+}
+
+void open_mower_next::docking_helper::DockingHelperNode::setPoseWhenDocked()
+{
+  if (!charger_present_ || docked_pose_set_ || set_pose_pub_->get_subscription_count() == 0)
+    return;
+  std::shared_ptr<open_mower_next::msg::DockingStation> station;
+  {
+    std::lock_guard<std::mutex> lock(docking_stations_mutex_);
+    if (docking_stations_.empty())
+      return;
+    if (docking_stations_.size() == 1)
+      station = std::make_shared<open_mower_next::msg::DockingStation>(docking_stations_.front());
+  }
+  if (!station)
+    station = findNearestDockingStation();  // by the GPS position
+  std::shared_ptr<geometry_msgs::msg::PoseStamped> pose;
+  try
+  {
+    pose = dockPose(station);
+  }
+  catch (const tf2::TransformException& ex)
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000, "Docked, but no dock pose yet: %s", ex.what());
+    return;
+  }
+  if (!pose)
+    return;
+
+  geometry_msgs::msg::PoseWithCovarianceStamped msg;
+  msg.header.frame_id = "map";
+  msg.header.stamp = now();
+  msg.pose.pose = pose->pose;
+  msg.pose.covariance[0] = msg.pose.covariance[7] = 0.02 * 0.02;  // x, y
+  msg.pose.covariance[14] = msg.pose.covariance[21] = msg.pose.covariance[28] = 1e-6;
+  msg.pose.covariance[35] = 0.03 * 0.03;  // yaw (rad)
+  set_pose_pub_->publish(msg);
+  docked_pose_set_ = true;
+  RCLCPP_INFO(get_logger(), "Docked at '%s': localization set to x=%.3f y=%.3f yaw=%.3f", station->name.c_str(),
+              pose->pose.position.x, pose->pose.position.y, tf2::getYaw(pose->pose.orientation));
 }
 
 open_mower_next::docking_helper::DockingHelperNode::~DockingHelperNode()
@@ -164,8 +217,7 @@ std::shared_ptr<geometry_msgs::msg::PoseStamped> open_mower_next::docking_helper
   pose_stamped->pose.orientation = tf2::toMsg(q_new);
 
   tf2::Vector3 offset(offset_distance, 0.0, 0.0);
-  tf2::Transform transform;
-  transform.setRotation(q_new);
+  tf2::Transform transform(q_new, tf2::Vector3(0.0, 0.0, 0.0));
   tf2::Vector3 translated_offset = transform * offset;
 
   pose_stamped->pose.position.x -= translated_offset.x();
