@@ -16,6 +16,16 @@ namespace open_mower_next::lsm6dsv_imu
 namespace
 {
 constexpr uint8_t REG_FUNC_CFG_ACCESS = 0x01;
+constexpr uint8_t REG_FIFO_CTRL3 = 0x09;       // BDR_GY[7:4], BDR_XL[3:0]
+constexpr uint8_t REG_FIFO_CTRL4 = 0x0A;       // FIFO_MODE[2:0]
+constexpr uint8_t REG_FIFO_STATUS1 = 0x1B;     // DIFF_FIFO[7:0]
+constexpr uint8_t REG_FIFO_STATUS2 = 0x1C;     // bit0 DIFF_FIFO[8], bit6 FIFO_OVR_IA
+constexpr uint8_t REG_FIFO_DATA_OUT_TAG = 0x78;  // tag + 6 data bytes
+// Embedded-functions bank (FUNC_CFG_ACCESS = 0x80):
+constexpr uint8_t EMB_FUNC_FIFO_EN_A = 0x44;   // bit5 SFLP_GBIAS_FIFO_EN
+constexpr uint8_t EMB_SFLP_ODR = 0x5E;         // SFLP_GAME_ODR[5:3]
+constexpr uint8_t TAG_GYRO = 0x01, TAG_ACCEL = 0x02, TAG_SFLP_GBIAS = 0x16;
+constexpr double SFLP_GBIAS_TO_GYRO_LSB = 4.375 / 17.5;  // 4.375 mdps/LSB -> +-500 dps LSB
 constexpr uint8_t REG_WHO_AM_I = 0x0F;
 constexpr uint8_t REG_CTRL1 = 0x10;
 constexpr uint8_t REG_CTRL2 = 0x11;
@@ -165,21 +175,80 @@ bool Lsm6dsv::init()
   bus_->writeReg8(REG_CTRL7, 0x01);  // LPF1_G_EN
   bus_->writeReg8(REG_CTRL8, 0x20);  // accel LPF2 ODR/10, FS_XL +-2 g
   bus_->writeReg8(REG_CTRL9, 0x08);  // LPF2_XL_EN
-  bus_->writeReg8(REG_CTRL2, 0x16);  // gyro HAODR 120 Hz
-  bus_->writeReg8(REG_CTRL1, 0x16);  // accel HAODR 120 Hz
+  bus_->writeReg8(REG_CTRL2, 0x06);  // gyro 120 Hz, high-performance mode
+  bus_->writeReg8(REG_CTRL1, 0x06);  // accel 120 Hz, high-performance mode
   usleep(50000);                     // gyro turn-on time
   return true;
 }
 
-void Lsm6dsv::enableSflp()
+bool Lsm6dsv::enableFifo(const FifoOptions & options)
 {
-  bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x80);  // unlock embedded bank
-  usleep(200);
-  const int cur = bus_->readReg8(EMB_FUNC_EN_A);
-  bus_->writeReg8(EMB_FUNC_EN_A, static_cast<uint8_t>((cur < 0 ? 0 : cur) | 0x02));  // SFLP_GAME_EN
-  bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x00);
-  usleep(200);
-  log_(0, "SFLP gyro-bias estimation enabled");
+  fifo_opts_ = options;
+  if (!configureFifo()) return false;
+  fifo_ = true;
+  log_(0, options.sflp_bias ? "FIFO on: gyro 120 Hz, accel 60 Hz averaged per read; SFLP gyro bias 30 Hz"
+                            : "FIFO on: gyro 120 Hz, accel 60 Hz averaged per read");
+  return true;
+}
+
+bool Lsm6dsv::configureFifo()
+{
+  bool ok = bus_->writeReg8(REG_FIFO_CTRL4, 0x00);  // bypass: empties the FIFO
+  ok = ok && bus_->writeReg8(REG_FIFO_CTRL3, 0x65);  // gyro 120 Hz, accel 60 Hz
+  if (ok && fifo_opts_.sflp_bias) {
+    // As ST's lsm6dsv_sensor_fusion example: SFLP output to FIFO, ODR, enable.
+    ok = bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x80);  // embedded-functions bank
+    usleep(200);
+    const int odr = bus_->readReg8(EMB_SFLP_ODR);
+    ok = ok && odr >= 0;
+    ok = ok && bus_->writeReg8(EMB_FUNC_FIFO_EN_A, 0x20);  // SFLP_GBIAS_FIFO_EN
+    ok = ok && bus_->writeReg8(EMB_SFLP_ODR, static_cast<uint8_t>((odr & ~0x38) | (1 << 3)));  // 30 Hz
+    const int en = bus_->readReg8(EMB_FUNC_EN_A);
+    ok = ok && en >= 0 && bus_->writeReg8(EMB_FUNC_EN_A, static_cast<uint8_t>(en | 0x02));  // SFLP_GAME_EN
+    bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x00);
+    usleep(200);
+  }
+  ok = ok && bus_->writeReg8(REG_FIFO_CTRL4, 0x06);  // continuous (stream) mode
+  if (!ok) log_(2, "FIFO/SFLP configuration failed (I2C write)");
+  return ok;
+}
+
+void Lsm6dsv::onSflpBias(const int16_t raw[3])
+{
+  bool agree = true, in_band = true;
+  for (int i = 0; i < 3; i++) {
+    sflp_bias_[i] = raw[i] * SFLP_GBIAS_TO_GYRO_LSB;
+    const double diff_dps = std::abs(sflp_bias_[i] - bias_[i]) * GYRO_DEG_PER_LSB;
+    agree = agree && diff_dps <= fifo_opts_.bias_agree_dps;
+    in_band = in_band && diff_dps <= fifo_opts_.bias_band_dps;
+  }
+  sflp_seen_ = true;
+  if (!sflp_agreed_ && agree) {
+    sflp_agreed_ = true;
+    const auto b = sflpBiasDps();
+    log_(0, fmt("SFLP gyro bias converged to the startup calibration - tracking it (dps): %+.4f %+.4f %+.4f",
+                b.x, b.y, b.z));
+  }
+  const bool use = fifo_opts_.sflp_bias && sflp_agreed_ && in_band;
+  if (use != sflp_in_use_ && sflp_agreed_) {
+    const auto b = sflpBiasDps();
+    log_(use ? 0 : 1, fmt(use ? "SFLP gyro bias back within the band (dps): %+.4f %+.4f %+.4f"
+                              : "SFLP gyro bias left the band around the startup calibration, using the startup "
+                                "bias (dps): %+.4f %+.4f %+.4f",
+                          b.x, b.y, b.z));
+  }
+  sflp_in_use_ = use;
+  for (int i = 0; i < 3; i++) active_bias_[i] = use ? sflp_bias_[i] : bias_[i];
+}
+
+Vec3 Lsm6dsv::sflpBiasDps() const
+{
+  return {sflp_bias_[0] * GYRO_DEG_PER_LSB, sflp_bias_[1] * GYRO_DEG_PER_LSB, sflp_bias_[2] * GYRO_DEG_PER_LSB};
+}
+
+Vec3 Lsm6dsv::activeBiasDps() const
+{
+  return {active_bias_[0] * GYRO_DEG_PER_LSB, active_bias_[1] * GYRO_DEG_PER_LSB, active_bias_[2] * GYRO_DEG_PER_LSB};
 }
 
 bool Lsm6dsv::waitGyroReady(int polls, int poll_us)
@@ -211,7 +280,7 @@ bool Lsm6dsv::calibrateGyroBias(int samples)
     s[1] += le16(buf + 2);
     s[2] += le16(buf + 4);
   }
-  for (int i = 0; i < 3; i++) bias_[i] = s[i] / samples;
+  for (int i = 0; i < 3; i++) active_bias_[i] = bias_[i] = s[i] / samples;
   const auto b = gyroBiasDps();
   log_(0, fmt("Gyro bias (dps): X=%+.4f  Y=%+.4f  Z=%+.4f", b.x, b.y, b.z));
   return true;
@@ -259,17 +328,87 @@ bool Lsm6dsv::calibrateLevel(bool enabled, int samples)
 
 bool Lsm6dsv::read(Sample & out)
 {
+  return fifo_ ? readFifo(out) : readRegisters(out);
+}
+
+void Lsm6dsv::missed()
+{
+  if (++timeouts_ >= 3) {
+    log_(2, "IMU unresponsive - re-initializing (bias/level kept)");
+    if (init() && fifo_) configureFifo();
+    timeouts_ = 0;
+  }
+}
+
+bool Lsm6dsv::readFifo(Sample & out)
+{
+  const int s1 = bus_->readReg8(REG_FIFO_STATUS1);
+  const int s2 = bus_->readReg8(REG_FIFO_STATUS2);
+  if (s1 < 0 || s2 < 0) {
+    log_(1, "IMU FIFO status read error - skipping sample");
+    missed();
+    return false;
+  }
+  if (s2 & 0x40) log_(1, "IMU FIFO overrun - samples lost");
+  const int level = std::min(s1 | (s2 & 0x01) << 8, 128);
+  long g[3] = {0, 0, 0}, a[3] = {0, 0, 0};
+  int gn = 0, an = 0;
+  uint8_t w[7];
+  for (int i = 0; i < level; i++) {
+    if (!bus_->burstRead(REG_FIFO_DATA_OUT_TAG, w, 7)) {
+      log_(1, "IMU FIFO read error");
+      break;
+    }
+    const int16_t v[3] = {le16(w + 1), le16(w + 3), le16(w + 5)};
+    switch (w[0] >> 3) {
+      case TAG_GYRO:
+        for (int k = 0; k < 3; k++) g[k] += v[k];
+        gn++;
+        break;
+      case TAG_ACCEL:
+        for (int k = 0; k < 3; k++) a[k] += v[k];
+        an++;
+        break;
+      case TAG_SFLP_GBIAS:
+        onSflpBias(v);
+        break;
+      default:
+        break;
+    }
+  }
+  if (gn == 0) {
+    // 120 Hz gyro: every 20 ms read should find 2-3 samples.
+    if (level == 0) log_(1, "IMU FIFO empty - dropping sample");
+    missed();
+    return false;
+  }
+  timeouts_ = 0;
+  // Bias removed from the mean in raw LSB before scaling (keeps precision).
+  const Vec3 gs{(static_cast<double>(g[0]) / gn - active_bias_[0]) * GYRO_SCALE,
+                (static_cast<double>(g[1]) / gn - active_bias_[1]) * GYRO_SCALE,
+                (static_cast<double>(g[2]) / gn - active_bias_[2]) * GYRO_SCALE};
+  out.gyro = rotate(level_, remapSensorToBody(gs));
+  if (an > 0) {
+    const Vec3 as{static_cast<double>(a[0]) / an * ACCEL_SCALE, static_cast<double>(a[1]) / an * ACCEL_SCALE,
+                  static_cast<double>(a[2]) / an * ACCEL_SCALE};
+    last_accel_ = rotate(level_, remapSensorToBody(as));
+  }
+  out.accel = last_accel_;
+  out.gyro_samples = gn;
+  uint8_t t[2] = {0, 0};
+  out.temperature = bus_->burstRead(REG_OUT_TEMP_L, t, 2) ? le16(t) * TEMP_SCALE + TEMP_OFFSET : 0.0;
+  return true;
+}
+
+bool Lsm6dsv::readRegisters(Sample & out)
+{
   if (!waitGyroReady(500, 100)) {
     // Persistent GDA=0 -> suspect POR/brownout (CTRL2 reads 0 = gyro off).
     const int c2 = bus_->readReg8(REG_CTRL2);
     char b[96];
     std::snprintf(b, sizeof(b), "IMU data-ready timeout (CTRL2=0x%02X) - dropping sample", c2 < 0 ? 0 : c2);
     log_(1, b);
-    if (++timeouts_ >= 3) {
-      log_(2, "IMU unresponsive - re-initializing (bias/level kept)");
-      if (init()) enableSflp();
-      timeouts_ = 0;
-    }
+    missed();
     return false;
   }
   timeouts_ = 0;
@@ -279,8 +418,8 @@ bool Lsm6dsv::read(Sample & out)
     return false;
   }
   // Bias removed in raw LSB before scaling (keeps precision).
-  const Vec3 gs{(le16(g + 0) - bias_[0]) * GYRO_SCALE, (le16(g + 2) - bias_[1]) * GYRO_SCALE,
-                (le16(g + 4) - bias_[2]) * GYRO_SCALE};
+  const Vec3 gs{(le16(g + 0) - active_bias_[0]) * GYRO_SCALE, (le16(g + 2) - active_bias_[1]) * GYRO_SCALE,
+                (le16(g + 4) - active_bias_[2]) * GYRO_SCALE};
   const Vec3 as{le16(a + 0) * ACCEL_SCALE, le16(a + 2) * ACCEL_SCALE, le16(a + 4) * ACCEL_SCALE};
   out.gyro = rotate(level_, remapSensorToBody(gs));
   out.accel = rotate(level_, remapSensorToBody(as));

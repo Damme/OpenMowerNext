@@ -1,5 +1,7 @@
 // ROS 2 publisher for the LSM6DSV on the Worx robot: sensor_msgs/Imu on
-// imu/data_raw (orientation not provided), 50 Hz by default. A component
+// imu/data_raw (orientation not provided), 50 Hz by default. With use_fifo each
+// message is the mean of all chip samples since the previous one, and the gyro
+// bias tracks the chip's SFLP estimate (see lsm6dsv.hpp). A component
 // (open_mower_next::lsm6dsv_imu::Lsm6dsvImuNode) with its own sensor thread;
 // if the chip can't be set up it retries every 5 s.
 #include "lsm6dsv_imu/lsm6dsv.hpp"
@@ -32,6 +34,10 @@ public:
     auto_level_ = declare_parameter("auto_level", true);
     frame_id_ = declare_parameter("frame_id", std::string("imu"));
     rate_ = declare_parameter("rate", 50.0);
+    use_fifo_ = declare_parameter("use_fifo", true);
+    fifo_opts_.sflp_bias = declare_parameter("sflp_bias", fifo_opts_.sflp_bias);
+    fifo_opts_.bias_agree_dps = declare_parameter("sflp_bias_agree_dps", fifo_opts_.bias_agree_dps);
+    fifo_opts_.bias_band_dps = declare_parameter("sflp_bias_band_dps", fifo_opts_.bias_band_dps);
     pub_ = create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", rclcpp::SensorDataQoS());
     thread_ = std::thread([this]() { run(); });
   }
@@ -76,8 +82,10 @@ private:
         waitRetry();
         continue;
       }
-      candidate->enableSflp();
-      if (!candidate->calibrateGyroBias() || !candidate->calibrateLevel(auto_level_)) {
+      if (
+        !candidate->calibrateGyroBias() || !candidate->calibrateLevel(auto_level_) ||
+        (use_fifo_ && !candidate->enableFifo(fifo_opts_)))
+      {
         waitRetry();
         continue;
       }
@@ -107,11 +115,14 @@ private:
         msg.linear_acceleration.z = s.accel.z;
         pub_->publish(msg);
         const double d = 180.0 / M_PI;
+        const auto ab = imu->activeBiasDps();
+        const auto sb = imu->sflpBiasDps();
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 60000,
-          "IMU | gyro[dps] %+.2f %+.2f %+.2f | accel[m/s^2] %+.2f %+.2f %+.2f |a|=%.2f | T=%.1fC",
-          s.gyro.x * d, s.gyro.y * d, s.gyro.z * d, s.accel.x, s.accel.y, s.accel.z,
-          std::sqrt(s.accel.x * s.accel.x + s.accel.y * s.accel.y + s.accel.z * s.accel.z), s.temperature);
+          "IMU | gyro[dps] %+.3f %+.3f %+.3f | accel[m/s^2] %+.2f %+.2f %+.2f | T=%.1fC | n=%d | "
+          "bias[dps] %+.4f %+.4f %+.4f (%s) sflp %+.4f %+.4f %+.4f",
+          s.gyro.x * d, s.gyro.y * d, s.gyro.z * d, s.accel.x, s.accel.y, s.accel.z, s.temperature,
+          s.gyro_samples, ab.x, ab.y, ab.z, imu->sflpBiasInUse() ? "SFLP" : "startup", sb.x, sb.y, sb.z);
       }
       loop.sleep();
     }
@@ -122,6 +133,8 @@ private:
   bool auto_level_;
   std::string frame_id_;
   double rate_;
+  bool use_fifo_;
+  FifoOptions fifo_opts_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_;
   std::atomic<bool> stop_{false};
   std::thread thread_;

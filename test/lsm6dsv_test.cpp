@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <map>
 
 using namespace open_mower_next::lsm6dsv_imu;
@@ -19,9 +20,18 @@ struct FakeChip : I2cBus
   std::map<uint8_t, uint8_t> regs{{0x0F, 0x70}, {0x1E, 0x02}};
   int16_t gyro[3] = {10, -20, 5};   // raw LSB, sensor frame (the bias)
   int16_t accel[3] = {0, 0, 0};
+  std::deque<std::array<uint8_t, 7>> fifo;  // tag byte + 3 x int16
+  void push(uint8_t tag, int16_t x, int16_t y, int16_t z)
+  {
+    fifo.push_back({static_cast<uint8_t>(tag << 3), static_cast<uint8_t>(x & 0xFF), static_cast<uint8_t>(x >> 8 & 0xFF),
+                    static_cast<uint8_t>(y & 0xFF), static_cast<uint8_t>(y >> 8 & 0xFF),
+                    static_cast<uint8_t>(z & 0xFF), static_cast<uint8_t>(z >> 8 & 0xFF)});
+  }
   int readReg8(uint8_t reg) override
   {
     if (reg == 0x12) return regs[reg] & ~0x01;  // reset bit self-clears
+    if (reg == 0x1B) return static_cast<int>(fifo.size() & 0xFF);
+    if (reg == 0x1C) return static_cast<int>(fifo.size() >> 8 & 0x01);
     return regs.count(reg) ? regs[reg] : 0;
   }
   bool writeReg8(uint8_t reg, uint8_t v) override
@@ -31,6 +41,12 @@ struct FakeChip : I2cBus
   }
   bool burstRead(uint8_t reg, uint8_t * buf, int len) override
   {
+    if (reg == 0x78 && len == 7) {
+      if (fifo.empty()) return false;
+      std::memcpy(buf, fifo.front().data(), 7);
+      fifo.pop_front();
+      return true;
+    }
     const int16_t * src = reg == 0x22 ? gyro : reg == 0x28 ? accel : nullptr;
     if (!src) {
       std::memset(buf, 0, len);
@@ -89,7 +105,7 @@ TEST(Lsm6dsv, BiasAndLevelCalibration)
   setBodyAccel(*c, 0.4, -0.2, 9.79);  // mount tilted ~2.6 deg
   Lsm6dsv imu(std::move(chip), [](int, const std::string &) {});
   ASSERT_TRUE(imu.init());
-  EXPECT_EQ(c->regs[0x11], 0x16);  // gyro HAODR 120 Hz
+  EXPECT_EQ(c->regs[0x11], 0x06);  // gyro 120 Hz high-performance
   EXPECT_EQ(c->regs[0x15], 0x62);  // +-500 dps
   ASSERT_TRUE(imu.calibrateGyroBias(16));
   ASSERT_TRUE(imu.calibrateLevel(true, 8));
@@ -115,4 +131,61 @@ TEST(Lsm6dsv, WrongWhoAmIFails)
   chip->regs[0x0F] = 0x6C;
   Lsm6dsv imu(std::move(chip), [](int, const std::string &) {});
   EXPECT_FALSE(imu.init());
+}
+
+TEST(Lsm6dsv, FifoAveragesAndTracksSflpBias)
+{
+  auto chip = std::make_unique<FakeChip>();
+  FakeChip * c = chip.get();
+  setBodyAccel(*c, 0.0, 0.0, 9.8);
+  Lsm6dsv imu(std::move(chip), [](int, const std::string &) {});
+  ASSERT_TRUE(imu.init());
+  ASSERT_TRUE(imu.calibrateGyroBias(16));  // bias = (10, -20, 5) LSB
+  ASSERT_TRUE(imu.calibrateLevel(true, 8));
+  FifoOptions opt;
+  ASSERT_TRUE(imu.enableFifo(opt));
+  EXPECT_EQ(c->regs[0x0A], 0x06);  // stream mode
+  EXPECT_EQ(c->regs[0x09], 0x65);  // gyro 120 Hz, accel 60 Hz
+  EXPECT_EQ(c->regs[0x44], 0x20);  // SFLP gyro bias into the FIFO
+
+  Sample s;
+  EXPECT_FALSE(imu.read(s));  // empty FIFO
+
+  // Yaw rate = sensor -Y. Three samples: mean 0.5 rad/s although they differ.
+  const int16_t r = static_cast<int16_t>(std::lround(0.5 / GYRO_SCALE));
+  c->push(0x01, 10, static_cast<int16_t>(-20 - r + 40), 5);
+  c->push(0x02, c->accel[0], c->accel[1], c->accel[2]);
+  c->push(0x01, 10, static_cast<int16_t>(-20 - r - 40), 5);
+  c->push(0x01, 10, static_cast<int16_t>(-20 - r), 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_EQ(s.gyro_samples, 3);
+  EXPECT_NEAR(s.gyro.z, 0.5, 0.005);
+  EXPECT_NEAR(s.accel.z, 9.8, 0.02);
+  EXPECT_FALSE(imu.sflpBiasInUse());
+
+  // SFLP bias (4.375 mdps/LSB = gyro LSB / 4) far from the startup bias: not used.
+  c->push(0x16, 0, 0, 0);
+  c->push(0x01, 10, -20, 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_TRUE(imu.hasSflpBias());
+  EXPECT_FALSE(imu.sflpBiasInUse());
+  EXPECT_NEAR(s.gyro.z, 0.0, 1e-9);
+
+  // Converged (agrees with the startup bias): tracked from now on.
+  c->push(0x16, 40, -80, 20);
+  c->push(0x01, 10, -20, 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_TRUE(imu.sflpBiasInUse());
+  // Drifts a little (Z bias sensor -Y: -20 -> -24 LSB): follows it.
+  c->push(0x16, 40, -96, 20);
+  c->push(0x01, 10, -24, 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_TRUE(imu.sflpBiasInUse());
+  EXPECT_NEAR(s.gyro.z, 0.0, 1e-9);
+  // Runs away (> 0.5 dps from the startup bias): back to the startup bias.
+  c->push(0x16, 40, -2000, 20);
+  c->push(0x01, 10, -20, 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_FALSE(imu.sflpBiasInUse());
+  EXPECT_NEAR(s.gyro.z, 0.0, 1e-9);
 }
