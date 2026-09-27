@@ -82,6 +82,13 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.max_pwm = static_cast<int>(paramD(info, "max_pwm", cfg_.max_pwm));
     cfg_.mow_pwm = static_cast<int>(paramD(info, "mow_pwm", cfg_.mow_pwm));
     cfg_.blade_enabled = paramB(info, "blade_enabled", cfg_.blade_enabled);
+    cfg_.charger_from_current = paramB(info, "charger_from_current", cfg_.charger_from_current);
+    cfg_.charger_min_ma = static_cast<int>(paramD(info, "charger_min_ma", cfg_.charger_min_ma));
+    cfg_.speed_control = paramB(info, "speed_control", cfg_.speed_control);
+    cfg_.speed_gains.kp = paramD(info, "speed_kp", cfg_.speed_gains.kp);
+    cfg_.speed_gains.ki = paramD(info, "speed_ki", cfg_.speed_gains.ki);
+    cfg_.speed_gains.i_max = paramD(info, "speed_i_max", cfg_.speed_gains.i_max);
+    cfg_.speed_filter_tau = paramD(info, "speed_filter_tau", cfg_.speed_filter_tau);
     cfg_.invert_left = paramB(info, "invert_left", cfg_.invert_left);
     cfg_.invert_right = paramB(info, "invert_right", cfg_.invert_right);
     cfg_.link_timeout = paramD(info, "link_timeout", cfg_.link_timeout);
@@ -124,6 +131,12 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.transport.c_str(), cfg_.spi_device.c_str(), cfg_.wheel_ticks_per_m, cfg_.pwm_per_mps,
     cfg_.max_pwm, cfg_.mow_pwm);
   if (!cfg_.blade_enabled) RCLCPP_WARN(get_logger(), "Blade disabled (blade_enabled=false): blade PWM stays 0");
+  cfg_.speed_gains.ff = cfg_.pwm_per_mps;
+  gains_ = cfg_.speed_gains;
+  RCLCPP_INFO(
+    get_logger(), "Wheel speed control %s (kp=%.0f ki=%.0f i_max=%.0f), charger from %s",
+    cfg_.speed_control ? "on" : "off", gains_.kp, gains_.ki, gains_.i_max,
+    cfg_.charger_from_current ? "charge current" : "InCharger");
   return CallbackReturn::SUCCESS;
 }
 
@@ -186,6 +199,23 @@ void WorxSystem::startNode()
     fake_battery_sub_ = node_->create_subscription<std_msgs::msg::Int32>(
       "/worx/fake/battery_mv", 10, [this](std_msgs::msg::Int32::ConstSharedPtr m) { fake_board_->setBatteryMv(m->data); });
   }
+  // Speed loop tuning at runtime: ros2 param set /worx_hardware speed_kp 2000
+  node_->declare_parameter("speed_kp", gains_.kp);
+  node_->declare_parameter("speed_ki", gains_.ki);
+  node_->declare_parameter("speed_i_max", gains_.i_max);
+  gains_cb_ = node_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
+    rcl_interfaces::msg::SetParametersResult r;
+    r.successful = true;
+    std::lock_guard<std::mutex> lock(gains_mutex_);
+    for (const auto & p : ps) {
+      if (p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE) continue;
+      if (p.get_name() == "speed_kp") gains_.kp = p.as_double();
+      if (p.get_name() == "speed_ki") gains_.ki = p.as_double();
+      if (p.get_name() == "speed_i_max") gains_.i_max = p.as_double();
+    }
+    RCLCPP_INFO(node_->get_logger(), "Speed gains: kp=%.0f ki=%.0f i_max=%.0f", gains_.kp, gains_.ki, gains_.i_max);
+    return r;
+  });
   status_timer_ = node_->create_wall_timer(std::chrono::milliseconds(200), [this]() { publishStatus(); });
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_);
@@ -197,6 +227,7 @@ void WorxSystem::stopNode()
   if (executor_) executor_->cancel();
   if (executor_thread_.joinable()) executor_thread_.join();
   status_timer_.reset();
+  gains_cb_.reset();
   emergency_srv_.reset();
   motors_srv_.reset();
   fake_charger_srv_.reset();
@@ -326,7 +357,7 @@ return_type WorxSystem::read(const rclcpp::Time &, const rclcpp::Duration &)
   return return_type::OK;
 }
 
-return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration &)
+return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration & period)
 {
   if (!active_ || !link_) return return_type::OK;
   double wl = get_command<double>(cfg_.left_joint + "/velocity");
@@ -338,9 +369,30 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration &)
   if (cfg_.invert_left) wl = -wl;
   if (cfg_.invert_right) wr = -wr;
 
-  int pl = toPwm(wl * cfg_.wheel_radius, cfg_.pwm_per_mps, cfg_.max_pwm);
-  int pr = toPwm(wr * cfg_.wheel_radius, cfg_.pwm_per_mps, cfg_.max_pwm);
   const bool link_ok = link_->secondsSinceRx() < cfg_.link_timeout;
+  int pl, pr;
+  if (cfg_.speed_control && link_ok && motors_enabled_ && !emergency_) {
+    double ml, mr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      const bool fresh = std::chrono::steady_clock::now() - last_pulse_ < std::chrono::milliseconds(500);
+      ml = fresh ? filt_left_.value() : 0.0;
+      mr = fresh ? filt_right_.value() : 0.0;
+    }
+    SpeedGains g;
+    {
+      std::lock_guard<std::mutex> lock(gains_mutex_);
+      g = gains_;
+    }
+    const double dt = period.seconds();
+    pl = pi_left_.update(wl * cfg_.wheel_radius, ml, dt, g, cfg_.max_pwm);
+    pr = pi_right_.update(wr * cfg_.wheel_radius, mr, dt, g, cfg_.max_pwm);
+  } else {
+    pi_left_.reset();
+    pi_right_.reset();
+    pl = toPwm(wl * cfg_.wheel_radius, cfg_.pwm_per_mps, cfg_.max_pwm);
+    pr = toPwm(wr * cfg_.wheel_radius, cfg_.pwm_per_mps, cfg_.max_pwm);
+  }
   const auto now = std::chrono::steady_clock::now();
   // Idle time only counts while the blade is requested and the wheels are commanded still.
   if (pl != 0 || pr != 0 || blade <= 0.0) last_motion_cmd_ = now;
@@ -357,6 +409,8 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration &)
   if (collision_) {
     // Bumped: no forward wheel motion (as the firmware), reversing/turning back is fine.
     const bool forward = pl > 0 || pr > 0;
+    if (pl > 0) pi_left_.reset();
+    if (pr > 0) pi_right_.reset();
     pl = std::min(pl, 0);
     pr = std::min(pr, 0);
     blade_lockout_ = true;
@@ -415,8 +469,12 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     if (dt > 1e-3 && dt < 1.0) {
       vel_left_ = dl / dt;
       vel_right_ = dr / dt;
+      filt_left_.update(vel_left_, dt, cfg_.speed_filter_tau);
+      filt_right_.update(vel_right_, dt, cfg_.speed_filter_tau);
     } else {
       vel_left_ = vel_right_ = 0.0;
+      filt_left_.reset();
+      filt_right_.reset();
     }
     last_pulse_ = now;
     last_.motor_pulse = m.motor_pulse;
@@ -515,7 +573,7 @@ void WorxSystem::publishStatus()
       st.battery_voltage = static_cast<float>(b.mv / 1000.0);
       st.battery_current = static_cast<float>(b.ma / 1000.0);
       st.battery_temperature = static_cast<float>(b.temp_raw / 10.0);
-      st.in_charger = b.in_charger ? *b.in_charger != 0 : b.ma > 0;
+      st.in_charger = cfg_.charger_from_current || !b.in_charger ? b.ma >= cfg_.charger_min_ma : *b.in_charger != 0;
       charger = st.in_charger;
 
       bat.header.stamp = st.header.stamp;

@@ -11,6 +11,7 @@
 // /power/charger_present (Bool, used by the docking plugin), /worx/status and
 // offers /worx/emergency (SetBool, latched) and /worx/motors_enabled (SetBool).
 
+#include "worx_hardware/speed_controller.hpp"
 #include "worx_hardware/wheel_odometer.hpp"
 #include "worx_hardware/worx_link.hpp"
 #include "worx_hardware/worx_protocol.hpp"
@@ -80,6 +81,15 @@ private:
     double collision_hold = 1.0;       // s the bump latch holds after the last evidence
     bool lift_emergency = true;        // Lift latches an emergency (cleared via /worx/emergency)
     double resend_period = 0.2;        // s: repeat an unchanged SETSPEED
+    // The firmware's InCharger never clears after leaving the dock: the charge
+    // current tells instead (as ROS1 worx_comms). A full battery on the dock reads 0 mA.
+    bool charger_from_current = true;
+    int charger_min_ma = 1;
+    // Closed-loop wheel speed (speed_controller.hpp); gains are also runtime
+    // parameters of the worx_hardware node (speed_kp, speed_ki, speed_i_max).
+    bool speed_control = true;
+    SpeedGains speed_gains;
+    double speed_filter_tau = 0.25;    // s
   };
 
   void onBoardMessage(const std::string & msg);
@@ -96,11 +106,16 @@ private:
   mutable std::mutex mutex_;
   WheelOdometer odo_left_, odo_right_;
   double vel_left_ = 0.0, vel_right_ = 0.0;  // m/s
+  SpeedFilter filt_left_, filt_right_;       // low-passed vel_left_/vel_right_ (board frame)
   std::chrono::steady_clock::time_point last_pulse_{};
   BoardMessage last_;  // merged latest values of every block
   std::optional<Battery> battery_;
 
   // Commands.
+  WheelSpeedPI pi_left_, pi_right_;  // write() only
+  std::mutex gains_mutex_;
+  SpeedGains gains_;                 // gains_mutex_
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr gains_cb_;
   int last_pwm_l_ = 0, last_pwm_r_ = 0, last_pwm_mow_ = 0;
   bool sent_once_ = false;
   std::chrono::steady_clock::time_point last_send_{};
