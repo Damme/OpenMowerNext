@@ -86,12 +86,22 @@ processes:
       - plugin: open_mower_next::localization_components::Ekf
         name: ekf_se_odom
         # 25 Hz (robot_localization.yaml: 50): 50 Hz missed its rate on the Pi Zero 2.
-        params: [{frequency: 25.0, sensor_timeout: 0.1}]
+        # IMU: yaw rate only. Its linear acceleration (12 deg mount tilt, auto-levelled)
+        # integrated into ~0.1 m/s position drift while standing still without GPS.
+        params:
+          - frequency: 25.0
+            sensor_timeout: 0.1
+            imu0_config: [false, false, false, false, false, false, false, false, false,
+                          false, false, true, false, false, false]
         # Both EKFs would listen on the same set_pose: one topic each.
         remap: {imu/data: imu/data_raw, set_pose: /ekf_se_odom/set_pose}
       - plugin: open_mower_next::localization_components::Ekf
         name: ekf_se_map
-        params: [{frequency: 25.0, sensor_timeout: 0.1}]
+        params:
+          - frequency: 25.0
+            sensor_timeout: 0.1
+            imu0_config: [false, false, false, false, false, false, false, false, false,
+                          false, false, true, false, false, false]
         remap: {imu/data: imu/data_raw, odometry/filtered: odometry/filtered/map, set_pose: /ekf_se_map/set_pose}
       - plugin: robot_localization::NavSatTransform
         name: navsat_transform_node
