@@ -198,11 +198,11 @@ planner_server:
         refinement_num: 2
 
 # Undocking reverses to the staging pose, and docking starts its approach there:
-# 2 m out onto the lawn before the mission starts (the dock sits outside the areas).
+# 3 m out onto the lawn before the mission starts (the dock sits outside the areas).
 docking_server:
   ros__parameters:
     openmower:
-      staging_x_offset: -2.0
+      staging_x_offset: -3.0
     controller:
       # "Lookup would require extrapolation into the future" aborted undocks
       # halfway (TF slightly behind the control loop on a loaded machine).
