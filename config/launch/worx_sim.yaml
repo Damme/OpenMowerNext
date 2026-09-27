@@ -6,7 +6,7 @@
 #   ros2 service call /mower_logic/start_mowing std_srvs/srv/Trigger
 #
 # Start pose (map -> odom, default = the dock of the real map): OM_SIM_X, OM_SIM_Y,
-# OM_SIM_QZ, OM_SIM_QW (yaw as quaternion). Areas: OM_MOWING_AREAS (comma separated).
+# OM_SIM_QZ, OM_SIM_QW (yaw as quaternion; write floats as 0.0, not 0). Areas: OM_MOWING_AREAS (comma separated).
 env:
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
   ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST

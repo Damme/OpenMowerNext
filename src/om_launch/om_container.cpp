@@ -411,6 +411,8 @@ int main(int argc, char ** argv)
     RCLCPP_FATAL(logger(), "%s", e.what());
     rclcpp::shutdown();
     for (auto & n : nodes) n->thread.join();
+    control.clear();  // joins the control loop threads
+    for (auto & loader : g_loaders) (void)loader.release();
     return 1;
   }
 
