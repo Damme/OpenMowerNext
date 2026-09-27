@@ -21,6 +21,7 @@ struct FakeChip : I2cBus
   int16_t gyro[3] = {10, -20, 5};   // raw LSB, sensor frame (the bias)
   int16_t accel[3] = {0, 0, 0};
   std::deque<std::array<uint8_t, 7>> fifo;  // tag byte + 3 x int16
+  bool no_rollover = false;
   void push(uint8_t tag, int16_t x, int16_t y, int16_t z)
   {
     fifo.push_back({static_cast<uint8_t>(tag << 3), static_cast<uint8_t>(x & 0xFF), static_cast<uint8_t>(x >> 8 & 0xFF),
@@ -41,10 +42,15 @@ struct FakeChip : I2cBus
   }
   bool burstRead(uint8_t reg, uint8_t * buf, int len) override
   {
-    if (reg == 0x78 && len == 7) {
-      if (fifo.empty()) return false;
-      std::memcpy(buf, fifo.front().data(), 7);
-      fifo.pop_front();
+    if (reg == 0x78 && len % 7 == 0) {
+      // Burst: the address rolls back to the tag register after each word,
+      // unless no_rollover (then the bytes after the first word read as 0).
+      std::memset(buf, 0, len);
+      for (int i = 0; i < len / 7 && !fifo.empty(); i++) {
+        if (i > 0 && no_rollover) break;
+        std::memcpy(buf + 7 * i, fifo.front().data(), 7);
+        fifo.pop_front();
+      }
       return true;
     }
     const int16_t * src = reg == 0x22 ? gyro : reg == 0x28 ? accel : nullptr;
@@ -145,7 +151,7 @@ TEST(Lsm6dsv, FifoAveragesAndTracksSflpBias)
   FifoOptions opt;
   ASSERT_TRUE(imu.enableFifo(opt));
   EXPECT_EQ(c->regs[0x0A], 0x06);  // stream mode
-  EXPECT_EQ(c->regs[0x09], 0x65);  // gyro 120 Hz, accel 60 Hz
+  EXPECT_EQ(c->regs[0x09], 0x53);  // gyro 60 Hz, accel 15 Hz
   EXPECT_EQ(c->regs[0x44], 0x20);  // SFLP gyro bias into the FIFO
 
   Sample s;
@@ -188,4 +194,27 @@ TEST(Lsm6dsv, FifoAveragesAndTracksSflpBias)
   ASSERT_TRUE(imu.read(s));
   EXPECT_FALSE(imu.sflpBiasInUse());
   EXPECT_NEAR(s.gyro.z, 0.0, 1e-9);
+}
+
+TEST(Lsm6dsv, FifoFallsBackToSingleWordReads)
+{
+  auto chip = std::make_unique<FakeChip>();
+  FakeChip * c = chip.get();
+  setBodyAccel(*c, 0.0, 0.0, 9.8);
+  Lsm6dsv imu(std::move(chip), [](int, const std::string &) {});
+  ASSERT_TRUE(imu.init());
+  ASSERT_TRUE(imu.calibrateGyroBias(16));
+  ASSERT_TRUE(imu.calibrateLevel(true, 8));
+  ASSERT_TRUE(imu.enableFifo(FifoOptions{}));
+  c->no_rollover = true;
+  const int16_t r = static_cast<int16_t>(std::lround(0.5 / GYRO_SCALE));
+  Sample s;
+  // First burst: only word 1 is real, the rest reads as tag 0 -> switch to single words.
+  for (int i = 0; i < 4; i++) c->push(0x01, 10, static_cast<int16_t>(-20 - r), 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_NEAR(s.gyro.z, 0.5, 0.005);  // the one real word
+  for (int i = 0; i < 4; i++) c->push(0x01, 10, static_cast<int16_t>(-20 - r), 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_EQ(s.gyro_samples, 7);  // 3 left over from the first read (only word 1 popped) + 4
+  EXPECT_NEAR(s.gyro.z, 0.5, 0.005);
 }

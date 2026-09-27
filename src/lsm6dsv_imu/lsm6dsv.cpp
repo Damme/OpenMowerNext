@@ -175,8 +175,8 @@ bool Lsm6dsv::init()
   bus_->writeReg8(REG_CTRL7, 0x01);  // LPF1_G_EN
   bus_->writeReg8(REG_CTRL8, 0x20);  // accel LPF2 ODR/10, FS_XL +-2 g
   bus_->writeReg8(REG_CTRL9, 0x08);  // LPF2_XL_EN
-  bus_->writeReg8(REG_CTRL2, 0x06);  // gyro 120 Hz, high-performance mode
-  bus_->writeReg8(REG_CTRL1, 0x06);  // accel 120 Hz, high-performance mode
+  bus_->writeReg8(REG_CTRL2, 0x06);  // gyro 120 Hz, high-performance mode (FIFO batches 60 Hz)
+  bus_->writeReg8(REG_CTRL1, 0x06);  // accel 120 Hz, high-performance mode (FIFO batches 15 Hz)
   usleep(50000);                     // gyro turn-on time
   return true;
 }
@@ -186,15 +186,17 @@ bool Lsm6dsv::enableFifo(const FifoOptions & options)
   fifo_opts_ = options;
   if (!configureFifo()) return false;
   fifo_ = true;
-  log_(0, options.sflp_bias ? "FIFO on: gyro 120 Hz, accel 60 Hz averaged per read; SFLP gyro bias 30 Hz"
-                            : "FIFO on: gyro 120 Hz, accel 60 Hz averaged per read");
+  log_(0, options.sflp_bias ? "FIFO on: gyro 60 Hz, accel 15 Hz averaged per read; SFLP gyro bias 15 Hz"
+                            : "FIFO on: gyro 60 Hz, accel 15 Hz averaged per read");
   return true;
 }
 
 bool Lsm6dsv::configureFifo()
 {
   bool ok = bus_->writeReg8(REG_FIFO_CTRL4, 0x00);  // bypass: empties the FIFO
-  ok = ok && bus_->writeReg8(REG_FIFO_CTRL3, 0x65);  // gyro 120 Hz, accel 60 Hz
+  // Gyro 60 Hz (LPF1 24 Hz), accel 15 Hz (not fused; spare): the Worx I2C bus runs at
+  // 50 kHz, and 120 + 60 Hz one word per transaction left the node at ~7 Hz.
+  ok = ok && bus_->writeReg8(REG_FIFO_CTRL3, 0x53);
   if (ok && fifo_opts_.sflp_bias) {
     // As ST's lsm6dsv_sensor_fusion example: SFLP output to FIFO, ODR, enable.
     ok = bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x80);  // embedded-functions bank
@@ -202,7 +204,7 @@ bool Lsm6dsv::configureFifo()
     const int odr = bus_->readReg8(EMB_SFLP_ODR);
     ok = ok && odr >= 0;
     ok = ok && bus_->writeReg8(EMB_FUNC_FIFO_EN_A, 0x20);  // SFLP_GBIAS_FIFO_EN
-    ok = ok && bus_->writeReg8(EMB_SFLP_ODR, static_cast<uint8_t>((odr & ~0x38) | (1 << 3)));  // 30 Hz
+    ok = ok && bus_->writeReg8(EMB_SFLP_ODR, static_cast<uint8_t>(odr & ~0x38));  // 15 Hz
     const int en = bus_->readReg8(EMB_FUNC_EN_A);
     ok = ok && en >= 0 && bus_->writeReg8(EMB_FUNC_EN_A, static_cast<uint8_t>(en | 0x02));  // SFLP_GAME_EN
     bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x00);
@@ -353,32 +355,47 @@ bool Lsm6dsv::readFifo(Sample & out)
   const int level = std::min(s1 | (s2 & 0x01) << 8, 128);
   long g[3] = {0, 0, 0}, a[3] = {0, 0, 0};
   int gn = 0, an = 0;
-  uint8_t w[7];
-  for (int i = 0; i < level; i++) {
-    if (!bus_->burstRead(REG_FIFO_DATA_OUT_TAG, w, 7)) {
+  // Several words per transaction: the address rolls back from FIFO_DATA_OUT_Z_H
+  // to FIFO_DATA_OUT_TAG. If a burst yields an unknown tag, that isn't so on this
+  // chip: fall back to one word per transaction (only the first word was popped then;
+  // the rest stays in the FIFO for the next read).
+  constexpr int kBurstWords = 16;
+  uint8_t w[7 * kBurstWords];
+  for (int done = 0; done < level;) {
+    const int k = burst_ ? std::min(kBurstWords, level - done) : 1;
+    if (!bus_->burstRead(REG_FIFO_DATA_OUT_TAG, w, 7 * k)) {
       log_(1, "IMU FIFO read error");
       break;
     }
-    const int16_t v[3] = {le16(w + 1), le16(w + 3), le16(w + 5)};
-    switch (w[0] >> 3) {
-      case TAG_GYRO:
-        for (int k = 0; k < 3; k++) g[k] += v[k];
-        gn++;
-        break;
-      case TAG_ACCEL:
-        for (int k = 0; k < 3; k++) a[k] += v[k];
-        an++;
-        break;
-      case TAG_SFLP_GBIAS:
-        onSflpBias(v);
-        break;
-      default:
-        break;
+    done += k;
+    bool bad = false;
+    for (int j = 0; j < k; j++) {
+      const uint8_t * e = w + 7 * j;
+      const int16_t v[3] = {le16(e + 1), le16(e + 3), le16(e + 5)};
+      switch (e[0] >> 3) {
+        case TAG_GYRO:
+          for (int m = 0; m < 3; m++) g[m] += v[m];
+          gn++;
+          break;
+        case TAG_ACCEL:
+          for (int m = 0; m < 3; m++) a[m] += v[m];
+          an++;
+          break;
+        case TAG_SFLP_GBIAS:
+          onSflpBias(v);
+          break;
+        default:
+          bad = bad || j > 0;  // only words after the first depend on the roll-back
+          break;
+      }
+    }
+    if (bad && burst_) {
+      burst_ = false;
+      log_(1, "IMU FIFO: multi-word burst not supported here - reading one word per transaction");
     }
   }
   if (gn == 0) {
-    // 120 Hz gyro: every 20 ms read should find 2-3 samples.
-    if (level == 0) log_(1, "IMU FIFO empty - dropping sample");
+    // 60 Hz gyro, 50 Hz reads: an empty read is scheduling jitter; three in a row re-init.
     missed();
     return false;
   }

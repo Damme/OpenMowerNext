@@ -7,9 +7,9 @@
 // (high-performance mode, as ST's SFLP example). Static gyro-bias calibration
 // and an auto-level rotation (gravity -> +Z) at startup.
 //
-// FIFO mode (enableFifo): the chip batches every gyro sample (120 Hz) and accel
-// sample (60 Hz) and, from its SFLP sensor fusion, its running gyro-bias
-// estimate (30 Hz). read() then returns the MEAN of everything since the last
+// FIFO mode (enableFifo): the chip batches every gyro sample (60 Hz) and accel
+// sample (15 Hz) and, from its SFLP sensor fusion, its running gyro-bias
+// estimate (15 Hz). read() then returns the MEAN of everything since the last
 // call - no single-sample aliasing (blade vibration near the publish rate) - with
 // the bias removed. SFLP's bias is NOT applied by the chip to the output registers
 // (ST); it is used here only after it once agreed with the startup calibration
@@ -109,6 +109,7 @@ private:
   double sflp_bias_[3] = {0, 0, 0};    // raw gyro LSB (converted from SFLP's 4.375 mdps/LSB)
   bool sflp_seen_ = false, sflp_agreed_ = false, sflp_in_use_ = false;
   bool fifo_ = false;
+  bool burst_ = true;  // several FIFO words per I2C transaction
   FifoOptions fifo_opts_;
   Mat3 level_ = identity();
   Vec3 last_accel_;
