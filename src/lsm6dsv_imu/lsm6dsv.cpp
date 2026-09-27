@@ -217,12 +217,18 @@ bool Lsm6dsv::configureFifo()
 
 void Lsm6dsv::onSflpBias(const int16_t raw[3])
 {
-  bool agree = true, in_band = true;
+  // Convergence is judged on the raw estimate; once it agreed, the bias used is
+  // low-passed (SFLP_ODR 15 Hz): it flips between 4.375 mdps steps.
+  const double a = fifo_opts_.bias_tau > 0 ? std::min(1.0, 1.0 / (15.0 * fifo_opts_.bias_tau)) : 1.0;
+  bool agree = true;
   for (int i = 0; i < 3; i++) {
-    sflp_bias_[i] = raw[i] * SFLP_GBIAS_TO_GYRO_LSB;
-    const double diff_dps = std::abs(sflp_bias_[i] - bias_[i]) * GYRO_DEG_PER_LSB;
-    agree = agree && diff_dps <= fifo_opts_.bias_agree_dps;
-    in_band = in_band && diff_dps <= fifo_opts_.bias_band_dps;
+    const double v = raw[i] * SFLP_GBIAS_TO_GYRO_LSB;
+    agree = agree && std::abs(v - bias_[i]) * GYRO_DEG_PER_LSB <= fifo_opts_.bias_agree_dps;
+    sflp_bias_[i] = sflp_agreed_ ? sflp_bias_[i] + a * (v - sflp_bias_[i]) : v;
+  }
+  bool in_band = true;
+  for (int i = 0; i < 3; i++) {
+    in_band = in_band && std::abs(sflp_bias_[i] - bias_[i]) * GYRO_DEG_PER_LSB <= fifo_opts_.bias_band_dps;
   }
   sflp_seen_ = true;
   bool first = false;

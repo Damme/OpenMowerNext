@@ -57,6 +57,7 @@ struct FifoOptions
   bool sflp_bias = true;        // track SFLP's gyro-bias estimate
   double bias_agree_dps = 0.05; // SFLP must once come this close to the startup bias (all axes)
   double bias_band_dps = 0.5;   // and then stay within this of it (all axes)
+  double bias_tau = 30.0;       // s: low-pass on SFLP's bias (4.375 mdps steps -> sub-step resolution)
 };
 
 struct Sample
@@ -106,7 +107,7 @@ private:
   Log log_;
   double bias_[3] = {0, 0, 0};  // raw LSB, startup calibration
   double active_bias_[3] = {0, 0, 0};  // raw LSB, subtracted by read()
-  double sflp_bias_[3] = {0, 0, 0};    // raw gyro LSB (converted from SFLP's 4.375 mdps/LSB)
+  double sflp_bias_[3] = {0, 0, 0};    // raw gyro LSB (converted from SFLP's 4.375 mdps/LSB), low-passed
   bool sflp_seen_ = false, sflp_agreed_ = false, sflp_in_use_ = false;
   bool fifo_ = false;
   bool burst_ = true;  // several FIFO words per I2C transaction

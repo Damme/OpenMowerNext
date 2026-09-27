@@ -149,6 +149,7 @@ TEST(Lsm6dsv, FifoAveragesAndTracksSflpBias)
   ASSERT_TRUE(imu.calibrateGyroBias(16));  // bias = (10, -20, 5) LSB
   ASSERT_TRUE(imu.calibrateLevel(true, 8));
   FifoOptions opt;
+  opt.bias_tau = 0.0;  // follow every SFLP value (smoothing: own test)
   ASSERT_TRUE(imu.enableFifo(opt));
   EXPECT_EQ(c->regs[0x0A], 0x06);  // stream mode
   EXPECT_EQ(c->regs[0x09], 0x53);  // gyro 60 Hz, accel 15 Hz
@@ -217,4 +218,26 @@ TEST(Lsm6dsv, FifoFallsBackToSingleWordReads)
   ASSERT_TRUE(imu.read(s));
   EXPECT_EQ(s.gyro_samples, 7);  // 3 left over from the first read (only word 1 popped) + 4
   EXPECT_NEAR(s.gyro.z, 0.5, 0.005);
+}
+
+TEST(Lsm6dsv, SflpBiasSmoothedBetweenSteps)
+{
+  auto chip = std::make_unique<FakeChip>();
+  FakeChip * c = chip.get();
+  setBodyAccel(*c, 0.0, 0.0, 9.8);
+  Lsm6dsv imu(std::move(chip), [](int, const std::string &) {});
+  ASSERT_TRUE(imu.init());
+  ASSERT_TRUE(imu.calibrateGyroBias(16));  // Z bias sensor -Y = -20 LSB = -80 SFLP LSB
+  ASSERT_TRUE(imu.calibrateLevel(true, 8));
+  ASSERT_TRUE(imu.enableFifo(FifoOptions{}));  // tau 30 s
+  Sample s;
+  // SFLP flips between two steps around the true bias (-80 +- 2): the used bias converges to the middle.
+  for (int i = 0; i < 15 * 120; i++) {
+    c->push(0x16, 40, static_cast<int16_t>(i % 2 ? -78 : -82), 20);
+    c->push(0x01, 10, -20, 5);
+    ASSERT_TRUE(imu.read(s));
+  }
+  EXPECT_TRUE(imu.sflpBiasInUse());
+  EXPECT_NEAR(imu.activeBiasDps().y, -20 * 17.5e-3, 0.0005);
+  EXPECT_NEAR(s.gyro.z, 0.0, 1e-4);
 }

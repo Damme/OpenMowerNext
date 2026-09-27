@@ -38,6 +38,7 @@ public:
     fifo_opts_.sflp_bias = declare_parameter("sflp_bias", fifo_opts_.sflp_bias);
     fifo_opts_.bias_agree_dps = declare_parameter("sflp_bias_agree_dps", fifo_opts_.bias_agree_dps);
     fifo_opts_.bias_band_dps = declare_parameter("sflp_bias_band_dps", fifo_opts_.bias_band_dps);
+    fifo_opts_.bias_tau = declare_parameter("sflp_bias_tau", fifo_opts_.bias_tau);
     pub_ = create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", rclcpp::SensorDataQoS());
     thread_ = std::thread([this]() { run(); });
   }
