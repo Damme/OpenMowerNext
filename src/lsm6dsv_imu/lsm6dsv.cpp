@@ -225,14 +225,15 @@ void Lsm6dsv::onSflpBias(const int16_t raw[3])
     in_band = in_band && diff_dps <= fifo_opts_.bias_band_dps;
   }
   sflp_seen_ = true;
+  bool first = false;
   if (!sflp_agreed_ && agree) {
-    sflp_agreed_ = true;
+    sflp_agreed_ = first = true;
     const auto b = sflpBiasDps();
     log_(0, fmt("SFLP gyro bias converged to the startup calibration - tracking it (dps): %+.4f %+.4f %+.4f",
                 b.x, b.y, b.z));
   }
   const bool use = fifo_opts_.sflp_bias && sflp_agreed_ && in_band;
-  if (use != sflp_in_use_ && sflp_agreed_) {
+  if (use != sflp_in_use_ && sflp_agreed_ && !first) {
     const auto b = sflpBiasDps();
     log_(use ? 0 : 1, fmt(use ? "SFLP gyro bias back within the band (dps): %+.4f %+.4f %+.4f"
                               : "SFLP gyro bias left the band around the startup calibration, using the startup "
