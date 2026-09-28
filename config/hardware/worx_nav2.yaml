@@ -34,7 +34,9 @@ controller_server:
     FTC:
       plugin: "open_mower_next::ftc_controller::FTCController"
       speed_fast: 0.3
-      speed_fast_threshold: 2.0   # m of straight path ahead for speed_fast (Daniel: too fast in fine manoeuvres)
+      # m of straight path ahead for speed_fast. 2.0 slowed down ~3 m before every
+      # turn (Daniel, real mow 2026-09-28); braking 0.3 -> 0.1 m/s takes ~0.4 m.
+      speed_fast_threshold: 0.6
       speed_fast_threshold_angle: 20.0
       speed_slow: 0.10
       speed_angular: 45.0

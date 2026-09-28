@@ -154,8 +154,10 @@ processes:
           - gps_fix_topic: $(env OM_GPS_FIX_TOPIC /gps/fix)
             gps_settle: $(env OM_GPS_WAIT_TIME_SEC 10.0)
             gps_timeout: $(env OM_GPS_RECENT_TIMEOUT_SEC 4.0)   # Daniel: ~4 s on IMU + ticks without RTK fixed
-            battery_low: $(env OM_BATTERY_LOW_FRACTION 0.2)
+            # 0.27 on 21.7..28.5 V (worx.yaml hardware) = 23.5 V, where ROS1 went home (7S Li-ion)
+            battery_low: $(env OM_BATTERY_LOW_FRACTION 0.27)
             battery_resume: $(env OM_BATTERY_RESUME_FRACTION 0.95)
+            blade_spinup: 4.0   # s: Daniel - let the blade reach speed before driving
             dock_on_rain: $(env OM_DOCK_ON_RAIN true)
             areas: $(env OM_MOWING_AREAS "")
             disabled_areas_file: $(env OM_DISABLED_AREAS_PATH /data/disabled_areas.txt)
