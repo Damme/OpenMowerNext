@@ -52,7 +52,8 @@ struct Params
   bool require_gps = true;
   std::string gps_fix_topic = "/gps/fix";
   double gps_max_accuracy = 0.10;    // m (sqrt of horizontal covariance)
-  double gps_timeout = 1.5;          // s without a good fix -> pause
+  double gps_timeout = 4.0;          // s without a good fix -> pause (Daniel: ~4 s on IMU + ticks)
+  bool gps_require_rtk_fixed = true; // only RTK fixed is a good fix (float = dead reckoning)
   double gps_settle = 10.0;          // s of good fixes before continuing (OM_GPS_WAIT_TIME_SEC)
   bool dock_on_rain = true;
   double rain_clear_delay = 1800.0;  // s without rain before mowing again

@@ -146,7 +146,7 @@ processes:
         params:
           - gps_fix_topic: $(env OM_GPS_FIX_TOPIC /gps/fix)
             gps_settle: $(env OM_GPS_WAIT_TIME_SEC 10.0)
-            gps_timeout: $(env OM_GPS_RECENT_TIMEOUT_SEC 1.5)
+            gps_timeout: $(env OM_GPS_RECENT_TIMEOUT_SEC 4.0)   # Daniel: ~4 s on IMU + ticks without RTK fixed
             battery_low: $(env OM_BATTERY_LOW_FRACTION 0.2)
             battery_resume: $(env OM_BATTERY_RESUME_FRACTION 0.95)
             dock_on_rain: $(env OM_DOCK_ON_RAIN true)

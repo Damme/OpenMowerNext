@@ -78,7 +78,12 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
     gps_sub_ = node->create_subscription<sensor_msgs::msg::NavSatFix>(
       params.gps_fix_topic, rclcpp::SensorDataQoS(), [this](sensor_msgs::msg::NavSatFix::ConstSharedPtr m) {
         const double acc = std::sqrt(std::max(m->position_covariance[0], m->position_covariance[4]));
-        const bool good = m->status.status >= sensor_msgs::msg::NavSatStatus::STATUS_FIX &&
+        // ubx_gps: STATUS_GBAS_FIX = RTK fixed, STATUS_FIX = float or plain 3D (its
+        // hAcc can't tell them apart). Localization only fuses RTK fixed, so float
+        // must count as "no GPS" here too (dead reckoning for gps_timeout, then pause).
+        const int min_status = params.gps_require_rtk_fixed ? sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX
+                                                            : sensor_msgs::msg::NavSatStatus::STATUS_FIX;
+        const bool good = m->status.status >= min_status &&
                           m->position_covariance_type != sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_UNKNOWN &&
                           acc <= params.gps_max_accuracy;
         std::lock_guard<std::mutex> l(mutex_);
