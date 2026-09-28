@@ -109,6 +109,12 @@ processes:
             odom0_config: [false, false, false, false, false, false, true, true, true,
                            false, false, false, false, false, false]
         remap: {imu/data: imu/data_raw, odometry/filtered: odometry/filtered/map, set_pose: /ekf_se_map/set_pose}
+      # Learns the wheel scale (ticks -> metres) from RTK on straight drives and
+      # hands it to worx_hardware; kept in /data/wheel_scale.txt.
+      - plugin: open_mower_next::wheel_scale::WheelScaleNode
+        name: wheel_scale
+        params:
+          - enabled: $(env OM_WHEEL_SCALE_LEARN true)
       - plugin: robot_localization::NavSatTransform
         name: navsat_transform_node
         # GPS through docking_helper's gate: nothing on the charger, only RTK fixed.

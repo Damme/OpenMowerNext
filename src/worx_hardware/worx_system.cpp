@@ -203,6 +203,16 @@ void WorxSystem::startNode()
     fake_battery_sub_ = node_->create_subscription<std_msgs::msg::Int32>(
       "/worx/fake/battery_mv", 10, [this](std_msgs::msg::Int32::ConstSharedPtr m) { fake_board_->setBatteryMv(m->data); });
   }
+  wheel_scale_sub_ = node_->create_subscription<std_msgs::msg::Float64>(
+    "/worx/wheel_scale", rclcpp::QoS(1).transient_local(), [this](std_msgs::msg::Float64::ConstSharedPtr m) {
+      if (!std::isfinite(m->data) || m->data < 0.8 || m->data > 1.2) {
+        RCLCPP_WARN(node_->get_logger(), "Ignoring wheel scale %.4f (outside 0.8..1.2)", m->data);
+        return;
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (m->data != wheel_scale_) RCLCPP_INFO(node_->get_logger(), "Wheel scale %.4f -> %.4f", wheel_scale_, m->data);
+      wheel_scale_ = m->data;
+    });
   // Speed loop tuning at runtime: ros2 param set /worx_hardware speed_kp 2000
   node_->declare_parameter("speed_kp", gains_.kp);
   node_->declare_parameter("speed_ki", gains_.ki);
@@ -283,8 +293,8 @@ CallbackReturn WorxSystem::on_activate(const rclcpp_lifecycle::State &)
 {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    set_state(cfg_.left_joint + "/position", odo_left_.distance() / cfg_.wheel_radius);
-    set_state(cfg_.right_joint + "/position", odo_right_.distance() / cfg_.wheel_radius);
+    set_state(cfg_.left_joint + "/position", dist_left_ / cfg_.wheel_radius);
+    set_state(cfg_.right_joint + "/position", dist_right_ / cfg_.wheel_radius);
   }
   set_state(cfg_.left_joint + "/velocity", 0.0);
   set_state(cfg_.right_joint + "/velocity", 0.0);
@@ -356,8 +366,8 @@ return_type WorxSystem::read(const rclcpp::Time &, const rclcpp::Duration &)
   const bool fresh = std::chrono::steady_clock::now() - last_pulse_ < std::chrono::milliseconds(500);
   const double sl = cfg_.invert_left ? -1.0 : 1.0;
   const double sr = cfg_.invert_right ? -1.0 : 1.0;
-  set_state(cfg_.left_joint + "/position", sl * odo_left_.distance() / cfg_.wheel_radius);
-  set_state(cfg_.right_joint + "/position", sr * odo_right_.distance() / cfg_.wheel_radius);
+  set_state(cfg_.left_joint + "/position", sl * dist_left_ / cfg_.wheel_radius);
+  set_state(cfg_.right_joint + "/position", sr * dist_right_ / cfg_.wheel_radius);
   set_state(cfg_.left_joint + "/velocity", fresh ? sl * vel_left_ / cfg_.wheel_radius : 0.0);
   set_state(cfg_.right_joint + "/velocity", fresh ? sr * vel_right_ / cfg_.wheel_radius : 0.0);
   if (has_state(cfg_.mower_joint + "/position")) {
@@ -396,8 +406,8 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration & per
       ml = fresh ? filt_left_.value() : 0.0;
       mr = fresh ? filt_right_.value() : 0.0;
       const double ahead = std::min(std::chrono::duration<double>(age).count(), 0.1);
-      xl = odo_left_.distance() + ml * ahead;
-      xr = odo_right_.distance() + mr * ahead;
+      xl = dist_left_ + ml * ahead;
+      xr = dist_right_ + mr * ahead;
     }
     SpeedGains g;
     {
@@ -483,8 +493,10 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     if (cfg_.bump_detection && blocked && moved_recently && last_pwm_l_ > 0 && last_pwm_r_ > 0) {
       registerBump("BlockForward");
     }
-    const double dl = odo_left_.update(m.motor_pulse->left, m.motor_pulse->dir_left);
-    const double dr = odo_right_.update(m.motor_pulse->right, m.motor_pulse->dir_right);
+    const double dl = wheel_scale_ * odo_left_.update(m.motor_pulse->left, m.motor_pulse->dir_left);
+    const double dr = wheel_scale_ * odo_right_.update(m.motor_pulse->right, m.motor_pulse->dir_right);
+    dist_left_ += dl;
+    dist_right_ += dr;
     const double dt = std::chrono::duration<double>(now - last_pulse_).count();
     if (dt > 1e-3 && dt < 1.0) {
       vel_left_ = dl / dt;

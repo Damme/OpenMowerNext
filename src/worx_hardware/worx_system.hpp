@@ -105,6 +105,10 @@ private:
   // Filled by the link thread, consumed by read()/status.
   mutable std::mutex mutex_;
   WheelOdometer odo_left_, odo_right_;
+  // Wheel travel [m] = ticks / ticks_per_m * wheel_scale_ (/worx/wheel_scale, learned
+  // from RTK by the wheel_scale node: grass height, debris and wear change the radius).
+  double dist_left_ = 0.0, dist_right_ = 0.0;
+  double wheel_scale_ = 1.0;
   double vel_left_ = 0.0, vel_right_ = 0.0;  // m/s
   SpeedFilter filt_left_, filt_right_;       // low-passed vel_left_/vel_right_ (board frame)
   std::chrono::steady_clock::time_point last_pulse_{};
@@ -146,6 +150,7 @@ private:
   FakeBoardTransport * fake_board_ = nullptr;  // owned by link_, only with transport=fake
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr fake_battery_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr fake_speed_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr wheel_scale_sub_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 };
 
