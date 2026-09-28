@@ -9,6 +9,10 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
+    # Real robot 2026-09-28: the default "odom" has no publisher, so the
+    # controllers saw speed 0 and RPP's rotate-to-heading, limited to
+    # current speed + max_angular_accel * dt, crawled at 0.075 rad/s.
+    odom_topic: /odometry/filtered
     # FollowPath (RPP) for transit, FTC for mowing passes (mower_logic controller_id).
     controller_plugins: ["FollowPath", "FTC"]
     goal_checker_plugins: ["general_goal_checker", "ftc_goal_checker", "transit_goal_checker"]
@@ -61,6 +65,8 @@ controller_server:
       yaw_goal_tolerance: 0.35
     FollowPath:
       desired_linear_vel: 0.3
+      # Default 0.1 s: TF lags more on the Pi (control loop 12-20 Hz) -> TF_ERROR aborts.
+      transform_tolerance: 0.5
       lookahead_dist: 0.4
       # No collision check: the local costmap holds only the map (the lines are
       # drivable - the mower recorded them), the planner keeps the path inside.
