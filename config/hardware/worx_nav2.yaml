@@ -34,9 +34,9 @@ controller_server:
     FTC:
       plugin: "open_mower_next::ftc_controller::FTCController"
       speed_fast: 0.3
-      speed_fast_threshold: 1.0
+      speed_fast_threshold: 2.0   # m of straight path ahead for speed_fast (Daniel: too fast in fine manoeuvres)
       speed_fast_threshold_angle: 20.0
-      speed_slow: 0.12
+      speed_slow: 0.10
       speed_angular: 45.0
       acceleration: 0.1
       lateral_priority_distance: 0.15
@@ -44,7 +44,7 @@ controller_server:
       ki_lon: 0.0
       ki_lon_max: 10.0
       kd_lon: 0.0
-      kp_lat: 25.0
+      kp_lat: 12.0   # ROS1 25: swung at the pass start on the robot (10-20 cm offset -> w saturated)
       ki_lat: 0.06153
       ki_lat_max: 62.0
       kd_lat: 1.23
@@ -82,21 +82,23 @@ controller_server:
       rotate_to_heading_angular_vel: 0.8
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 1.5   # = velocity_smoother max_decel (real robot)
+      max_angular_accel: 3.0   # = velocity_smoother max_decel (real robot)
 
 velocity_smoother:
   ros__parameters:
-    max_velocity: [0.3, 0.0, 0.8]
-    min_velocity: [-0.3, 0.0, -0.8]
-    # Real robot 2026-09-28: 2.5 m/s^2 / 3.2 rad/s^2 spun the wheels on the lawn
-    # (docking controller swinging w +-0.75 at the end of the undock).
-    max_accel: [0.3, 0.0, 1.0]
-    max_decel: [-0.5, 0.0, -1.5]
+    # Real robot 2026-09-28: 2.5 m/s^2 linear spun the wheels. Angular 0.8 rad/s /
+    # 1.0 rad/s^2 made FTC (ROS1 gains, ROS1 had no smoother) swing +-60 deg in
+    # S-curves; 1.5 rad/s / 3.0 rad/s^2 tracked. The undock wheel spin was the
+    # docking controller swinging w: limited there (docking_server v_angular_max).
+    max_velocity: [0.3, 0.0, 1.5]
+    min_velocity: [-0.3, 0.0, -1.5]
+    max_accel: [0.3, 0.0, 3.0]
+    max_decel: [-0.5, 0.0, -3.0]
 
 # Spin brakes with its own limit: keep it at the smoother's (else it overshoots).
 behavior_server:
   ros__parameters:
-    rotational_acc_lim: 1.5
+    rotational_acc_lim: 3.0
 
 # Body 0.58 x 0.39 m, base_link on the wheel axle 0.11 m from the rear.
 local_costmap:
@@ -222,3 +224,6 @@ docking_server:
       # "Lookup would require extrapolation into the future" aborted undocks
       # halfway (TF slightly behind the control loop on a loaded machine).
       transform_tolerance: 0.5
+      # Real robot 2026-09-28: swung w +-0.75 at the staging pose after the undock
+      # (wheel spin on the lawn).
+      v_angular_max: 0.4

@@ -95,19 +95,13 @@ void FTCController::setState(PlannerState s)
   publishFinished(s == FINISHED && !is_crashed_);
 }
 
-void FTCController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent, std::string name,
-                              std::shared_ptr<tf2_ros::Buffer> tf,
-                              std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap)
+// Parameters are read at configure and again at every new plan (each pass), so
+// they can be tuned live between passes: ros2 param set /controller_server FTC.kp_lat 12.0
+void FTCController::loadParams()
 {
-  node_ = parent;
-  auto node = parent.lock();
-  if (!node) throw std::runtime_error("FTCController: node expired");
-  name_ = name;
-  tf_ = tf;
-  costmap_ros_ = costmap;
-  clock_ = node->get_clock();
-  logger_ = node->get_logger();
-
+  auto node = node_.lock();
+  if (!node) return;
+  const std::string & name = name_;
   auto d = [&](const std::string & p, auto & value) {
     using T = std::decay_t<decltype(value)>;
     nav2_util::declare_parameter_if_not_declared(node, name + "." + p, rclcpp::ParameterValue(value));
@@ -134,6 +128,23 @@ void FTCController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & p
   d("oscillation_recovery_min_duration", c.oscillation_recovery_min_duration);
   d("check_obstacles", c.check_obstacles); d("obstacle_footprint", c.obstacle_footprint);
   d("obstacle_lookahead", c.obstacle_lookahead);
+}
+
+void FTCController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent, std::string name,
+                              std::shared_ptr<tf2_ros::Buffer> tf,
+                              std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap)
+{
+  node_ = parent;
+  auto node = parent.lock();
+  if (!node) throw std::runtime_error("FTCController: node expired");
+  name_ = name;
+  tf_ = tf;
+  costmap_ros_ = costmap;
+  clock_ = node->get_clock();
+  logger_ = node->get_logger();
+
+  loadParams();
+  auto & c = cfg_;
 
   double controller_frequency = 20.0;
   if (node->has_parameter("controller_frequency")) {
@@ -193,6 +204,7 @@ void FTCController::setSpeedLimit(const double & speed_limit, const bool & perce
 
 void FTCController::setPlan(const nav_msgs::msg::Path & path)
 {
+  loadParams();
   is_crashed_ = false;
   plan_ = path.poses;
   plan_frame_ = path.header.frame_id.empty() ? "map" : path.header.frame_id;

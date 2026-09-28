@@ -81,6 +81,7 @@ public:
   static bool finished(const std::string & controller_name);
 
 private:
+  void loadParams();
   enum PlannerState { PRE_ROTATE, FOLLOWING, WAITING_FOR_GOAL_APPROACH, POST_ROTATE, FINISHED };
 
   double now() const;
