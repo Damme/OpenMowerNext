@@ -48,6 +48,8 @@
 // POST_ROTATE -> FINISHED. Completion means the carrot traversed the whole plan
 // (use FTCGoalChecker): unlike a proximity goal checker, closed loops work.
 
+#include "ftc_controller/rejoin.hpp"
+
 #include <nav2_core/controller.hpp>
 #include <nav2_core/goal_checker.hpp>
 #include <nav2_costmap_2d/costmap_2d_ros.hpp>
@@ -89,6 +91,8 @@ struct FtcConfig
   double kp_lon = 1.0, ki_lon = 0.0, ki_lon_max = 10.0, kd_lon = 0.0;
   bool lon_feedforward = true;  // add the carrot speed to the longitudinal command
   double max_drive_angle = 45.0;  // deg heading error above which FOLLOWING turns in place
+  bool rejoin = true;             // off the path: steer at a capped approach angle (rejoin.hpp)
+  RejoinConfig rejoin_cfg;
   double kp_lat = 1.0, ki_lat = 0.0, ki_lat_max = 10.0, kd_lat = 0.0;
   double kp_ang = 1.0, ki_ang = 0.0, ki_ang_max = 10.0, kd_ang = 0.0;
   double max_cmd_vel_speed = 2.0, max_cmd_vel_ang = 2.0;
@@ -159,7 +163,9 @@ private:
   Eigen::Affine3d local_control_point_ = Eigen::Affine3d::Identity();
 
   double lat_error_ = 0, lon_error_ = 0, angle_error_ = 0;
-  double last_lon_error_ = 0, last_lat_error_ = 0, last_angle_error_ = 0;
+  double last_lon_error_ = 0, last_lat_error_ = 0, last_angle_error_ = 0, last_rejoin_error_ = 0;
+  bool rejoining_ = false;  // logged: how often and how far the robot gets pushed off the path
+  double rejoin_since_ = 0.0, rejoin_max_offset_ = 0.0;
   double i_lon_error_ = 0, i_lat_error_ = 0, i_angle_error_ = 0;
   double last_cmd_vel_linear_ = 0;
   bool carrot_gated_ = false;

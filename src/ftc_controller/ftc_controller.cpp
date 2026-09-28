@@ -167,6 +167,9 @@ void FTCController::loadParams()
   d("oscillation_recovery_min_duration", c.oscillation_recovery_min_duration);
   d("lon_feedforward", c.lon_feedforward);
   d("max_drive_angle", c.max_drive_angle);
+  d("rejoin", c.rejoin); d("rejoin_blend_start", c.rejoin_cfg.blend_start);
+  d("rejoin_blend_full", c.rejoin_cfg.blend_full); d("rejoin_lookahead", c.rejoin_cfg.lookahead);
+  d("rejoin_max_angle", c.rejoin_cfg.max_angle_deg);
   d("check_obstacles", c.check_obstacles); d("obstacle_footprint", c.obstacle_footprint);
   d("obstacle_lookahead", c.obstacle_lookahead);
 }
@@ -254,7 +257,8 @@ void FTCController::setPlan(const nav_msgs::msg::Path & path)
   last_time_ = now();
   current_movement_speed_ = cfg_.speed_slow;
   lat_error_ = lon_error_ = angle_error_ = 0.0;
-  last_lat_error_ = last_lon_error_ = last_angle_error_ = 0.0;
+  last_lat_error_ = last_lon_error_ = last_angle_error_ = last_rejoin_error_ = 0.0;
+  rejoining_ = false;
   i_lon_error_ = i_lat_error_ = i_angle_error_ = 0.0;
   last_cmd_vel_linear_ = 0.0;
   carrot_gated_ = false;
@@ -404,9 +408,12 @@ void FTCController::updateControlPoint(double dt)
       // Carrot leash: don't run away from a robot that fell behind. Only when the
       // carrot is ahead: a robot that overshot it (downhill, bump) must not freeze
       // the carrot - it is forward-only, so it waits until the carrot passes.
+      // Longitudinal lag only: a robot BESIDE the path (slid down a slope while
+      // turning) froze the carrot with hypot(x, y) - forward error ~0, so it crept
+      // at ~0 m/s until the progress checker gave up (real robot 2026-09-28).
       carrot_gated_ = false;
-      if (cfg_.carrot_max_lag > 0.0 && local_control_point_.translation().x() > 0.0) {
-        const double lag = std::hypot(local_control_point_.translation().x(), local_control_point_.translation().y());
+      const double lag = local_control_point_.translation().x();
+      if (cfg_.carrot_max_lag > 0.0 && lag > 0.0) {
         if (lag > cfg_.carrot_max_lag) {
           distance_to_move = angle_to_move = 0.0;
           carrot_gated_ = true;
@@ -488,9 +495,35 @@ void FTCController::calculateVelocityCommands(double dt, geometry_msgs::msg::Twi
 {
   if (state_ == FINISHED || is_crashed_) return;
 
-  // Anti-windup: no longitudinal integral while the carrot is gated.
+  // Beside the path (rejoin.hpp): 0 = normal law, 1 = steer at the approach angle.
+  const double cross_track = crossTrack(local_control_point_);
+  const double w_rejoin = cfg_.rejoin && state_ == FOLLOWING ? rejoinWeight(cross_track, cfg_.rejoin_cfg) : 0.0;
+  const double approach = approachAngle(cross_track, cfg_.rejoin_cfg);
+  const double rejoin_error = angle_error_ + approach;  // heading error to path heading + approach
+  const double d_rejoin = (rejoin_error - last_rejoin_error_) / dt;
+  last_rejoin_error_ = rejoin_error;
+  if (w_rejoin >= 1.0 && !rejoining_) {
+    rejoining_ = true;
+    rejoin_since_ = now();
+    rejoin_max_offset_ = 0.0;
+    RCLCPP_INFO(logger_, "FTC: %.2f m beside the path - rejoining", std::abs(cross_track));
+  }
+  if (rejoining_) {
+    rejoin_max_offset_ = std::max(rejoin_max_offset_, std::abs(cross_track));
+    if (state_ != FOLLOWING) {
+      rejoining_ = false;
+      RCLCPP_INFO(logger_, "FTC: pass ended while rejoining (%.2f m beside the path)", std::abs(cross_track));
+    } else if (w_rejoin <= 0.0) {
+      rejoining_ = false;
+      RCLCPP_INFO(logger_, "FTC: back on the path after %.1f s (max %.2f m beside it)", now() - rejoin_since_,
+                  rejoin_max_offset_);
+    }
+  }
+
+  // Anti-windup: no longitudinal integral while the carrot is gated, no lateral
+  // one while rejoining (the offset is the rejoin law's job).
   if (!carrot_gated_) i_lon_error_ += lon_error_ * dt;
-  i_lat_error_ += lat_error_ * dt;
+  if (w_rejoin <= 0.0) i_lat_error_ += lat_error_ * dt;
   i_angle_error_ += angle_error_ * dt;
   i_lon_error_ = std::clamp(i_lon_error_, -cfg_.ki_lon_max, cfg_.ki_lon_max);
   i_lat_error_ = std::clamp(i_lat_error_, -cfg_.ki_lat_max, cfg_.ki_lat_max);
@@ -512,7 +545,8 @@ void FTCController::calculateVelocityCommands(double dt, geometry_msgs::msg::Twi
     double lin = ff + lon_error_ * cfg_.kp_lon + i_lon_error_ * cfg_.ki_lon + d_lon * cfg_.kd_lon;
     // Heading far off (after a corner): turn first, then drive; in between the
     // forward speed fades with cos(error). Never faster than speed_fast.
-    const double abs_ang = std::abs(angle_error_);
+    // Rejoining, the robot is meant to be turned by the approach angle.
+    const double abs_ang = std::abs(angle_error_ + w_rejoin * approach);
     if (abs_ang > cfg_.max_drive_angle * (M_PI / 180.0)) {
       lin = 0.0;
     } else if (lin > 0.0) {
@@ -547,6 +581,9 @@ void FTCController::calculateVelocityCommands(double dt, geometry_msgs::msg::Twi
     }
     double ang = ang_gain_factor * (angle_error_ * cfg_.kp_ang + i_angle_error_ * cfg_.ki_ang + d_angle * cfg_.kd_ang) +
                  lat_error_ * cfg_.kp_lat + i_lat_error_ * cfg_.ki_lat + d_lat * cfg_.kd_lat;
+    if (w_rejoin > 0.0) {
+      ang = (1.0 - w_rejoin) * ang + w_rejoin * (rejoin_error * cfg_.kp_ang + d_rejoin * cfg_.kd_ang);
+    }
     cmd.twist.angular.z = std::clamp(ang, -cfg_.max_cmd_vel_ang, cfg_.max_cmd_vel_ang);
   } else {
     const double ang = angle_error_ * cfg_.kp_ang + i_angle_error_ * cfg_.ki_ang + d_angle * cfg_.kd_ang;

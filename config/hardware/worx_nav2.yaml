@@ -42,6 +42,14 @@ controller_server:
       speed_angular: 45.0
       acceleration: 0.1
       lateral_priority_distance: 0.15
+      # Beside the path (slid down a slope while turning): steer at an approach
+      # angle atan(offset / rejoin_lookahead) <= rejoin_max_angle deg instead of
+      # the PID, blended in between rejoin_blend_start and _full m (rejoin.hpp).
+      rejoin: true
+      rejoin_blend_start: 0.10
+      rejoin_blend_full: 0.25
+      rejoin_lookahead: 0.5
+      rejoin_max_angle: 30.0
       kp_lon: 1.5          # ROS1 4.0 without feedforward: stop-and-go on the robot
       lon_feedforward: true
       ki_lon: 0.0
