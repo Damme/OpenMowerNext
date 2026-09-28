@@ -87,11 +87,11 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
                           m->position_covariance_type != sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_UNKNOWN &&
                           acc <= params.gps_max_accuracy;
         std::lock_guard<std::mutex> l(mutex_);
+        // A bad sample alone changes nothing: gpsOk() only drops the fix once no good
+        // one came for gps_timeout (Daniel: ~4 s on IMU + ticks through float).
         if (good) {
           if (!gps_good_since_) gps_good_since_ = Clock::now();
           gps_last_good_ = Clock::now();
-        } else {
-          gps_good_since_.reset();
         }
       });
   }

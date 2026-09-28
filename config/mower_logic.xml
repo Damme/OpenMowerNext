@@ -35,6 +35,18 @@
 
       <ReactiveSequence name="mow">
         <CommandIs value="MOW"/>
+        <Sequence>
+          <!-- Undock before any GPS check: on the dock the pose comes from the dock and the
+               undock is a straight reverse; RTK is weakest under the dock roof (real robot
+               2026-09-28: float at the dock cancelled the undock halfway). -->
+          <Fallback>
+            <Inverter><IsAtDock/></Inverter>
+            <Undock/>
+            <Sequence>
+              <Inverter><IsDocked/></Inverter>
+              <ReverseAlongTrack distance="1.5"/>
+            </Sequence>
+          </Fallback>
         <ReactiveFallback>
           <ReactiveSequence>
             <GpsOK/>
@@ -47,6 +59,7 @@
           <!-- Mow failed with good GPS (e.g. undocking): retried next tick, Undock gives up after max_dock_attempts. -->
           <Hold state="RETRYING"/>
         </ReactiveFallback>
+        </Sequence>
       </ReactiveSequence>
 
       <ReactiveSequence name="home">
