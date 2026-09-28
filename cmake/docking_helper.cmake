@@ -20,6 +20,7 @@ ament_target_dependencies(docking_helper_component
         geometry_msgs
         sensor_msgs
         std_msgs
+        std_srvs
 )
 
 rclcpp_components_register_nodes(docking_helper_component "open_mower_next::docking_helper::DockingHelperNode")

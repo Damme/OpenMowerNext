@@ -8,6 +8,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <nav2_msgs/action/dock_robot.hpp>
 #include "open_mower_next/msg/map.hpp"
@@ -51,6 +52,9 @@ private:
   rclcpp::Service<open_mower_next::srv::FindNearestDockingStation>::SharedPtr find_nearest_docking_station_service_;
 
   rclcpp_action::Client<nav2_msgs::action::DockRobot>::SharedPtr dock_client_;
+  // worx_hardware's docking mode (BlockForward at the dock is no bump) for the final approach.
+  rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr docking_mode_client_;
+  void setDockingMode(bool on);
 
   rclcpp_action::Server<DockRobotNearestAction>::SharedPtr dock_robot_nearest_server_;
   rclcpp_action::Server<DockRobotToAction>::SharedPtr dock_robot_to_server_;

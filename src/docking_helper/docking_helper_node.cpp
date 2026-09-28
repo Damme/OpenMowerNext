@@ -23,6 +23,7 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
                                                  std::placeholders::_1, std::placeholders::_2));
 
   dock_client_ = rclcpp_action::create_client<nav2_msgs::action::DockRobot>(this, "/dock_robot");
+  docking_mode_client_ = create_client<std_srvs::srv::SetBool>("/worx/docking_mode");
 
   dock_robot_nearest_server_ = rclcpp_action::create_server<DockRobotNearestAction>(
       this, "dock_robot_nearest", std::bind(&DockingHelperNode::handleDockRobotNearestGoal, this, _1, _2),
@@ -321,6 +322,12 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
   std::shared_ptr<uint16_t> current_retries = std::make_shared<uint16_t>(0);
   // Shared with the result callback, which may run after this function returns.
   auto docking_active = std::make_shared<std::atomic<bool>>(true);
+  // Docking mode off again however this ends (success, failure, cancel).
+  struct DockingModeOff
+  {
+    DockingHelperNode * self;
+    ~DockingModeOff() { self->setDockingMode(false); }
+  } docking_mode_off{this};
 
   auto nav2_goal = nav2_msgs::action::DockRobot::Goal();
   nav2_goal.use_dock_id = false;
@@ -428,6 +435,8 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
 
     if (status != last_status || retries != last_retries)
     {
+      // Final approach and contact: worx_hardware pushes through the firmware's BlockForward.
+      if (status != last_status) setDockingMode(status == 3 || status == 4);
       feedback->status = status;
       feedback->num_retries = retries;
 
@@ -523,3 +532,14 @@ void open_mower_next::docking_helper::DockingHelperNode::handleDockRobotToAccept
 
 #include <rclcpp_components/register_node_macro.hpp>
 RCLCPP_COMPONENTS_REGISTER_NODE(open_mower_next::docking_helper::DockingHelperNode)
+
+void open_mower_next::docking_helper::DockingHelperNode::setDockingMode(bool on)
+{
+  if (!docking_mode_client_->service_is_ready()) {
+    RCLCPP_WARN(get_logger(), "/worx/docking_mode not available (docking mode %s not set)", on ? "on" : "off");
+    return;
+  }
+  auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
+  req->data = on;
+  docking_mode_client_->async_send_request(req);
+}
