@@ -14,6 +14,7 @@
 #include <std_srvs/srv/trigger.hpp>
 
 #include <cstdio>
+#include <fstream>
 #include <sstream>
 
 namespace open_mower_next::mower_logic
@@ -37,6 +38,8 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   p.max_pass_attempts = static_cast<int>(node->declare_parameter("max_pass_attempts", p.max_pass_attempts));
   p.max_dock_attempts = static_cast<int>(node->declare_parameter("max_dock_attempts", p.max_dock_attempts));
   p.blade_spinup = node->declare_parameter("blade_spinup", p.blade_spinup);
+  p.auto_resume = node->declare_parameter("auto_resume", p.auto_resume);
+  p.mission_file = node->declare_parameter("mission_file", p.mission_file);
   p.resume_backtrack = node->declare_parameter("resume_backtrack", p.resume_backtrack);
   p.resume_direct_distance = node->declare_parameter("resume_direct_distance", p.resume_direct_distance);
   p.bump_front_offset = node->declare_parameter("bump_front_offset", p.bump_front_offset);
@@ -125,6 +128,35 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
     m.data = s.str();
     state_pub->publish(m);
   });
+
+  // Mission progress survives restarts: loaded here WITHOUT starting (command
+  // stays IDLE), saved whenever it changes, removed when there is no mission.
+  if (!p.mission_file.empty()) {
+    std::ifstream in(p.mission_file);
+    std::stringstream text;
+    text << in.rdbuf();
+    if (!in) {
+      RCLCPP_INFO(node_->get_logger(), "No saved mission in %s", p.mission_file.c_str());
+    } else if (ctx->mission.restore(text.str())) {
+      RCLCPP_INFO(node_->get_logger(), "Saved mission loaded (not started, start_mowing continues it): %s",
+                  ctx->mission.summary().c_str());
+    } else {
+      RCLCPP_WARN(node_->get_logger(), "Ignoring unreadable %s", p.mission_file.c_str());
+    }
+    saved_mission_ = ctx->mission.serialize();
+    save_timer_ = node_->create_wall_timer(std::chrono::seconds(2), [this, ctx, file = p.mission_file]() {
+      const auto text = ctx->mission.serialize();
+      if (text == saved_mission_) return;
+      if (text.empty()) {
+        std::remove(file.c_str());
+      } else {
+        const auto tmp = file + ".tmp";
+        std::ofstream(tmp) << text;
+        std::rename(tmp.c_str(), file.c_str());
+      }
+      saved_mission_ = text;
+    });
+  }
 
   tick_thread_ = std::thread([this, tree_file, rate, log_tree]() { run(tree_file, rate, log_tree); });
 }

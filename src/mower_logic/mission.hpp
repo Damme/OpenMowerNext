@@ -34,7 +34,8 @@ public:
 
   // Current area without a plan yet?
   std::optional<std::string> areaNeedingPlan() const;
-  void setPlan(const std::vector<open_mower_next::msg::CoveragePath> & passes);
+  // Returns a note when a restored position was applied or discarded (else empty).
+  std::string setPlan(const std::vector<open_mower_next::msg::CoveragePath> & passes);
   void skipArea();  // also used when planning fails
   // Modify the current area's plan in place (edge corrections); progress is kept.
   void editPlan(const std::function<void(std::vector<open_mower_next::msg::CoveragePath> &)> & fn);
@@ -64,6 +65,17 @@ public:
   bool skipPastPoint(double x, double y, double clearance_m, int max_bumps, bool count_bump = true);
 
   std::string summary() const;
+
+  // Persistence (Daniel: after a restart the mower must still know where it
+  // stopped). Text, one "key value" per line; empty when there is no mission.
+  std::string serialize() const;
+  // Restores areas and the current area; the area is re-planned on demand and
+  // the saved pass/pose applied only if the new plan has the same fingerprint
+  // (else the area starts over). Returns false (mission unchanged) on bad text.
+  bool restore(const std::string & text);
+  // Pass count, pose count and outline flag per pass, and the mowing passes'
+  // end points to 0.1 m (edge corrections only move outline poses).
+  static std::string fingerprint(const std::vector<open_mower_next::msg::CoveragePath> & passes);
   // Changes on operator skips/resets (skipPass, skipArea, begin, clear): a
   // transit or pass started under an older generation is stale.
   unsigned generation() const { return generation_.load(); }
@@ -80,6 +92,13 @@ private:
   int continuation_steps_ = 0;  // unreachable continuation: skips so far
   bool no_backtrack_ = false;   // next resume starts exactly at pose_
   bool active_ = false;
+  std::string fingerprint_;  // of passes_
+  struct Restore
+  {
+    size_t pass = 0, pose = 0;
+    std::string fingerprint;
+  };
+  std::optional<Restore> restore_;  // saved position waiting for the area's plan
   std::atomic<unsigned> generation_{0};
 };
 

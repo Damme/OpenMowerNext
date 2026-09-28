@@ -60,6 +60,10 @@ struct Params
   int max_pass_attempts = 3;
   int max_dock_attempts = 3;
   double blade_spinup = 2.0;         // s between blade on and driving
+  // Daniel: never mow again by itself. false: after a low-battery or rain return
+  // the command drops to IDLE once docked; only start_mowing continues.
+  bool auto_resume = false;
+  std::string mission_file;          // mission progress kept across restarts (empty: memory only)
   double resume_backtrack = 0.5;     // m re-mowed before a resume point
   double resume_direct_distance = 0.3;  // m: robot this close to the pass -> no transit (0 = always transit)
   // Bumps (WorxStatus.bumps): back up, mark an obstacle for Nav2, continue past it.

@@ -34,6 +34,8 @@ private:
   std::shared_ptr<Context> ctx_;
   std::vector<rclcpp::ServiceBase::SharedPtr> services_;
   rclcpp::TimerBase::SharedPtr state_timer_;
+  rclcpp::TimerBase::SharedPtr save_timer_;
+  std::string saved_mission_;
   std::atomic<bool> stop_{false};
   std::thread tick_thread_;
 };

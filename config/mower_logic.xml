@@ -3,6 +3,8 @@
   Mowing mission. Priorities top to bottom (ReactiveFallback re-checks them
   every tick, a higher branch halts a lower one):
     emergency > charging > rain > mowing (paused while GPS is bad) > go home > idle.
+  After a charging / rain return the mower stays docked (auto_resume false,
+  Daniel): start_mowing continues the kept mission.
   The blade is only ever on inside FollowPass.
   A bump (worx_hardware: firmware BlockForward / Collision) stops the transit or
   pass; MowPass then backs up and continues the pass beyond the obstacle, which
@@ -21,6 +23,7 @@
         <NeedsCharging/>
         <Sequence>
           <SubTree ID="DockIfNeeded" _autoremap="true"/>
+          <EndMowingUnlessAutoResume/>
           <Hold state="CHARGING"/>
         </Sequence>
       </ReactiveSequence>
@@ -29,6 +32,7 @@
         <IsRaining/>
         <Sequence>
           <SubTree ID="DockIfNeeded" _autoremap="true"/>
+          <EndMowingUnlessAutoResume/>
           <Hold state="WAITING_FOR_RAIN"/>
         </Sequence>
       </ReactiveSequence>

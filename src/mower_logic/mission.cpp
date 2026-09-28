@@ -1,6 +1,8 @@
 #include "mower_logic/mission.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <sstream>
 
 namespace open_mower_next::mower_logic
@@ -18,6 +20,7 @@ void Mission::begin(const std::vector<std::string> & area_ids)
   bumps_ = 0;
   continuation_steps_ = 0;
   no_backtrack_ = false;
+  restore_.reset();
   active_ = !areas_.empty();
 }
 
@@ -33,6 +36,7 @@ void Mission::clear()
   bumps_ = 0;
   continuation_steps_ = 0;
   no_backtrack_ = false;
+  restore_.reset();
   active_ = false;
 }
 
@@ -49,16 +53,29 @@ std::optional<std::string> Mission::areaNeedingPlan() const
   return areas_[area_];
 }
 
-void Mission::setPlan(const std::vector<open_mower_next::msg::CoveragePath> & passes)
+std::string Mission::setPlan(const std::vector<open_mower_next::msg::CoveragePath> & passes)
 {
   std::lock_guard<std::mutex> l(mutex_);
   passes_ = passes;
+  fingerprint_ = fingerprint(passes);
   planned_ = true;
   pass_ = pose_ = 0;
   attempts_ = 0;
   bumps_ = 0;
   continuation_steps_ = 0;
   no_backtrack_ = false;
+  if (!restore_) return {};
+  const Restore r = *restore_;
+  restore_.reset();
+  std::ostringstream s;
+  if (r.fingerprint == fingerprint_ && r.pass < passes_.size()) {
+    pass_ = r.pass;
+    pose_ = std::min(r.pose, passes_[pass_].path.poses.size());
+    s << "restored position: pass " << (pass_ + 1) << "/" << passes_.size() << ", pose " << pose_;
+  } else {
+    s << "saved position discarded (the plan changed since it was saved): area starts over";
+  }
+  return s.str();
 }
 
 void Mission::editPlan(const std::function<void(std::vector<open_mower_next::msg::CoveragePath> &)> & fn)
@@ -74,6 +91,7 @@ void Mission::skipArea()
   ++area_;
   passes_.clear();
   planned_ = false;
+  restore_.reset();
   pass_ = pose_ = 0;
   attempts_ = 0;
   bumps_ = 0;
@@ -191,6 +209,7 @@ std::string Mission::summary() const
   s << "area " << (area_ + 1) << "/" << areas_.size();
   if (area_ < areas_.size()) s << " (" << areas_[area_] << ")";
   if (planned_) s << ", pass " << (pass_ + 1) << "/" << passes_.size() << ", pose " << pose_;
+  if (!planned_ && restore_) s << ", saved pass " << (restore_->pass + 1) << ", pose " << restore_->pose;
   if (attempts_) s << ", attempt " << (attempts_ + 1);
   return s.str();
 }
@@ -217,6 +236,106 @@ bool Mission::skipPastPoint(double x, double y, double clearance_m, int max_bump
   }
   passDone();  // obstacle at the end of the pass, or bumped too often
   return false;
+}
+
+namespace
+{
+constexpr const char * kMagic = "openmower_mission 1";
+}
+
+std::string Mission::fingerprint(const std::vector<open_mower_next::msg::CoveragePath> & passes)
+{
+  std::ostringstream s;
+  s << passes.size();
+  auto r = [](double v) { return static_cast<long>(std::lround(v * 10.0)); };
+  for (const auto & p : passes) {
+    s << ";" << p.path.poses.size() << (p.is_outline ? "o" : "m");
+    if (!p.is_outline && !p.path.poses.empty()) {
+      const auto & a = p.path.poses.front().pose.position;
+      const auto & b = p.path.poses.back().pose.position;
+      s << r(a.x) << "," << r(a.y) << "," << r(b.x) << "," << r(b.y);
+    }
+  }
+  // FNV-1a: short and stable across builds.
+  uint64_t h = 1469598103934665603ull;
+  for (const unsigned char c : s.str()) {
+    h ^= c;
+    h *= 1099511628211ull;
+  }
+  std::ostringstream hex;
+  hex << std::hex << h;
+  return hex.str();
+}
+
+std::string Mission::serialize() const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  if (!active_ || area_ >= areas_.size()) return {};
+  std::ostringstream s;
+  s << kMagic << "\nareas ";
+  for (size_t i = 0; i < areas_.size(); ++i) s << (i ? "," : "") << areas_[i];
+  s << "\narea " << area_ << "\n";
+  if (planned_) {
+    s << "pass " << pass_ << "\npose " << pose_ << "\nplan " << fingerprint_ << "\n";
+  } else if (restore_) {
+    s << "pass " << restore_->pass << "\npose " << restore_->pose << "\nplan " << restore_->fingerprint << "\n";
+  }
+  return s.str();
+}
+
+bool Mission::restore(const std::string & text)
+{
+  std::istringstream in(text);
+  std::string line;
+  if (!std::getline(in, line) || line != kMagic) return false;
+  std::vector<std::string> areas;
+  std::optional<size_t> area;
+  Restore r;
+  bool has_pass = false;
+  while (std::getline(in, line)) {
+    std::istringstream ls(line);
+    std::string key, value;
+    ls >> key >> value;
+    try {
+      if (key == "areas") {
+        std::stringstream as(value);
+        for (std::string id; std::getline(as, id, ',');) {
+          if (!id.empty()) areas.push_back(id);
+        }
+      } else if (key == "area") {
+        area = std::stoul(value);
+      } else if (key == "pass") {
+        r.pass = std::stoul(value);
+        has_pass = true;
+      } else if (key == "pose") {
+        r.pose = std::stoul(value);
+      } else if (key == "plan") {
+        r.fingerprint = value;
+      }
+    } catch (const std::exception &) {
+      return false;
+    }
+  }
+  if (areas.empty() || !area || *area >= areas.size()) return false;
+  std::lock_guard<std::mutex> l(mutex_);
+  ++generation_;
+  areas_ = areas;
+  area_ = *area;
+  passes_.clear();
+  fingerprint_.clear();
+  planned_ = false;
+  pass_ = pose_ = 0;
+  attempts_ = 0;
+  bumps_ = 0;
+  continuation_steps_ = 0;
+  no_backtrack_ = false;
+  if (has_pass && !r.fingerprint.empty()) {
+    restore_ = r;
+  } else {
+    restore_.reset();
+  }
+  active_ = true;
+  return true;
 }
 
 }  // namespace open_mower_next::mower_logic

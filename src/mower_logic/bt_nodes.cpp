@@ -62,6 +62,28 @@ private:
   CtxPtr ctx_;
 };
 
+// Docked after a low-battery / rain return: unless auto_resume, mowing only
+// continues on the next start_mowing (the mission is kept).
+class EndMowingUnlessAutoResume : public BT::SyncActionNode
+{
+public:
+  EndMowingUnlessAutoResume(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
+  : BT::SyncActionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  NodeStatus tick() override
+  {
+    if (!ctx_->params.auto_resume && ctx_->command != Command::IDLE) {
+      RCLCPP_INFO(ctx_->node->get_logger(), "Docked: mowing stops here (auto_resume false), start_mowing continues %s",
+                  ctx_->mission.summary().c_str());
+      ctx_->command = Command::IDLE;
+    }
+    return NodeStatus::SUCCESS;
+  }
+
+private:
+  CtxPtr ctx_;
+};
+
 // RUNNING forever with the blade off; marks which branch is active.
 class Hold : public BT::StatefulActionNode
 {
@@ -273,7 +295,8 @@ private:
     RCLCPP_INFO(ctx_->node->get_logger(), "Planned %s: %zu passes", area.c_str(), res->paths.size());
     auto passes = res->paths;
     ctx_->applyEdgeCorrections(passes);
-    ctx_->mission.setPlan(passes);
+    const auto note = ctx_->mission.setPlan(passes);
+    if (!note.empty()) RCLCPP_INFO(ctx_->node->get_logger(), "%s: %s", area.c_str(), note.c_str());
     return true;
   }
   CtxPtr ctx_;
@@ -627,6 +650,7 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   factory.registerNodeType<IsTrue>("IsTrue");
   add<CommandIs>(factory, ctx, "CommandIs");
   add<SetCommand>(factory, ctx, "SetCommand");
+  add<EndMowingUnlessAutoResume>(factory, ctx, "EndMowingUnlessAutoResume");
   add<Hold>(factory, ctx, "Hold");
   add<BeginMission>(factory, ctx, "BeginMission");
   add<GetPass>(factory, ctx, "GetPass");

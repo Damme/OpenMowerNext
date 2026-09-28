@@ -8,7 +8,8 @@
 # Options (environment): OM_WORX_MOTORS_ENABLED (true), OM_IMU_I2C_DEVICE (/dev/i2c-1),
 # OM_GPS_ENABLED (true), OM_GPS_HOST/OM_GPS_PORT (str2str's UBX server, 127.0.0.1:5015), OM_GPS_FIX_TOPIC,
 # OM_GPS_WAIT_TIME_SEC, OM_GPS_RECENT_TIMEOUT_SEC, OM_BATTERY_LOW_FRACTION,
-# OM_BATTERY_RESUME_FRACTION, OM_MOWING_AREAS, OM_DISABLED_AREAS_PATH, OM_EDGE_CORRECTIONS_PATH.
+# OM_BATTERY_RESUME_FRACTION, OM_MOWING_AREAS, OM_DISABLED_AREAS_PATH, OM_EDGE_CORRECTIONS_PATH,
+# OM_MISSION_PATH, OM_AUTO_RESUME (false: after charging / rain it stays docked until start_mowing).
 env:
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
   ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
@@ -158,6 +159,8 @@ processes:
             dock_on_rain: $(env OM_DOCK_ON_RAIN true)
             areas: $(env OM_MOWING_AREAS "")
             disabled_areas_file: $(env OM_DISABLED_AREAS_PATH /data/disabled_areas.txt)
+            mission_file: $(env OM_MISSION_PATH /data/mission.txt)
+            auto_resume: $(env OM_AUTO_RESUME false)
             edge_corrections_file: $(env OM_EDGE_CORRECTIONS_PATH /data/edge_corrections.txt)
             controller_id: FTC
             goal_checker_id: ftc_goal_checker

@@ -142,3 +142,57 @@ TEST(Mission, OperatorSkipsChangeGeneration)
   m.skipArea();
   EXPECT_NE(m.generation(), g1);
 }
+
+TEST(Mission, SavedPositionSurvivesARestart)
+{
+  Mission m;
+  m.begin({"a", "b"});
+  m.setPlan({straight(10), straight(100), straight(20)});
+  m.passDone();
+  m.setPoseIndex(42);
+  const auto saved = m.serialize();
+  ASSERT_FALSE(saved.empty());
+
+  Mission r;  // after a restart
+  ASSERT_TRUE(r.restore(saved));
+  EXPECT_TRUE(r.active());
+  EXPECT_EQ(r.areaNeedingPlan(), "a");       // re-planned on demand
+  EXPECT_EQ(r.serialize(), saved);           // still saved before the re-plan
+  const auto note = r.setPlan({straight(10), straight(100), straight(20)});
+  EXPECT_NE(note.find("restored"), std::string::npos);
+  EXPECT_EQ(r.poseIndex(), 42u);
+  auto p = r.currentPass(0.0);
+  ASSERT_TRUE(p);
+  EXPECT_EQ(p->pass_index, 1u);
+  EXPECT_EQ(p->start_index, 42u);
+}
+
+TEST(Mission, ChangedPlanDiscardsTheSavedPosition)
+{
+  Mission m;
+  m.begin({"a"});
+  m.setPlan({straight(10), straight(100)});
+  m.passDone();
+  m.setPoseIndex(42);
+  Mission r;
+  ASSERT_TRUE(r.restore(m.serialize()));
+  const auto note = r.setPlan({straight(10), straight(90)});  // map / planner changed
+  EXPECT_NE(note.find("discarded"), std::string::npos);
+  auto p = r.currentPass(0.0);
+  ASSERT_TRUE(p);
+  EXPECT_EQ(p->pass_index, 0u);
+  EXPECT_EQ(p->start_index, 0u);
+}
+
+TEST(Mission, NothingSavedWithoutAMissionAndBadTextIgnored)
+{
+  Mission m;
+  EXPECT_TRUE(m.serialize().empty());
+  m.begin({"a"});
+  m.clear();  // reset_mission
+  EXPECT_TRUE(m.serialize().empty());
+  EXPECT_FALSE(m.restore(""));
+  EXPECT_FALSE(m.restore("openmower_mission 1\nareas a\narea 3\n"));
+  EXPECT_FALSE(m.restore("something else\n"));
+  EXPECT_FALSE(m.active());
+}
