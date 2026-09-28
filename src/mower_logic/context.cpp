@@ -344,13 +344,30 @@ bool Context::needsCharging()
 
 std::vector<std::string> Context::operationAreas() const
 {
+  std::vector<std::string> disabled;
+  if (!params.disabled_areas_file.empty()) {
+    std::ifstream in(params.disabled_areas_file);
+    for (std::string line; std::getline(in, line);) {
+      line = line.substr(0, line.find('#'));
+      const auto b = line.find_first_not_of(" \t\r");
+      if (b == std::string::npos) continue;
+      disabled.push_back(line.substr(b, line.find_last_not_of(" \t\r") - b + 1));
+    }
+  }
+  auto listed = [](const std::vector<std::string> & v, const std::string & s) {
+    return !s.empty() && std::find(v.begin(), v.end(), s) != v.end();
+  };
   std::lock_guard<std::mutex> l(mutex_);
   std::vector<std::string> ids;
   for (const auto & a : map_.areas) {
     if (a.type != open_mower_next::msg::Area::TYPE_OPERATION) continue;
-    if (params.areas.empty() || std::find(params.areas.begin(), params.areas.end(), a.id) != params.areas.end()) {
-      ids.push_back(a.id);
+    if (!params.areas.empty() && !listed(params.areas, a.id)) continue;
+    if (listed(disabled, a.id)) {
+      RCLCPP_INFO(node->get_logger(), "Area %s disabled in %s", a.id.c_str(),
+                  params.disabled_areas_file.c_str());
+      continue;
     }
+    ids.push_back(a.id);
   }
   return ids;
 }

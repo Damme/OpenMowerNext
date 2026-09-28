@@ -110,6 +110,9 @@ struct Params
   std::string goal_checker_id = "general_goal_checker";
   std::string progress_checker_id = "";  // empty = controller_server default
   std::vector<std::string> areas;    // operation area ids to mow; empty = all, in map order
+  // Areas to leave out (one area id per line, e.g. mow_4; '#' comments), re-read at
+  // every mission start so an area can be switched off without a restart.
+  std::string disabled_areas_file;   // empty: none
 };
 
 class Context

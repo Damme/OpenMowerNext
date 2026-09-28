@@ -82,6 +82,7 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
       if (!id.empty()) p.areas.push_back(id);
     }
   }
+  p.disabled_areas_file = node->declare_parameter("disabled_areas_file", p.disabled_areas_file);
   const auto tree_file = node->declare_parameter(
     "tree", ament_index_cpp::get_package_share_directory("open_mower_next") + "/config/mower_logic.xml");
   const double rate = node->declare_parameter("tick_rate", 10.0);

@@ -92,7 +92,7 @@ public:
     if (ctx_->mission.active()) return NodeStatus::SUCCESS;
     const auto areas = ctx_->operationAreas();
     if (areas.empty()) {
-      RCLCPP_ERROR(ctx_->node->get_logger(), "No operation areas in the map; nothing to mow");
+      RCLCPP_ERROR(ctx_->node->get_logger(), "No operation areas to mow (map, areas, disabled_areas_file)");
       ctx_->command = Command::IDLE;
       return NodeStatus::FAILURE;
     }
