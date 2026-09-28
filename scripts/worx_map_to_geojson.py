@@ -106,14 +106,15 @@ def main(argv=None):
                 i = counts[conn.topic]
                 counts[conn.topic] += 1
                 prefix = 'mow' if mowing else 'nav'
-                name = msg.name or (f'Mowing area {i + 1}' if mowing else f'Navigation area {i + 1}')
+                # Counted from 0 like the ids (mow_0 = "Area 0").
+                name = msg.name or (f'Area {i}' if mowing else f'Navigation area {i}')
                 features.append(feature(f'{prefix}_{i}', name, 'operation' if mowing else 'navigation',
                                         {'type': 'Polygon', 'coordinates': [ring(msg.area.points, conv)]}))
                 for j, obstacle in enumerate(msg.obstacles):
                     if len(obstacle.points) < 3:
                         continue
                     counts['obstacles'] += 1
-                    features.append(feature(f'{prefix}_{i}_obstacle_{j}', f'{name} obstacle {j + 1}', 'exclusion',
+                    features.append(feature(f'{prefix}_{i}_obstacle_{j}', f'{name} obstacle {j}', 'exclusion',
                                             {'type': 'Polygon', 'coordinates': [ring(obstacle.points, conv)]}))
             elif conn.topic == 'docking_point':
                 counts['docking_point'] += 1

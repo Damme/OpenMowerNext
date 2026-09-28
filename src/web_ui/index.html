@@ -221,7 +221,7 @@ function renderState() {
     const t = g.status === 2 ? "RTK fixed" : g.status >= 0 ? "GPS float" : "no GPS fix";
     setChip("c-gps", t, g.status === 2 ? "ok" : g.status >= 0 ? "warn" : "bad");
   } else setChip("c-gps", "no GPS data", "bad");
-  const motorsOn = w && w.motor && w.motor.indexOf("DISABLE") < 0;
+  const motorsOn = w && w.motors;
   setChip("c-motors", w ? (w.link ? "motors " + (motorsOn ? "on" : "off") : "board link lost") : "no board data",
           w && w.link ? (motorsOn ? "ok" : "") : "bad");
   const emg = (l && l.emergency) || (w && w.emergency);
@@ -303,6 +303,17 @@ document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showTab
 // ---- areas ------------------------------------------------------------------
 function polyArea(p) { let a = 0; for (let i = 0, j = p.length - 1; i < p.length; j = i++) a += (p[j][0] + p[i][0]) * (p[j][1] - p[i][1]); return Math.abs(a / 2); }
 const TYPES = ["exclusion", "navigation", "mowing"];
+// Areas count from 0 like their ids (mow_0 = Area 0). Maps converted from ROS1 carry
+// one-based default names ("Mowing area 1" for mow_0): shown by id instead. Own names stay.
+function areaLabel(a) {
+  let m;
+  const dflt = (want) => !a.name || a.name === want;
+  if ((m = /^mow_(\d+)$/.exec(a.id)) && dflt("Mowing area " + (+m[1] + 1))) return "Area " + m[1];
+  if ((m = /^mow_(\d+)_obstacle_(\d+)$/.exec(a.id)) && dflt("Mowing area " + (+m[1] + 1) + " obstacle " + (+m[2] + 1)))
+    return "Area " + m[1] + " obstacle " + m[2];
+  if ((m = /^nav_(\d+)$/.exec(a.id)) && dflt("Navigation area " + (+m[1] + 1))) return "Navigation area " + m[1];
+  return a.name || a.id;
+}
 function renderAreas() {
   const op = $("areas-op"), other = $("areas-other");
   op.innerHTML = ""; other.innerHTML = "";
@@ -310,7 +321,7 @@ function renderAreas() {
     const row = document.createElement("div");
     row.className = "area" + (S.sel === a.id ? " sel" : "");
     const name = document.createElement("div"); name.className = "name";
-    const n1 = document.createElement("div"); n1.textContent = a.name || a.id;
+    const n1 = document.createElement("div"); n1.textContent = areaLabel(a);
     const n2 = document.createElement("div"); n2.className = "muted";
     n2.textContent = a.id + " · " + Math.round(polyArea(a.pts)) + " m²" + (a.type !== 2 ? " · " + TYPES[a.type] : "") +
       (a.locked ? " · not in OM_MOWING_AREAS" : "");
@@ -325,7 +336,7 @@ function renderAreas() {
       row.append(sw);
     }
     const del = document.createElement("button"); del.className = "small"; del.textContent = "✕"; del.title = "Remove area";
-    del.onclick = () => { if (confirm("Remove area \"" + (a.name || a.id) + "\" from the map? This can't be undone here.")) cmd({ c: "area_remove", id: a.id }); };
+    del.onclick = () => { if (confirm("Remove area \"" + (areaLabel(a)) + "\" from the map? This can't be undone here.")) cmd({ c: "area_remove", id: a.id }); };
     row.append(del);
     (a.type === 2 ? op : other).append(row);
   }
@@ -406,7 +417,7 @@ function render() {
       for (const a of S.map.areas) {
         if (a.type !== 2 || !a.pts.length) continue;
         let cx = 0, cy = 0; a.pts.forEach(([x, y]) => { cx += x; cy += y; });
-        const t = a.name || a.id, w = ctx.measureText(t).width, lx = X(cx / a.pts.length), ly = Y(cy / a.pts.length);
+        const t = areaLabel(a), w = ctx.measureText(t).width, lx = X(cx / a.pts.length), ly = Y(cy / a.pts.length);
         const box = [lx - w / 2 - 2, ly - 12, lx + w / 2 + 2, ly + 4];
         if (placed.some((b) => box[0] < b[2] && b[0] < box[2] && box[1] < b[3] && b[1] < box[3])) continue;
         placed.push(box);
