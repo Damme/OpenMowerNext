@@ -88,6 +88,10 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.speed_gains.kp = paramD(info, "speed_kp", cfg_.speed_gains.kp);
     cfg_.speed_gains.ki = paramD(info, "speed_ki", cfg_.speed_gains.ki);
     cfg_.speed_gains.i_max = paramD(info, "speed_i_max", cfg_.speed_gains.i_max);
+    cfg_.speed_gains.kv = paramD(info, "speed_kv", cfg_.speed_gains.kv);
+    cfg_.speed_gains.ff = paramD(info, "speed_ff", cfg_.speed_gains.ff);
+    cfg_.speed_gains.ff_static = paramD(info, "speed_ff_static", cfg_.speed_gains.ff_static);
+    cfg_.speed_gains.pos_max = paramD(info, "speed_pos_max", cfg_.speed_gains.pos_max);
     cfg_.speed_filter_tau = paramD(info, "speed_filter_tau", cfg_.speed_filter_tau);
     cfg_.invert_left = paramB(info, "invert_left", cfg_.invert_left);
     cfg_.invert_right = paramB(info, "invert_right", cfg_.invert_right);
@@ -131,11 +135,11 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.transport.c_str(), cfg_.spi_device.c_str(), cfg_.wheel_ticks_per_m, cfg_.pwm_per_mps,
     cfg_.max_pwm, cfg_.mow_pwm);
   if (!cfg_.blade_enabled) RCLCPP_WARN(get_logger(), "Blade disabled (blade_enabled=false): blade PWM stays 0");
-  cfg_.speed_gains.ff = cfg_.pwm_per_mps;
   gains_ = cfg_.speed_gains;
   RCLCPP_INFO(
-    get_logger(), "Wheel speed control %s (kp=%.0f ki=%.0f i_max=%.0f), charger from %s",
-    cfg_.speed_control ? "on" : "off", gains_.kp, gains_.ki, gains_.i_max,
+    get_logger(), "Wheel distance control %s (ff=%.0f+%.0f*v kp=%.0f ki=%.0f kv=%.0f i_max=%.0f pos_max=%.3f), charger from %s",
+    cfg_.speed_control ? "on" : "off", gains_.ff_static, gains_.ff, gains_.kp, gains_.ki, gains_.kv, gains_.i_max,
+    gains_.pos_max,
     cfg_.charger_from_current ? "charge current" : "InCharger");
   return CallbackReturn::SUCCESS;
 }
@@ -203,6 +207,10 @@ void WorxSystem::startNode()
   node_->declare_parameter("speed_kp", gains_.kp);
   node_->declare_parameter("speed_ki", gains_.ki);
   node_->declare_parameter("speed_i_max", gains_.i_max);
+  node_->declare_parameter("speed_kv", gains_.kv);
+  node_->declare_parameter("speed_ff", gains_.ff);
+  node_->declare_parameter("speed_ff_static", gains_.ff_static);
+  node_->declare_parameter("speed_pos_max", gains_.pos_max);
   gains_cb_ = node_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
     rcl_interfaces::msg::SetParametersResult r;
     r.successful = true;
@@ -212,8 +220,13 @@ void WorxSystem::startNode()
       if (p.get_name() == "speed_kp") gains_.kp = p.as_double();
       if (p.get_name() == "speed_ki") gains_.ki = p.as_double();
       if (p.get_name() == "speed_i_max") gains_.i_max = p.as_double();
+      if (p.get_name() == "speed_kv") gains_.kv = p.as_double();
+      if (p.get_name() == "speed_ff") gains_.ff = p.as_double();
+      if (p.get_name() == "speed_ff_static") gains_.ff_static = p.as_double();
+      if (p.get_name() == "speed_pos_max") gains_.pos_max = p.as_double();
     }
-    RCLCPP_INFO(node_->get_logger(), "Speed gains: kp=%.0f ki=%.0f i_max=%.0f", gains_.kp, gains_.ki, gains_.i_max);
+    RCLCPP_INFO(node_->get_logger(), "Speed gains: ff=%.0f+%.0f*v kp=%.0f ki=%.0f kv=%.0f i_max=%.0f pos_max=%.3f",
+      gains_.ff_static, gains_.ff, gains_.kp, gains_.ki, gains_.kv, gains_.i_max, gains_.pos_max);
     return r;
   });
   status_timer_ = node_->create_wall_timer(std::chrono::milliseconds(200), [this]() { publishStatus(); });
@@ -372,12 +385,19 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration & per
   const bool link_ok = link_->secondsSinceRx() < cfg_.link_timeout;
   int pl, pr;
   if (cfg_.speed_control && link_ok && motors_enabled_ && !emergency_) {
-    double ml, mr;
+    // Wheel travel from the ticks, carried forward from the last 20 Hz report
+    // with the filtered speed (at most 0.1 s) so the tracked distance doesn't
+    // saw-tooth between reports.
+    double ml, mr, xl, xr;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      const bool fresh = std::chrono::steady_clock::now() - last_pulse_ < std::chrono::milliseconds(500);
+      const auto age = std::chrono::steady_clock::now() - last_pulse_;
+      const bool fresh = age < std::chrono::milliseconds(500);
       ml = fresh ? filt_left_.value() : 0.0;
       mr = fresh ? filt_right_.value() : 0.0;
+      const double ahead = std::min(std::chrono::duration<double>(age).count(), 0.1);
+      xl = odo_left_.distance() + ml * ahead;
+      xr = odo_right_.distance() + mr * ahead;
     }
     SpeedGains g;
     {
@@ -385,8 +405,8 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration & per
       g = gains_;
     }
     const double dt = period.seconds();
-    pl = pi_left_.update(wl * cfg_.wheel_radius, ml, dt, g, cfg_.max_pwm);
-    pr = pi_right_.update(wr * cfg_.wheel_radius, mr, dt, g, cfg_.max_pwm);
+    pl = pi_left_.update(wl * cfg_.wheel_radius, xl, ml, dt, g, cfg_.max_pwm);
+    pr = pi_right_.update(wr * cfg_.wheel_radius, xr, mr, dt, g, cfg_.max_pwm);
   } else {
     pi_left_.reset();
     pi_right_.reset();
