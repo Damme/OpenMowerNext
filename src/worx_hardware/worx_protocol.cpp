@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 
 namespace open_mower_next::worx_hardware
 {
@@ -153,7 +154,15 @@ BoardMessage parseMessage(const std::string & msg)
       static_cast<int>(intField(*it, "Mow").value_or(0))};
   }
   if (auto it = j.find("Digital"); it != j.end() && it->is_object()) {
-    m.digital = intMap(*it);
+    static const char * const kDigitalKeys[] = {"Stuck", "Stuck2", "Door", "Door2", "Lift", "Collision", "Stop", "Rain"};
+    auto d = intMap(*it);
+    bool complete = d.size() == std::size(kDigitalKeys);
+    for (const char * k : kDigitalKeys) complete = complete && d.count(k) > 0;
+    if (complete) {
+      m.digital = std::move(d);
+    } else {
+      m.digital_corrupt = it->dump();
+    }
   }
   if (auto it = j.find("Analog"); it != j.end() && it->is_object()) {
     m.analog = intMap(*it);

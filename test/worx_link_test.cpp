@@ -96,6 +96,13 @@ TEST(WorxProtocol, ParsesRealFirmwareMessages)
   ASSERT_TRUE(p.digital);
   EXPECT_EQ(p.digital->at("Lift"), 1);
   EXPECT_EQ(p.digital->size(), 8u);
+  EXPECT_FALSE(p.digital_corrupt);
+  // Garbled on the wire (real robot at charger contact): not a sensor state.
+  p = parseMessage(R"({"Digital":{"Stuck":0,"Stuck2":0,"Door":1,"Door2":1,"Lift":0,"Coll":0,"Stop":0,"Rain":0}})");
+  EXPECT_FALSE(p.digital);
+  ASSERT_TRUE(p.digital_corrupt);
+  p = parseMessage(R"({"Digital":{"Stuck":0,"Lift":0}})");
+  EXPECT_FALSE(p.digital);
 
   p = parseMessage(R"({"MotorCurrent":{"Left":102,"Right":15,"Mow":7}})");
   ASSERT_TRUE(p.motor_current);

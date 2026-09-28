@@ -549,6 +549,7 @@ void WorxSystem::onBoardMessage(const std::string & msg)
   if (m.battery) battery_ = m.battery;
   if (m.motor_current) last_.motor_current = m.motor_current;
   if (m.motor_pwm) last_.motor_pwm = m.motor_pwm;
+  if (m.digital_corrupt) RCLCPP_WARN(get_logger(), "Garbled Digital frame ignored: %s", m.digital_corrupt->c_str());
   if (m.digital) {
     last_.digital = m.digital;
     auto active = [&](const std::string & name) {
@@ -562,7 +563,9 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     if (cfg_.bump_detection && !docking_mode_ && active("Collision") && (collision_ || (last_pwm_l_ > 0 && last_pwm_r_ > 0))) {
       registerBump("Collision");
     }
-    const bool lift = active("Lift");
+    // Docking mode: the robot is pushed onto the contacts; a lift there is
+    // only ever the charger contact disturbing the board.
+    const bool lift = active("Lift") && !docking_mode_;
     if (lift && !lift_ && cfg_.lift_emergency && !emergency_) {
       RCLCPP_ERROR(get_logger(), "Lift detected: emergency latched (clear with /worx/emergency false)");
       emergency_ = true;

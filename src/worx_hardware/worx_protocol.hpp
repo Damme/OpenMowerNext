@@ -83,6 +83,10 @@ struct BoardMessage
   // {"Digital":{"Stuck":0,"Stuck2":0,"Door":1,"Door2":1,"Lift":1,"Collision":1,"Stop":0,"Rain":0}}
   // Raw. Door/Lift/Collision read 1 in the normal state (active low?); not interpreted yet.
   std::optional<std::map<std::string, int>> digital;
+  // A Digital frame without exactly the eight keys above was garbled on the wire
+  // (real robot 2026-09-28, at charger contact: {"Stuck":0,...,"Lift":0,"Coll":0},
+  // a false Lift): digital stays empty, the raw frame is kept here.
+  std::optional<std::string> digital_corrupt;
   std::optional<std::map<std::string, int>> analog;    // {"Rain":..,"boardTemp":..}
   std::optional<std::map<std::string, int>> boundary;  // perimeter wire signal
   std::optional<std::string> motor_state;  // MOTORREQ_ENABLE / _DISABLE / _SETSPEED
