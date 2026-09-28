@@ -78,6 +78,13 @@
     <Fallback>
       <IsDocked/>
       <Sequence>
+        <!-- Daniel: no docking without knowing where we are, and that needs RTK fixed.
+             Waits (as long as it takes) before the approach starts; not re-checked
+             during it - float under the dock roof must not abort the final metres. -->
+        <ReactiveFallback>
+          <GpsOK/>
+          <Hold state="WAITING_FOR_GPS"/>
+        </ReactiveFallback>
         <FreeFootprint/>
         <Dock/>
       </Sequence>
