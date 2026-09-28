@@ -48,6 +48,8 @@ struct FtcConfig
   double speed_slow = 0.2, speed_angular = 20.0, acceleration = 1.0;
   double lateral_priority_distance = 0.0;
   double kp_lon = 1.0, ki_lon = 0.0, ki_lon_max = 10.0, kd_lon = 0.0;
+  bool lon_feedforward = true;  // add the carrot speed to the longitudinal command
+  double max_drive_angle = 45.0;  // deg heading error above which FOLLOWING turns in place
   double kp_lat = 1.0, ki_lat = 0.0, ki_lat_max = 10.0, kd_lat = 0.0;
   double kp_ang = 1.0, ki_ang = 0.0, ki_ang_max = 10.0, kd_ang = 0.0;
   double max_cmd_vel_speed = 2.0, max_cmd_vel_ang = 2.0;

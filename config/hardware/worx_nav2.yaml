@@ -40,7 +40,8 @@ controller_server:
       speed_angular: 45.0
       acceleration: 0.1
       lateral_priority_distance: 0.15
-      kp_lon: 4.0
+      kp_lon: 1.5          # ROS1 4.0 without feedforward: stop-and-go on the robot
+      lon_feedforward: true
       ki_lon: 0.0
       ki_lon_max: 10.0
       kd_lon: 0.0

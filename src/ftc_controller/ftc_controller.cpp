@@ -126,6 +126,8 @@ void FTCController::loadParams()
   d("max_cmd_vel_accel", c.max_cmd_vel_accel); d("oscillation_recovery", c.oscillation_recovery);
   d("oscillation_v_eps", c.oscillation_v_eps); d("oscillation_omega_eps", c.oscillation_omega_eps);
   d("oscillation_recovery_min_duration", c.oscillation_recovery_min_duration);
+  d("lon_feedforward", c.lon_feedforward);
+  d("max_drive_angle", c.max_drive_angle);
   d("check_obstacles", c.check_obstacles); d("obstacle_footprint", c.obstacle_footprint);
   d("obstacle_lookahead", c.obstacle_lookahead);
 }
@@ -347,6 +349,10 @@ void FTCController::updateControlPoint(double dt)
     case FOLLOWING: {
       const double straight_dist = distanceLookahead();
       double speed = straight_dist >= cfg_.speed_fast_threshold ? cfg_.speed_fast : cfg_.speed_slow;
+      // The lookahead only sees the carrot's path: right after a corner it is straight
+      // again while the robot is still turned far away (real robot 2026-09-28: 0.30 m/s
+      // at 100+ deg heading error, out of the area). Slow while the robot is off.
+      if (std::abs(angle_error_) > cfg_.speed_fast_threshold_angle * (M_PI / 180.0)) speed = cfg_.speed_slow;
       if (speed_limit_ > 0.0) speed = std::min(speed, speed_limit_);
       if (speed > current_movement_speed_) {
         current_movement_speed_ = std::min(speed, current_movement_speed_ + dt * cfg_.acceleration);
@@ -430,7 +436,13 @@ void FTCController::updateControlPoint(double dt)
   local_control_point_ = tf2::transformToEigen(base_from_plan) * current_control_point_;
   lat_error_ = local_control_point_.translation().y();
   lon_error_ = local_control_point_.translation().x();
-  angle_error_ = local_control_point_.rotation().eulerAngles(0, 1, 2).z();
+  // Not eulerAngles(0, 1, 2).z(): for a pure yaw Eigen may return the equivalent
+  // (pi, pi, yaw - pi) and the error flips by 180 deg beyond ~90 deg - FTC turned
+  // the wrong way out of a sharp corner on the robot (2026-09-28).
+  {
+    const Eigen::Matrix3d r = local_control_point_.rotation();
+    angle_error_ = std::atan2(r(1, 0), r(0, 0));
+  }
 }
 
 void FTCController::calculateVelocityCommands(double dt, geometry_msgs::msg::TwistStamped & cmd)
@@ -453,7 +465,20 @@ void FTCController::calculateVelocityCommands(double dt, geometry_msgs::msg::Twi
   last_angle_error_ = angle_error_;
 
   if (state_ == FOLLOWING) {
-    double lin = lon_error_ * cfg_.kp_lon + i_lon_error_ * cfg_.ki_lon + d_lon * cfg_.kd_lon;
+    // Feedforward of the carrot's own speed: without it the robot only moves while
+    // it lags the carrot (v = kp_lon * distance), so with the Worx's command lag
+    // (smoother + wheel loop, 0.2-0.4 s) it caught up, stopped, and restarted:
+    // stop-and-go at ~0.5 Hz in the slow sections (real robot 2026-09-28).
+    const double ff = cfg_.lon_feedforward && !carrot_gated_ ? current_movement_speed_ : 0.0;
+    double lin = ff + lon_error_ * cfg_.kp_lon + i_lon_error_ * cfg_.ki_lon + d_lon * cfg_.kd_lon;
+    // Heading far off (after a corner): turn first, then drive; in between the
+    // forward speed fades with cos(error). Never faster than speed_fast.
+    const double abs_ang = std::abs(angle_error_);
+    if (abs_ang > cfg_.max_drive_angle * (M_PI / 180.0)) {
+      lin = 0.0;
+    } else if (lin > 0.0) {
+      lin = std::min(lin * std::cos(abs_ang), cfg_.speed_fast);
+    }
     if (lin < 0 && cfg_.forward_only) {
       lin = 0;
     } else {
