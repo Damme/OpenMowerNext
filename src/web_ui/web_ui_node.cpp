@@ -210,7 +210,7 @@ private:
     worx_sub_ = create_subscription<msg::WorxStatus>(
       "/worx/status", rclcpp::SensorDataQoS(), [this](msg::WorxStatus::ConstSharedPtr m) {
         worx_ = {{"link", m->link_ok},        {"emergency", m->emergency}, {"lift", m->lift},
-                 {"collision", m->collision}, {"bumps", m->bumps},         {"motor", m->motor_state},
+                 {"collision", m->collision}, {"bumps", m->bumps},         {"motors", m->motors_enabled},
                  {"power", m->power_state},   {"v", r3(m->battery_voltage)},
                  {"a", r3(m->battery_current)},  {"in_charger", m->in_charger},
                  {"pwm", {m->motor_pwm[0], m->motor_pwm[1], m->motor_pwm[2]}}};
@@ -380,6 +380,10 @@ private:
     }
     if (logic_.value("command", "") != "IDLE") {
       why = "mower_logic is busy (" + logic_.value("command", "?") + "), press Stop first";
+      return false;
+    }
+    if (worx_.is_object() && !worx_.value("motors", true)) {
+      why = "motors are off (Motors on, in the Mow tab)";
       return false;
     }
     return true;

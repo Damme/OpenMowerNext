@@ -601,6 +601,7 @@ void WorxSystem::publishStatus()
     st.header.stamp = node_->now();
     st.link_ok = link_->secondsSinceRx() < cfg_.link_timeout;
     st.emergency = emergency_;
+    st.motors_enabled = motors_enabled_;
     st.collision = collision_;
     st.lift = lift_;
     st.bumps = bumps_;
