@@ -5,6 +5,7 @@
 //   worx_test drive <m> [speed]                 straight, holds the gyro heading
 //   worx_test turn <deg>                        in place, + = left
 //   worx_test square <side_m> [right|left] [speed]
+//   worx_test stop                              motors off at once, then mower_logic idle
 //
 // Drives by wheel ticks (/joint_states), turns by the gyro (/imu/data_raw),
 // commands /cmd_vel_joy (twist_mux, highest priority). Before and after each
@@ -17,6 +18,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <std_srvs/srv/set_bool.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -315,12 +317,45 @@ void summary(const std::vector<Segment> & segs)
   }
 }
 
+// Daniel 2026-09-28: stop = motors off FIRST (worx_hardware zeroes the PWM at once),
+// then tell mower_logic. The ros2 CLI needs 5-10 s per call on the Pi; this ~1 s.
+int fastStop(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("worx_stop");
+  auto motors = node->create_client<std_srvs::srv::SetBool>("/worx/motors_enabled");
+  auto logic = node->create_client<std_srvs::srv::Trigger>("/mower_logic/stop");
+  int rc = 0;
+  if (motors->wait_for_service(std::chrono::seconds(2))) {
+    auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
+    req->data = false;
+    auto f = motors->async_send_request(req);
+    const bool ok = rclcpp::spin_until_future_complete(node, f, std::chrono::seconds(2)) == rclcpp::FutureReturnCode::SUCCESS &&
+                    f.get()->success;
+    std::printf("motors off: %s\n", ok ? "ok" : "FAILED");
+    rc |= ok ? 0 : 1;
+  } else {
+    std::printf("motors off: /worx/motors_enabled not available\n");
+    rc = 1;
+  }
+  if (logic->wait_for_service(std::chrono::seconds(2))) {
+    auto f = logic->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
+    const bool ok = rclcpp::spin_until_future_complete(node, f, std::chrono::seconds(2)) == rclcpp::FutureReturnCode::SUCCESS;
+    std::printf("mower_logic: %s\n", ok ? f.get()->message.c_str() : "no answer");
+  } else {
+    std::printf("mower_logic: /mower_logic/stop not available\n");
+  }
+  rclcpp::shutdown();
+  return rc;
+}
+
 int usage()
 {
   std::fprintf(stderr,
     "usage: worx_test drive <m> [speed]\n"
     "       worx_test turn <deg>              (+ = left)\n"
-    "       worx_test square <side_m> [right|left] [speed]\n");
+    "       worx_test square <side_m> [right|left] [speed]\n"
+    "       worx_test stop                   (motors off first, then mower_logic idle)\n");
   return 2;
 }
 }  // namespace
@@ -332,6 +367,7 @@ int main(int argc, char ** argv)
     if (std::string(argv[i]) == "--ros-args") break;
     args.emplace_back(argv[i]);
   }
+  if (args.size() == 1 && args[0] == "stop") return fastStop(argc, argv);
   if (args.size() < 2) return usage();
   const std::string mode = args[0];
   double value = 0, speed = 0.15;
