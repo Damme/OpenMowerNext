@@ -33,18 +33,6 @@ processes:
         params: [$(find-pkg-share open_mower_next)/generated/worx_controllers_sim.yaml]
         args: [-r, /diff_drive_base_controller/odom:=/odometry/filtered/map]
         activate: [joint_state_broadcaster, diff_drive_base_controller, mower_controller]
-      - plugin: tf2_ros::StaticTransformBroadcasterNode
-        name: map_to_odom
-        params:
-          - frame_id: map
-            child_frame_id: odom
-            translation.x: $(env OM_SIM_X 2.184)
-            translation.y: $(env OM_SIM_Y 7.456)
-            translation.z: 0.0
-            rotation.x: 0.0
-            rotation.y: 0.0
-            rotation.z: $(env OM_SIM_QZ -0.927624)
-            rotation.w: $(env OM_SIM_QW 0.373516)
 
   # Nav2. Its costmaps are child nodes: they only see process-wide parameter files.
   - name: nav
@@ -121,7 +109,12 @@ processes:
           --params-file, $(find-pkg-share open_mower_next)/config/twist_mux.yaml,
           -r, /cmd_vel_out:=/diff_drive_base_controller/cmd_vel]
 
-  # Simulation only (python): charger contacts at the dock, virtual obstacles.
+  # Simulation only (python): map -> odom (start pose; /sim/slide moves it),
+  # charger contacts at the dock, virtual obstacles.
+  - name: sim_map_odom
+    cmd: [python3, $(find-pkg-share open_mower_next)/../../lib/open_mower_next/worx_sim_map_odom.py, --ros-args,
+          -p, "x:=$(env OM_SIM_X 2.184)", -p, "y:=$(env OM_SIM_Y 7.456)",
+          -p, "qz:=$(env OM_SIM_QZ -0.927624)", -p, "qw:=$(env OM_SIM_QW 0.373516)"]
   - name: sim_dock
     cmd: [python3, $(find-pkg-share open_mower_next)/../../lib/open_mower_next/worx_sim_dock.py]
   - name: sim_obstacles

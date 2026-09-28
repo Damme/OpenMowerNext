@@ -89,7 +89,7 @@ include(cmake/ubx_gps.cmake)
 include(cmake/worx_test.cmake)
 include(cmake/wheel_scale.cmake)
 
-install(PROGRAMS scripts/worx_sim_dock.py scripts/worx_sim_obstacles.py scripts/worx_map_to_geojson.py scripts/worx_monitor.py scripts/worx_step.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/worx_sim_dock.py scripts/worx_sim_map_odom.py scripts/worx_sim_obstacles.py scripts/worx_map_to_geojson.py scripts/worx_monitor.py scripts/worx_step.py DESTINATION lib/${PROJECT_NAME})
 
 if (BUILD_TESTING)
     find_package(ament_lint_auto REQUIRED)
