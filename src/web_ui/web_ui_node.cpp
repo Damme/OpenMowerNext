@@ -115,12 +115,21 @@ public:
     WebServer::Options o;
     o.address = declare_parameter("bind_address", std::string("10.99.99.99"));
     o.port = static_cast<uint16_t>(declare_parameter("port", 8090));
-    const auto allow = declare_parameter("allow", std::vector<std::string>{"10.99.99.0/24"});
-    for (const auto & s : allow) {
-      if (auto c = Cidr::parse(s)) {
-        o.allow.push_back(*c);
-      } else {
-        RCLCPP_ERROR(get_logger(), "allow: ignoring '%s' (expected a.b.c.d/n)", s.c_str());
+    // Entries may also be comma separated lists (one environment variable in the manifest).
+    const auto allow = declare_parameter("allow", std::vector<std::string>{"10.99.99.0/24", "10.42.40.0/22"});
+    std::string allowed;
+    for (const auto & entry : allow) {
+      std::stringstream ss(entry);
+      for (std::string net; std::getline(ss, net, ',');) {
+        net.erase(0, net.find_first_not_of(" \t"));
+        net.erase(net.find_last_not_of(" \t") + 1);
+        if (net.empty()) continue;
+        if (auto c = Cidr::parse(net)) {
+          o.allow.push_back(*c);
+          allowed += (allowed.empty() ? "" : ", ") + net;
+        } else {
+          RCLCPP_ERROR(get_logger(), "allow: ignoring '%s' (expected a.b.c.d/n)", net.c_str());
+        }
       }
     }
     o.page = kIndexHtml;
@@ -153,8 +162,8 @@ public:
       });
     std::string error;
     if (server_->start(error)) {
-      RCLCPP_INFO(get_logger(), "Web UI on http://%s:%u/ (allowed: %zu network(s))", o.address.c_str(), o.port,
-                  o.allow.size());
+      RCLCPP_INFO(get_logger(), "Web UI on http://%s:%u/ (allowed: %s)", o.address.c_str(), o.port,
+                  allowed.empty() ? "nobody" : allowed.c_str());
     } else {
       RCLCPP_ERROR(get_logger(), "Web UI not started: %s", error.c_str());
     }

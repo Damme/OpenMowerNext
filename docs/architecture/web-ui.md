@@ -22,7 +22,8 @@ It never switches the blade.
 ## Access
 
 Only the VPN reaches it: the server binds `bind_address` (default `10.99.99.99`, the robot's WireGuard address,
-bound even before the interface is up) and drops every connection from outside `allow` (default `10.99.99.0/24`).
+bound even before the interface is up) and drops every connection from outside `allow` (default `10.99.99.0/24` and `10.42.40.0/22`, the VPN and
+the home network routed through it).
 A WebSocket must come from the page itself (`Origin` = `Host`), so another web page open in the same browser can't
 drive the robot. There's no login: whoever reaches the VPN address can use it.
 
@@ -30,7 +31,7 @@ drive the robot. There's no login: whoever reaches the VPN address can use it.
 |---|---|---|
 | `OM_WEB_BIND` | `10.99.99.99` | listen address |
 | `OM_WEB_PORT` | `8090` | port (ports below 1024 need privileges the rootless stack doesn't have) |
-| `OM_WEB_ALLOW` | `10.99.99.0/24` | allowed client network |
+| `OM_WEB_ALLOW` | `10.99.99.0/24,10.42.40.0/22` | allowed client networks, comma separated |
 
 ## How it drives the robot
 
