@@ -88,11 +88,15 @@ processes:
         # 25 Hz (robot_localization.yaml: 50): 50 Hz missed its rate on the Pi Zero 2.
         # IMU: yaw rate only. Its linear acceleration (12 deg mount tilt, auto-levelled)
         # integrated into ~0.1 m/s position drift while standing still without GPS.
+        # Wheels: velocity only, no yaw rate. On grass the wheels slip unevenly (undock
+        # 2026-09-28: wheels -37 deg, gyro +1.4 deg) and pulled the heading off the gyro.
         params:
           - frequency: 25.0
             sensor_timeout: 0.1
             imu0_config: [false, false, false, false, false, false, false, false, false,
                           false, false, true, false, false, false]
+            odom0_config: [false, false, false, false, false, false, true, true, true,
+                           false, false, false, false, false, false]
         # Both EKFs would listen on the same set_pose: one topic each.
         remap: {imu/data: imu/data_raw, set_pose: /ekf_se_odom/set_pose}
       - plugin: open_mower_next::localization_components::Ekf
@@ -102,6 +106,8 @@ processes:
             sensor_timeout: 0.1
             imu0_config: [false, false, false, false, false, false, false, false, false,
                           false, false, true, false, false, false]
+            odom0_config: [false, false, false, false, false, false, true, true, true,
+                           false, false, false, false, false, false]
         remap: {imu/data: imu/data_raw, odometry/filtered: odometry/filtered/map, set_pose: /ekf_se_map/set_pose}
       - plugin: robot_localization::NavSatTransform
         name: navsat_transform_node
@@ -143,6 +149,7 @@ processes:
             gps_timeout: $(env OM_GPS_RECENT_TIMEOUT_SEC 1.5)
             battery_low: $(env OM_BATTERY_LOW_FRACTION 0.2)
             battery_resume: $(env OM_BATTERY_RESUME_FRACTION 0.95)
+            dock_on_rain: $(env OM_DOCK_ON_RAIN true)
             areas: $(env OM_MOWING_AREAS "")
             edge_corrections_file: $(env OM_EDGE_CORRECTIONS_PATH /data/edge_corrections.txt)
             controller_id: FTC
