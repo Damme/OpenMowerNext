@@ -102,6 +102,7 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.digital_inverted = paramSet(info, "digital_inverted", cfg_.digital_inverted);
     cfg_.log_packets = paramB(info, "log_packets", cfg_.log_packets);
     cfg_.bump_detection = paramB(info, "bump_detection", cfg_.bump_detection);
+    cfg_.dock_wiggle_pwm = static_cast<int>(paramD(info, "dock_wiggle_pwm", cfg_.dock_wiggle_pwm));
     cfg_.bump_min_speed = paramD(info, "bump_min_speed", cfg_.bump_min_speed);
     cfg_.collision_hold = paramD(info, "collision_hold", cfg_.collision_hold);
     cfg_.lift_emergency = paramB(info, "lift_emergency", cfg_.lift_emergency);
@@ -176,6 +177,14 @@ void WorxSystem::startNode()
       blade_lockout_ = true;
       if (!req->data) sendSpeed(0, 0, 0, true);
       link_->send(req->data ? cmdMotorsEnable() : cmdMotorsDisable(), true);
+      res->success = true;
+    });
+  docking_srv_ = node_->create_service<std_srvs::srv::SetBool>(
+    "/worx/docking_mode", [this](const std_srvs::srv::SetBool::Request::SharedPtr req,
+                                 std_srvs::srv::SetBool::Response::SharedPtr res) {
+      if (docking_mode_ != req->data) RCLCPP_INFO(node_->get_logger(), "Docking mode %s", req->data ? "on" : "off");
+      docking_mode_ = req->data;
+      dock_wiggles_ = 0;
       res->success = true;
     });
   if (fake_board_) {
@@ -450,6 +459,31 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration & per
       RCLCPP_INFO(get_logger(), "Bump cleared");
     }
   }
+  if (docking_mode_ && (pl > 0 || pr > 0)) {
+    // Firmware BlockForward (bumper on the dock): it clears as soon as one wheel is
+    // commanded backwards (motorctrl.c). Daniel: wiggle - one wheel briefly back,
+    // alternating sides, then push on; seats the robot on the contacts.
+    bool fw_blocked = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      fw_blocked = last_.motor_pulse && last_.motor_pulse->block_forward && *last_.motor_pulse->block_forward == 1;
+    }
+    // The firmware re-arms BlockForward on every sensor tick while the bumper stays
+    // pressed: at most one wiggle per 0.4 s (forward in between) and 15 per docking
+    // mode, so the wiggling can't walk the robot back out of the dock.
+    if (fw_blocked && now >= dock_next_wiggle_ && dock_wiggles_ < 15) {
+      dock_clear_until_ = now + std::chrono::milliseconds(60);
+      dock_next_wiggle_ = now + std::chrono::milliseconds(400);
+      dock_wiggle_left_ = !dock_wiggle_left_;
+      ++dock_wiggles_;
+    }
+    if (now < dock_clear_until_) {
+      pl = dock_wiggle_left_ ? -cfg_.dock_wiggle_pwm : 0;
+      pr = dock_wiggle_left_ ? 0 : -cfg_.dock_wiggle_pwm;
+      pi_left_.reset();
+      pi_right_.reset();
+    }
+  }
   int pm = blade_lockout_ || !cfg_.blade_enabled ? 0 : static_cast<int>(std::clamp(blade, 0.0, 1.0) * cfg_.mow_pwm);
   if (emergency_ || !motors_enabled_ || !link_ok) {
     pl = pr = pm = 0;
@@ -490,7 +524,7 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     if (0.5 * (vel_left_ + vel_right_) > cfg_.bump_min_speed) last_moving_ = now;
     const bool blocked = m.motor_pulse->block_forward && *m.motor_pulse->block_forward == 1;
     const bool moved_recently = now - last_moving_ < std::chrono::milliseconds(300);
-    if (cfg_.bump_detection && blocked && moved_recently && last_pwm_l_ > 0 && last_pwm_r_ > 0) {
+    if (cfg_.bump_detection && !docking_mode_ && blocked && moved_recently && last_pwm_l_ > 0 && last_pwm_r_ > 0) {
       registerBump("BlockForward");
     }
     const double dl = wheel_scale_ * odo_left_.update(m.motor_pulse->left, m.motor_pulse->dir_left);

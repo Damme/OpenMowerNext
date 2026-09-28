@@ -77,6 +77,7 @@ private:
     std::set<std::string> digital_inverted{"Door", "Door2", "Lift", "Collision"};
     bool log_packets = true;           // throttled INFO dump of board traffic (bug hunting)
     bool bump_detection = true;
+    int dock_wiggle_pwm = 150;         // one wheel back this much for 60 ms to clear BlockForward at the dock
     double bump_min_speed = 0.05;      // m/s before BlockForward counts as a bump
     double collision_hold = 1.0;       // s the bump latch holds after the last evidence
     bool lift_emergency = true;        // Lift latches an emergency (cleared via /worx/emergency)
@@ -133,6 +134,15 @@ private:
   std::chrono::steady_clock::time_point last_motion_cmd_ = std::chrono::steady_clock::now();
   std::atomic<bool> emergency_{false};
   std::atomic<bool> motors_enabled_{true};
+  // Final docking approach (/worx/docking_mode, set by docking_helper): the dock
+  // presses the bumper, the firmware then blocks forward PWM until it gets a zero
+  // command. In docking mode that is no bump: one zero cycle clears the latch and
+  // the approach pushes on (real robot 2026-09-28: stopped 15-20 cm short).
+  std::atomic<bool> docking_mode_{false};
+  std::chrono::steady_clock::time_point dock_clear_until_{};
+  bool dock_wiggle_left_ = false;
+  std::atomic<int> dock_wiggles_{0};
+  std::chrono::steady_clock::time_point dock_next_wiggle_{};
   std::atomic<bool> active_{false};
   // Blade stays off after emergency/deactivate/motor disable/link loss until its
   // command has been <= 0 once (the effort controller holds the last command).
@@ -145,7 +155,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr charger_pub_;
   rclcpp::Publisher<open_mower_next::msg::WorxStatus>::SharedPtr status_pub_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_, fake_charger_srv_,
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_, docking_srv_, fake_charger_srv_,
     fake_collision_srv_, fake_lift_srv_;
   FakeBoardTransport * fake_board_ = nullptr;  // owned by link_, only with transport=fake
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr fake_battery_sub_;
