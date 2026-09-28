@@ -2,8 +2,9 @@
 //
 // Ported to Nav2 from ftc_local_planner (ROS1/MBF):
 //   Copyright (c) Clemens Elflein (BSD license)
-//   Copyright (c) 2023-2026 Daniel Wiegert (turn assist, stuck recovery, carrot leash,
-//   slew limit, and this Nav2 port)
+//   Nonlinear angular control (lateral_priority_distance): Jeremy Salwen,
+//   OpenMower PR #310 (open_mower_ros 56afad9)
+//   Copyright (c) 2023-2026 Daniel Wiegert (turn assist and this Nav2 port)
 // FailureDetector adapted from teb_local_planner:
 //   Copyright (c) 2016, TU Dortmund - Institute of Control Theory and Systems Engineering.
 //   Author: Christoph Rösmann
