@@ -9,7 +9,8 @@
 # OM_GPS_ENABLED (true), OM_GPS_HOST/OM_GPS_PORT (str2str's UBX server, 127.0.0.1:5015), OM_GPS_FIX_TOPIC,
 # OM_GPS_WAIT_TIME_SEC, OM_GPS_RECENT_TIMEOUT_SEC, OM_BATTERY_LOW_FRACTION,
 # OM_BATTERY_RESUME_FRACTION, OM_MOWING_AREAS, OM_DISABLED_AREAS_PATH, OM_EDGE_CORRECTIONS_PATH,
-# OM_MISSION_PATH, OM_AUTO_RESUME (false: after charging / rain it stays docked until start_mowing).
+# OM_MISSION_PATH, OM_AUTO_RESUME (false: after charging / rain it stays docked until start_mowing),
+# OM_WEB_BIND / OM_WEB_PORT / OM_WEB_ALLOW (web UI: 10.99.99.99, 8090, 10.99.99.0/24).
 env:
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
   ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
@@ -167,6 +168,19 @@ processes:
             controller_id: FTC
             goal_checker_id: ftc_goal_checker
             progress_checker_id: ftc_progress_checker
+      # Control page, only on the VPN: http://10.99.99.99:8090/ (bound to that address,
+      # and peers outside `allow` are dropped). Status, start/stop/home, manual driving
+      # (while idle), areas on/off, area/dock recording. Never switches the blade.
+      - plugin: open_mower_next::web_ui::WebUiNode
+        name: web_ui
+        params:
+          - bind_address: $(env OM_WEB_BIND 10.99.99.99)
+            port: $(env OM_WEB_PORT 8090)
+            allow: [$(env OM_WEB_ALLOW 10.99.99.0/24)]
+            max_linear: 0.3
+            max_angular: 1.0
+            disabled_areas_file: $(env OM_DISABLED_AREAS_PATH /data/disabled_areas.txt)
+            areas: $(env OM_MOWING_AREAS "")
 
   - name: twist_mux
     cmd: [/opt/ros/jazzy/lib/twist_mux/twist_mux, --ros-args,

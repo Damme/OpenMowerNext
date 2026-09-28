@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OpenMower</title>
+<style>
+:root {
+  --bg: #f4f5f2; --panel: #ffffff; --text: #1d211c; --muted: #636b61; --line: #d9ddd5;
+  --accent: #2f7d32; --accent-text: #ffffff; --danger: #c62828; --warn: #b26a00; --info: #1e62b0;
+  --area: #2f7d32; --area-off: #8a9187; --nav: #1e62b0; --excl: #c62828; --robot: #111; --rec: #e36a00;
+  --grid: rgba(0,0,0,.06);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111411; --panel: #1b1f1a; --text: #e5e9e2; --muted: #9aa396; --line: #30362e;
+    --accent: #5cb860; --accent-text: #0c150c; --danger: #ef5350; --warn: #f0a13a; --info: #64a8f0;
+    --area: #5cb860; --area-off: #6d746a; --nav: #64a8f0; --excl: #ef5350; --robot: #f5f5f5; --rec: #ff9a3c;
+    --grid: rgba(255,255,255,.05);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: flex; flex-direction: column; }
+header { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px;
+  padding-top: max(8px, env(safe-area-inset-top)); background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0 8px 0 0; }
+.chip { font-size: 13px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.chip.ok { border-color: var(--accent); color: var(--accent); }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
+.chip.bad { border-color: var(--danger); color: var(--danger); }
+#emergency { display: none; background: var(--danger); color: #fff; padding: 8px 12px; align-items: center; gap: 12px; }
+#emergency.on { display: flex; }
+main { flex: 1; display: flex; min-height: 0; }
+#mapwrap { position: relative; flex: 1; min-height: 240px; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+.mapbtns { position: absolute; right: 8px; top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.mapbtns button { width: 40px; height: 40px; padding: 0; display: grid; place-items: center; }
+#side { width: 380px; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); min-height: 0; }
+nav { display: flex; border-bottom: 1px solid var(--line); }
+nav button { flex: 1; border: 0; border-radius: 0; background: none; color: var(--muted); padding: 10px 0;
+  border-bottom: 2px solid transparent; font-weight: 600; }
+nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+section { display: none; padding: 12px; overflow-y: auto; flex: 1; }
+section.active { display: block; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 0 6px; }
+h2:first-child { margin-top: 0; }
+button { font: inherit; font-weight: 600; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); cursor: pointer; touch-action: manipulation; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+button.small { padding: 4px 10px; font-size: 13px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.row > button { flex: 1 1 40%; }
+.muted { color: var(--muted); font-size: 13px; }
+input[type=text], select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); width: 100%; }
+label.check { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.area { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
+.area .name { flex: 1; min-width: 0; }
+.area .name div:first-child { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.area.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.switch { position: relative; width: 44px; height: 26px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; background: var(--area-off); border-radius: 13px; transition: .15s; }
+.switch span::before { content: ""; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px; background: #fff;
+  border-radius: 50%; transition: .15s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::before { transform: translateX(18px); }
+.switch input:disabled + span { opacity: .4; }
+#joy { position: relative; width: 220px; height: 220px; margin: 8px auto; border-radius: 50%; border: 2px solid var(--line);
+  background: radial-gradient(circle, var(--bg) 0 30%, var(--panel) 31%); touch-action: none; user-select: none; }
+#joy.off { opacity: .4; }
+#knob { position: absolute; width: 72px; height: 72px; left: 74px; top: 74px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 2px 8px rgba(0,0,0,.3); pointer-events: none; }
+#joyinfo { text-align: center; font-variant-numeric: tabular-nums; }
+#log div { font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+#log div.bad { color: var(--danger); }
+#log time { color: var(--muted); margin-right: 6px; font-variant-numeric: tabular-nums; }
+#toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px);
+  background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0;
+  transition: opacity .2s; pointer-events: none; }
+#toast.show { opacity: .95; }
+#toast.bad { background: var(--danger); color: #fff; }
+@media (max-width: 760px) {
+  main { flex-direction: column; }
+  #mapwrap { flex: none; height: 42vh; }
+  #side { width: auto; border-left: 0; border-top: 1px solid var(--line); flex: 1; }
+  #joy { width: 200px; height: 200px; }
+  #knob { left: 64px; top: 64px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenMower</h1>
+  <span class="chip" id="c-conn">connecting</span>
+  <span class="chip" id="c-state">–</span>
+  <span class="chip" id="c-batt">–</span>
+  <span class="chip" id="c-gps">–</span>
+  <span class="chip" id="c-motors">–</span>
+</header>
+<div id="emergency"><strong>Emergency</strong><span id="emg-why"></span>
+  <button class="small" data-logic="clear_emergency">Clear</button></div>
+<main>
+  <div id="mapwrap">
+    <canvas id="map"></canvas>
+    <div class="mapbtns">
+      <button id="b-follow" title="Follow the robot" aria-label="Follow the robot"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg></button>
+      <button id="b-fit" title="Whole map" aria-label="Whole map"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6"/></svg></button>
+    </div>
+  </div>
+  <div id="side">
+    <nav>
+      <button data-tab="mow" class="active">Mow</button>
+      <button data-tab="drive">Drive</button>
+      <button data-tab="areas">Areas</button>
+      <button data-tab="rec">Record</button>
+      <button data-tab="log">Log</button>
+    </nav>
+    <section id="t-mow" class="active">
+      <div id="mission" class="muted">–</div>
+      <h2>Mission</h2>
+      <div class="row"><button class="primary" data-logic="start_mowing">Start mowing</button>
+        <button data-logic="go_home">Go home</button></div>
+      <div class="row"><button class="danger" data-logic="stop">Stop</button></div>
+      <div class="row"><button data-logic="skip_pass">Skip pass</button><button data-logic="skip_area">Skip area</button></div>
+      <div class="row"><button data-logic="reset_mission" data-confirm="Forget the mission progress? The next start plans from the beginning.">Reset mission</button></div>
+      <h2>Robot</h2>
+      <div class="row"><button id="b-motors-on">Motors on</button><button id="b-motors-off">Motors off</button></div>
+      <div id="details" class="muted"></div>
+    </section>
+    <section id="t-drive">
+      <div id="joyslot"></div>
+      <p class="muted">Drag the knob, or hold the arrow keys / WASD. Only while mower_logic is idle; the robot stops
+        0.3 s after the last command. The blade is never switched from here.</p>
+    </section>
+    <section id="t-areas">
+      <p class="muted">Switched-off areas are skipped from the next new mission on (Reset mission to apply now).</p>
+      <h2>Mowing areas</h2>
+      <div id="areas-op"></div>
+      <h2>Other areas</h2>
+      <div id="areas-other"></div>
+    </section>
+    <section id="t-rec">
+      <h2>Area boundary</h2>
+      <div class="row"><input type="text" id="rec-name" placeholder="Name, e.g. front lawn" maxlength="60"></div>
+      <div class="row"><select id="rec-type">
+        <option value="2">Mowing area</option><option value="1">Navigation area</option><option value="0">Exclusion (obstacle)</option>
+      </select></div>
+      <label class="check"><input type="checkbox" id="rec-auto" checked> Add points automatically while driving (every 5 cm)</label>
+      <div class="row"><button class="primary" id="b-rec-start">Start</button><button id="b-rec-point">Add point</button></div>
+      <div class="row"><button id="b-rec-finish">Finish &amp; save</button><button id="b-rec-cancel">Cancel</button></div>
+      <div id="rec-status" class="muted"></div>
+      <div id="joyslot-rec"></div>
+      <h2>Docking station</h2>
+      <p class="muted">Put the robot about 1 m in front of the charger, facing it. It then drives forward on its own until
+        the charger is detected.</p>
+      <div class="row"><input type="text" id="dock-name" placeholder="Name" value="dock" maxlength="60"></div>
+      <div class="row"><button id="b-dock-start">Record dock</button><button id="b-dock-cancel">Cancel</button></div>
+      <div id="dock-status" class="muted"></div>
+    </section>
+    <section id="t-log"><div id="log"></div></section>
+  </div>
+</main>
+<div id="joywrap" hidden>
+  <div id="joy"><div id="knob"></div></div>
+  <div id="joyinfo">–</div>
+  <label class="check" style="justify-content:center">Speed <input type="range" id="speed" min="10" max="100" value="50" step="10">
+    <span id="speedv">50 %</span></label>
+</div>
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const S = { ws: null, state: null, map: null, pose: null, trail: [], rec: [], sel: null, follow: true };
+
+// ---- connection -------------------------------------------------------------
+function connect() {
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  S.ws = ws;
+  ws.onopen = () => setChip("c-conn", "online", "ok");
+  ws.onclose = () => { S.ws = null; setChip("c-conn", "offline", "bad"); S.state = null; renderState();
+    setTimeout(connect, 1500); };
+  ws.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.t === "state") { S.state = m; renderState(); }
+    else if (m.t === "pose") { onPose(m); }
+    else if (m.t === "map") { const first = !S.map; S.map = m; renderAreas(); if (first) fit(); draw(); }
+    else if (m.t === "rec") { S.rec = m.pts || []; draw(); }
+    else if (m.t === "log") { addLog(m); }
+  };
+}
+function send(obj) {
+  if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(obj)); return true; }
+  return false;
+}
+function cmd(obj) { if (!send(obj)) toast("Not connected", true); }
+
+// ---- status -----------------------------------------------------------------
+function setChip(id, text, cls) { const e = $(id); e.textContent = text; e.className = "chip" + (cls ? " " + cls : ""); }
+function renderState() {
+  const s = S.state || {}, l = s.logic, w = s.worx, g = s.gps;
+  const online = !!S.state;
+  document.querySelectorAll("section button, #emergency button").forEach((b) => b.disabled = !online);
+  if (l) {
+    setChip("c-state", l.state + (l.command !== "IDLE" ? " · " + l.command : ""), l.command === "IDLE" ? "" : "ok");
+    $("mission").textContent = "Mission: " + l.mission;
+  } else { setChip("c-state", "no mower_logic", "warn"); $("mission").textContent = "–"; }
+  let batt = "–", bc = "";
+  if (l && l.battery >= 0) { batt = Math.round(l.battery * 100) + " %"; bc = l.battery < 0.3 ? "warn" : ""; }
+  if (w) batt += " " + w.v.toFixed(1) + " V";
+  if (l && l.docked) { batt += " ⚡"; bc = "ok"; }
+  setChip("c-batt", batt, bc);
+  if (g) {
+    const t = g.status === 2 ? "RTK fixed" : g.status >= 0 ? "GPS float" : "no GPS fix";
+    setChip("c-gps", t, g.status === 2 ? "ok" : g.status >= 0 ? "warn" : "bad");
+  } else setChip("c-gps", "no GPS data", "bad");
+  const motorsOn = w && w.motor && w.motor.indexOf("DISABLE") < 0;
+  setChip("c-motors", w ? (w.link ? "motors " + (motorsOn ? "on" : "off") : "board link lost") : "no board data",
+          w && w.link ? (motorsOn ? "ok" : "") : "bad");
+  const emg = (l && l.emergency) || (w && w.emergency);
+  $("emergency").classList.toggle("on", !!emg);
+  if (emg && w) $("emg-why").textContent = [w.lift && "lift", w.collision && "collision"].filter(Boolean).join(", ");
+  const d = [];
+  if (w) {
+    if (w.power) d.push("Power: " + w.power);
+    d.push("Charge current " + w.a.toFixed(2) + " A", "PWM L/R/blade " + w.pwm.join(" / "),
+           "Bumps " + w.bumps + (w.rain ? " · rain" : ""));
+  }
+  if (g) d.push("GPS accuracy " + (g.acc * 100).toFixed(1) + " cm (receiver estimate)");
+  if (s.clients > 1) d.push(s.clients + " pages open");
+  $("details").innerHTML = ""; d.forEach((t) => { const e = document.createElement("div"); e.textContent = t; $("details").append(e); });
+  const dr = s.drive || {};
+  $("joy").classList.toggle("off", !dr.ok);
+  if (!joy.active) $("joyinfo").textContent = dr.ok ? "ready (max " + dr.max_linear + " m/s)" : (dr.why || "offline");
+  const r = s.rec || {}, dk = s.dock_rec || {};
+  $("b-rec-start").disabled = !online || r.active;
+  ["b-rec-point", "b-rec-finish", "b-rec-cancel"].forEach((id) => $(id).disabled = !online || !r.active);
+  $("rec-status").textContent = r.active ? r.count + " points · " + (r.msg || "") : "";
+  $("b-dock-start").disabled = !online || dk.active;
+  $("b-dock-cancel").disabled = !online || !dk.active;
+  $("dock-status").textContent = dk.active ? dk.msg || "running" : "";
+}
+
+// ---- log --------------------------------------------------------------------
+function addLog(m) {
+  const e = document.createElement("div");
+  if (!m.ok) e.className = "bad";
+  const t = document.createElement("time");
+  t.textContent = new Date(m.time * 1000).toLocaleTimeString();
+  e.append(t, document.createTextNode(m.msg));
+  $("log").prepend(e);
+  while ($("log").childElementCount > 100) $("log").lastChild.remove();
+  if (Date.now() / 1000 - m.time < 5) toast(m.msg, !m.ok);
+}
+let toastTimer;
+function toast(text, bad) {
+  const e = $("toast"); e.textContent = text; e.className = "show" + (bad ? " bad" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => e.className = "", 3500);
+}
+
+// ---- buttons ----------------------------------------------------------------
+document.querySelectorAll("[data-logic]").forEach((b) => b.onclick = () => {
+  if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
+  cmd({ c: "logic", name: b.dataset.logic });
+});
+$("b-motors-on").onclick = () => cmd({ c: "motors", on: true });
+$("b-motors-off").onclick = () => cmd({ c: "motors", on: false });
+$("b-rec-start").onclick = () => {
+  const name = $("rec-name").value.trim();
+  if (!name) { toast("Give the area a name first", true); return; }
+  S.rec = [];
+  cmd({ c: "rec_start", name, type: +$("rec-type").value, auto: $("rec-auto").checked });
+};
+$("rec-auto").onchange = () => { if (S.state && S.state.rec && S.state.rec.active) cmd({ c: "rec_auto", auto: $("rec-auto").checked }); };
+$("b-rec-point").onclick = () => cmd({ c: "rec_point" });
+$("b-rec-finish").onclick = () => cmd({ c: "rec_finish" });
+$("b-rec-cancel").onclick = () => { if (confirm("Throw away the recorded points?")) cmd({ c: "rec_cancel" }); };
+$("b-dock-start").onclick = () => {
+  if (confirm("The robot will drive forward on its own until it reaches the charger. Start?"))
+    cmd({ c: "dock_start", name: $("dock-name").value.trim() });
+};
+$("b-dock-cancel").onclick = () => cmd({ c: "dock_cancel" });
+
+// ---- tabs -------------------------------------------------------------------
+function showTab(name) {
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll("section").forEach((s) => s.classList.toggle("active", s.id === "t-" + name));
+  // one joystick, shown in Drive and Record
+  const slot = name === "rec" ? $("joyslot-rec") : name === "drive" ? $("joyslot") : null;
+  const jw = $("joywrap");
+  if (slot) { slot.append(jw); jw.hidden = false; } else { jw.hidden = true; joy.release(); }
+  try { localStorage.setItem("om.tab", name); } catch {}
+}
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
+
+// ---- areas ------------------------------------------------------------------
+function polyArea(p) { let a = 0; for (let i = 0, j = p.length - 1; i < p.length; j = i++) a += (p[j][0] + p[i][0]) * (p[j][1] - p[i][1]); return Math.abs(a / 2); }
+const TYPES = ["exclusion", "navigation", "mowing"];
+function renderAreas() {
+  const op = $("areas-op"), other = $("areas-other");
+  op.innerHTML = ""; other.innerHTML = "";
+  for (const a of S.map.areas) {
+    const row = document.createElement("div");
+    row.className = "area" + (S.sel === a.id ? " sel" : "");
+    const name = document.createElement("div"); name.className = "name";
+    const n1 = document.createElement("div"); n1.textContent = a.name || a.id;
+    const n2 = document.createElement("div"); n2.className = "muted";
+    n2.textContent = a.id + " · " + Math.round(polyArea(a.pts)) + " m²" + (a.type !== 2 ? " · " + TYPES[a.type] : "") +
+      (a.locked ? " · not in OM_MOWING_AREAS" : "");
+    name.append(n1, n2);
+    name.onclick = () => { S.sel = S.sel === a.id ? null : a.id; renderAreas(); if (S.sel) focusArea(a); draw(); };
+    row.append(name);
+    if (a.type === 2) {
+      const sw = document.createElement("label"); sw.className = "switch";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = a.enabled; cb.disabled = a.locked;
+      cb.onchange = () => cmd({ c: "area", id: a.id, enabled: cb.checked });
+      sw.append(cb, document.createElement("span"));
+      row.append(sw);
+    }
+    const del = document.createElement("button"); del.className = "small"; del.textContent = "✕"; del.title = "Remove area";
+    del.onclick = () => { if (confirm("Remove area \"" + (a.name || a.id) + "\" from the map? This can't be undone here.")) cmd({ c: "area_remove", id: a.id }); };
+    row.append(del);
+    (a.type === 2 ? op : other).append(row);
+  }
+  if (!op.childElementCount) op.innerHTML = '<p class="muted">none</p>';
+  if (!other.childElementCount) other.innerHTML = '<p class="muted">none</p>';
+}
+
+// ---- map --------------------------------------------------------------------
+const cv = $("map"), ctx = cv.getContext("2d");
+const view = { s: 10, ox: 0, oy: 0 };  // px per m, screen position of map (0,0)
+let css = {};
+function readColors() { const st = getComputedStyle(document.documentElement);
+  for (const k of ["area", "area-off", "nav", "excl", "robot", "rec", "grid", "muted", "accent", "text"]) css[k] = st.getPropertyValue("--" + k).trim(); }
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); draw(); });
+readColors();
+function resize() {
+  const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
+  cv.width = Math.round(r.width * d); cv.height = Math.round(r.height * d);
+  ctx.setTransform(d, 0, 0, d, 0, 0); draw();
+}
+new ResizeObserver(resize).observe(cv);
+const X = (x) => view.ox + x * view.s, Y = (y) => view.oy - y * view.s;
+function bbox(pts, b) { for (const [x, y] of pts) { b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y); b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y); } return b; }
+function fitBox(b) {
+  const r = cv.getBoundingClientRect();
+  if (!isFinite(b[0]) || r.width === 0) return;
+  const w = Math.max(b[2] - b[0], 2), h = Math.max(b[3] - b[1], 2);
+  view.s = Math.min(r.width / w, r.height / h) * 0.9;
+  view.ox = r.width / 2 - (b[0] + b[2]) / 2 * view.s;
+  view.oy = r.height / 2 + (b[1] + b[3]) / 2 * view.s;
+  draw();
+}
+function fit() { if (!S.map) return; const b = [Infinity, Infinity, -Infinity, -Infinity]; S.map.areas.forEach((a) => bbox(a.pts, b)); S.follow = false; fitBox(b); }
+function focusArea(a) { S.follow = false; fitBox(bbox(a.pts, [Infinity, Infinity, -Infinity, -Infinity])); }
+function center(x, y) { const r = cv.getBoundingClientRect(); view.ox = r.width / 2 - x * view.s; view.oy = r.height / 2 + y * view.s; }
+$("b-fit").onclick = fit;
+$("b-follow").onclick = () => { S.follow = true; if (view.s < 20) view.s = 40; if (S.pose) center(S.pose.x, S.pose.y); draw(); };
+
+function onPose(p) {
+  S.pose = p;
+  const last = S.trail[S.trail.length - 1];
+  if (!last || Math.hypot(last[0] - p.x, last[1] - p.y) > 0.05) { S.trail.push([p.x, p.y]); if (S.trail.length > 3000) S.trail.shift(); }
+  if (S.follow) center(p.x, p.y);
+  draw();
+}
+
+let drawQueued = false;
+function draw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(render); } }
+function path(pts, close) {
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y)));
+  if (close) ctx.closePath();
+}
+function render() {
+  drawQueued = false;
+  const r = cv.getBoundingClientRect();
+  ctx.clearRect(0, 0, r.width, r.height);
+  // 1 m grid when zoomed in, else 10 m
+  const step = view.s > 15 ? 1 : 10;
+  ctx.strokeStyle = css.grid; ctx.lineWidth = 1; ctx.beginPath();
+  for (let x = Math.floor(-view.ox / view.s / step) * step; X(x) < r.width; x += step) { ctx.moveTo(X(x), 0); ctx.lineTo(X(x), r.height); }
+  for (let y = Math.floor((view.oy - r.height) / view.s / step) * step; Y(y) > 0; y += step) { ctx.moveTo(0, Y(y)); ctx.lineTo(r.width, Y(y)); }
+  ctx.stroke();
+  if (S.map) {
+    const order = [1, 2, 0];  // navigation below, exclusions on top
+    for (const t of order) for (const a of S.map.areas) {
+      if (a.type !== t || a.pts.length < 3) continue;
+      const col = t === 2 ? (a.enabled ? css.area : css["area-off"]) : t === 1 ? css.nav : css.excl;
+      path(a.pts, true);
+      ctx.globalAlpha = t === 0 ? 0.35 : t === 1 ? 0.07 : a.enabled ? 0.22 : 0.12;
+      ctx.fillStyle = col; ctx.fill();
+      ctx.globalAlpha = 1; ctx.strokeStyle = col; ctx.lineWidth = S.sel === a.id ? 3 : 1.5;
+      ctx.setLineDash(t === 1 || (t === 2 && !a.enabled) ? [6, 4] : []); ctx.stroke(); ctx.setLineDash([]);
+    }
+    if (view.s > 4) {
+      ctx.fillStyle = css.text; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "center";
+      const placed = [];  // skip a label that would overlap one already drawn
+      for (const a of S.map.areas) {
+        if (a.type !== 2 || !a.pts.length) continue;
+        let cx = 0, cy = 0; a.pts.forEach(([x, y]) => { cx += x; cy += y; });
+        const t = a.name || a.id, w = ctx.measureText(t).width, lx = X(cx / a.pts.length), ly = Y(cy / a.pts.length);
+        const box = [lx - w / 2 - 2, ly - 12, lx + w / 2 + 2, ly + 4];
+        if (placed.some((b) => box[0] < b[2] && b[0] < box[2] && box[1] < b[3] && b[1] < box[3])) continue;
+        placed.push(box);
+        ctx.fillText(t, lx, ly);
+      }
+    }
+    for (const d of S.map.docks) {
+      const sz = Math.max(0.3 * view.s, 8);
+      ctx.fillStyle = css.accent; ctx.fillRect(X(d.x) - sz / 2, Y(d.y) - sz / 2, sz, sz);
+      ctx.strokeStyle = css.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X(d.x), Y(d.y));
+      ctx.lineTo(X(d.x + Math.cos(d.yaw) * 0.6), Y(d.y + Math.sin(d.yaw) * 0.6)); ctx.stroke();
+    }
+  }
+  if (S.trail.length > 1) { path(S.trail); ctx.strokeStyle = css.muted; ctx.globalAlpha = 0.6; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1; }
+  if (S.rec.length) {
+    path(S.rec); ctx.strokeStyle = css.rec; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = css.rec; for (const [x, y] of S.rec) { ctx.beginPath(); ctx.arc(X(x), Y(y), 2.5, 0, 7); ctx.fill(); }
+  }
+  if (S.pose) {
+    // body 0.58 m long, axle near the rear; drawn at least 14 px
+    const p = S.pose, k = Math.max(view.s, 14 / 0.58), c = Math.cos(p.yaw), s = Math.sin(p.yaw);
+    ctx.beginPath();
+    [[0.47, 0], [-0.11, 0.2], [-0.11, -0.2]].forEach(([u, v], i) => {
+      const sx = X(p.x) + (u * c - v * s) * k, sy = Y(p.y) - (u * s + v * c) * k;
+      i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
+    });
+    ctx.closePath(); ctx.fillStyle = css.robot; ctx.fill();
+    ctx.strokeStyle = css.accent; ctx.lineWidth = 2; ctx.stroke();
+  }
+}
+
+// pan / pinch / wheel
+const ptrs = new Map(); let pinch = null;
+cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]); S.follow = false;
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), s: view.s }; } });
+cv.addEventListener("pointermove", (e) => {
+  if (!ptrs.has(e.pointerId)) return;
+  const prev = ptrs.get(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
+  if (ptrs.size === 1) { view.ox += e.offsetX - prev[0]; view.oy += e.offsetY - prev[1]; }
+  else if (ptrs.size === 2 && pinch) {
+    const [a, b] = [...ptrs.values()], mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    zoomAt(mx, my, pinch.s * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch.d / view.s);
+  }
+  draw();
+});
+const up = (e) => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; };
+cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+cv.addEventListener("wheel", (e) => { e.preventDefault(); S.follow = false; zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0015)); draw(); }, { passive: false });
+function zoomAt(px, py, f) {
+  const s = Math.min(Math.max(view.s * f, 0.5), 400); f = s / view.s;
+  view.ox = px - (px - view.ox) * f; view.oy = py - (py - view.oy) * f; view.s = s;
+}
+
+// ---- joystick ---------------------------------------------------------------
+const joy = {
+  active: false, v: 0, w: 0, timer: null, keys: new Set(),
+  set(v, w) {
+    this.v = v; this.w = w;
+    if (!this.timer) { this.active = true; this.tick(); this.timer = setInterval(() => this.tick(), 100); }
+  },
+  tick() {
+    const f = $("speed").value / 100;
+    send({ c: "joy", v: this.v * f, w: this.w * f });
+    const d = S.state && S.state.drive;
+    if (d) $("joyinfo").textContent = (this.v * f * d.max_linear).toFixed(2) + " m/s · " + (this.w * f * d.max_angular).toFixed(2) + " rad/s";
+  },
+  release() {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.active) { this.active = false; send({ c: "joy", v: 0, w: 0 }); send({ c: "joy", v: 0, w: 0 }); renderState(); }
+    this.v = this.w = 0; knob(0, 0);
+  },
+};
+function knob(x, y) { const k = $("knob"), r = $("joy").clientWidth / 2 - 36; k.style.transform = "translate(" + x * r + "px," + y * r + "px)"; }
+$("speed").oninput = () => $("speedv").textContent = $("speed").value + " %";
+{
+  const pad = $("joy"); let id = null;
+  const move = (e) => {
+    const r = pad.getBoundingClientRect(), rad = r.width / 2 - 36;
+    let x = (e.clientX - r.left - r.width / 2) / rad, y = (e.clientY - r.top - r.height / 2) / rad;
+    const n = Math.hypot(x, y); if (n > 1) { x /= n; y /= n; }
+    knob(x, y);
+    const dz = (u) => Math.abs(u) < 0.08 ? 0 : u * Math.abs(u);   // finer control near the centre
+    joy.set(dz(-y), dz(-x));
+  };
+  pad.addEventListener("pointerdown", (e) => { id = e.pointerId; pad.setPointerCapture(id); move(e); });
+  pad.addEventListener("pointermove", (e) => { if (e.pointerId === id) move(e); });
+  const end = (e) => { if (e.pointerId === id) { id = null; joy.release(); } };
+  pad.addEventListener("pointerup", end); pad.addEventListener("pointercancel", end);
+  pad.addEventListener("lostpointercapture", end);
+}
+const KEYS = { ArrowUp: [1, 0], w: [1, 0], ArrowDown: [-1, 0], s: [-1, 0], ArrowLeft: [0, 1], a: [0, 1], ArrowRight: [0, -1], d: [0, -1] };
+function keyDrive() {
+  let v = 0, w = 0; for (const k of joy.keys) { v += KEYS[k][0]; w += KEYS[k][1]; }
+  if (v || w) joy.set(Math.sign(v), Math.sign(w)); else joy.release();
+}
+addEventListener("keydown", (e) => {
+  if ($("joywrap").hidden || !(e.key in KEYS) || e.target.matches("input, select")) return;
+  e.preventDefault(); if (!joy.keys.has(e.key)) { joy.keys.add(e.key); keyDrive(); }
+});
+addEventListener("keyup", (e) => { if (joy.keys.delete(e.key)) keyDrive(); });
+addEventListener("blur", () => { joy.keys.clear(); joy.release(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) { joy.keys.clear(); joy.release(); } });
+
+// ---- start ------------------------------------------------------------------
+let tab = "mow"; try { tab = localStorage.getItem("om.tab") || "mow"; } catch {}
+showTab(document.querySelector('nav button[data-tab="' + tab + '"]') ? tab : "mow");
+renderState();
+connect();
+</script>
+</body>
+</html>
