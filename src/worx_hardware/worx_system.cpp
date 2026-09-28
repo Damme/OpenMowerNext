@@ -184,6 +184,7 @@ void WorxSystem::startNode()
                                  std_srvs::srv::SetBool::Response::SharedPtr res) {
       if (docking_mode_ != req->data) RCLCPP_INFO(node_->get_logger(), "Docking mode %s", req->data ? "on" : "off");
       docking_mode_ = req->data;
+      if (req->data) collision_ = false;  // a bump latched on the way in must not block the approach
       dock_wiggles_ = 0;
       res->success = true;
     });
@@ -557,7 +558,8 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     };
     // Digital is up to 1.25 s old: it only starts a bump while driving forward
     // (a stale report during the back-up must not count again).
-    if (cfg_.bump_detection && active("Collision") && (collision_ || (last_pwm_l_ > 0 && last_pwm_r_ > 0))) {
+    // At the dock the bumper is pressed on purpose (docking mode): no bump.
+    if (cfg_.bump_detection && !docking_mode_ && active("Collision") && (collision_ || (last_pwm_l_ > 0 && last_pwm_r_ > 0))) {
       registerBump("Collision");
     }
     const bool lift = active("Lift");
