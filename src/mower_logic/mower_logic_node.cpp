@@ -27,6 +27,7 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   Params p;
   p.battery_low = node->declare_parameter("battery_low", p.battery_low);
   p.battery_resume = node->declare_parameter("battery_resume", p.battery_resume);
+  p.battery_low_time = node->declare_parameter("battery_low_time", p.battery_low_time);
   p.require_gps = node->declare_parameter("require_gps", p.require_gps);
   p.gps_fix_topic = node->declare_parameter("gps_fix_topic", p.gps_fix_topic);
   p.gps_max_accuracy = node->declare_parameter("gps_max_accuracy", p.gps_max_accuracy);

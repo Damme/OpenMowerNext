@@ -337,7 +337,17 @@ bool Context::needsCharging()
 {
   std::lock_guard<std::mutex> l(mutex_);
   if (std::isnan(battery_)) return needs_charging_;
-  if (battery_ < params.battery_low) needs_charging_ = true;
+  // Low only when it stays low: the voltage sags for seconds under load (blade
+  // spin-up, uphill), and one sample below battery_low must not end the mowing.
+  const auto now = Clock::now();
+  if (battery_ >= params.battery_low) {
+    low_since_.reset();
+  } else if (!low_since_) {
+    low_since_ = now;
+  }
+  if (low_since_ && std::chrono::duration<double>(now - *low_since_).count() >= params.battery_low_time) {
+    needs_charging_ = true;
+  }
   if (battery_ >= params.battery_resume) needs_charging_ = false;
   return needs_charging_;
 }

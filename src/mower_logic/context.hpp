@@ -47,7 +47,8 @@ inline const char * toString(Command c)
 
 struct Params
 {
-  double battery_low = 0.20;         // go charging below this fraction
+  double battery_low = 0.20;         // go charging below this fraction...
+  double battery_low_time = 20.0;    // ...for this many seconds in a row (load sags the voltage)
   double battery_resume = 0.95;      // resume mowing at this fraction
   bool require_gps = true;
   std::string gps_fix_topic = "/gps/fix";
@@ -246,6 +247,7 @@ private:
   std::optional<Clock::time_point> last_rain_;
   std::optional<Clock::time_point> gps_good_since_, gps_last_good_;
   bool needs_charging_ = false;
+  std::optional<Clock::time_point> low_since_;  // battery below battery_low since
   open_mower_next::msg::Map map_;
   nav_msgs::msg::OccupancyGrid grid_;
   std::string branch_;
