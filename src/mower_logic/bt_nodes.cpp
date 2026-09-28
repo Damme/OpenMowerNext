@@ -320,6 +320,9 @@ public:
   {
     const double d = getInput<double>("distance").value_or(ctx_->params.bump_backup);
     RCLCPP_WARN(ctx_->node->get_logger(), "Reversing %.2f m straight back the way the robot came", d);
+    if (const auto pose = ctx_->robotPose()) {
+      ctx_->last_reversal = Context::Reversal{Context::Clock::now(), pose->pose.position.x, pose->pose.position.y};
+    }
     until_ = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                                    std::chrono::duration<double>(d / ctx_->params.bump_backup_speed));
     return onRunning();
@@ -452,8 +455,14 @@ public:
     const double x = pose->pose.position.x, y = pose->pose.position.y, yaw = yawOf(*pose);
     if (ctx_->footprintFits(x, y, yaw)) return NodeStatus::SUCCESS;
     const auto e = ctx_->escapeFootprint(x, y, yaw, ctx_->params.corner_max_reverse);
+    if (!e && ctx_->reversedNear(x, y)) {
+      RCLCPP_WARN(ctx_->node->get_logger(),
+                  "Footprint outside line + rim at (%.2f, %.2f): already reversed here, not backing up blindly again", x, y);
+      return NodeStatus::FAILURE;
+    }
     // Nothing fits nearby: reverse blindly the way the robot came.
     esc_ = e.value_or(Context::Escape{ctx_->params.bump_backup, 0.0});
+    if (!e) ctx_->last_reversal = Context::Reversal{Context::Clock::now(), x, y};
     RCLCPP_WARN(ctx_->node->get_logger(), "Footprint outside line + rim at (%.2f, %.2f): back up %.2f m, turn %.0f deg%s",
                 x, y, esc_.reverse, esc_.turn * 180.0 / M_PI, e ? "" : " (no fitting pose found)");
     start_x_ = x;

@@ -187,6 +187,20 @@ public:
   void dropBumpObstacle(const Bump & b);
   std::atomic<bool> bump_on_pass{false};  // the last interrupted action was FollowPass
   std::atomic<bool> pass_is_outline{false};  // the pass GetPass handed out last
+  // Behaviour tree thread only: the last reversal (bump recovery or a blind
+  // FreeFootprint back-up). Daniel 2026-09-28: after a bump it backed up three
+  // times where one was enough - a blind back-up isn't repeated near the last one.
+  struct Reversal
+  {
+    Clock::time_point time;
+    double x, y;
+  };
+  std::optional<Reversal> last_reversal;
+  bool reversedNear(double x, double y) const
+  {
+    return last_reversal && Clock::now() - last_reversal->time < std::chrono::seconds(60) &&
+           std::hypot(x - last_reversal->x, y - last_reversal->y) < 1.0;
+  }
   // Known bump obstacle within radius of (x, y), if any.
   std::optional<Bump> knownObstacleNear(double x, double y, double radius) const;
   // Behaviour tree thread only: where SkipPastBump continues the pass.
