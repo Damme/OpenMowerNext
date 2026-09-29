@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenMowerNext (Worx) GPS: F9P on ttyS0 -> tcp server :5015
+# ubx_gps in the ROS 2 stack reads UBX from tcp :5015; -b 1 relays what clients
+# send (the RTCM corrections from om2-gps-ntrip) back into the receiver.
+After=dev-ttyS0.device
+BindsTo=dev-ttyS0.device
+
+[Service]
+Type=simple
+User=damme
+ExecStart=/usr/local/bin/str2str -in serial://ttyS0:230400:8:n:1 -out tcpsvr://:5015 -b 1
+# str2str prints a status line every 5 s on stderr - keep it out of the journal.
+StandardOutput=null
+StandardError=null
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

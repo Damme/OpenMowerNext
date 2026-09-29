@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenMowerNext (Worx) GPS: NTRIP corrections -> tcp :5015 (F9P)
+Wants=network-online.target om2-gps-serial.service
+After=network-online.target om2-gps-serial.service
+
+[Service]
+Type=simple
+User=damme
+# NTRIP_URL=ntrip://user:password@host[:port]/MOUNTPOINT  (kept out of git, chmod 600)
+EnvironmentFile=/opt/om2/config/ntrip.env
+ExecStart=/usr/local/bin/str2str -in ${NTRIP_URL} -out tcpcli://127.0.0.1:5015
+StandardOutput=null
+StandardError=null
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

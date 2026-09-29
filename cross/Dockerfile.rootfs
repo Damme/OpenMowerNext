@@ -1,0 +1,12 @@
+# arm64 target rootfs: Ubuntu 24.04 + ROS 2 Jazzy + the rosdep dependencies of open_mower_next.
+# It is both the runtime rootfs on the Pi (/opt/om2/rootfs, run with bwrap) and the cross-compile sysroot,
+# so the two always match. Our package is NOT built here (that is what cross/3-build.sh is for).
+FROM ros:jazzy-ros-base
+ENV DEBIAN_FRONTEND=noninteractive
+COPY package.xml /tmp/pkg/open_mower_next/package.xml
+RUN apt-get update && rosdep update --rosdistro jazzy && \
+    rosdep install --from-paths /tmp/pkg --ignore-src -y -r --rosdistro jazzy \
+      --skip-keys "vesc_hw_interface micro_ros_agent ublox_gps ntrip_client webots_ros2_driver webots_ros2_control fields2cover rviz2 rqt_robot_steering foxglove_bridge" && \
+    apt-get install -y --no-install-recommends ros-jazzy-rmw-cyclonedds-cpp && \
+    rm -rf /var/lib/apt/lists/* /tmp/pkg
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

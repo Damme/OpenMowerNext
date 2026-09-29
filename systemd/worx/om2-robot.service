@@ -1,0 +1,26 @@
+[Unit]
+Description=OpenMowerNext (Worx) ROS 2 stack (/opt/om2/robot.sh, om_launch in bwrap)
+Wants=om2-gps-serial.service om2-gps-ntrip.service
+After=om2-gps-serial.service om2-gps-ntrip.service network.target
+
+[Service]
+Type=simple
+User=damme
+WorkingDirectory=/opt/om2
+# Optional overrides for robot.sh / om_launch, e.g. OM_WORX_MOTORS_ENABLED=true.
+# robot.sh defaults: motors and blade OFF.
+EnvironmentFile=-/opt/om2/config/robot.env
+ExecStart=/opt/om2/robot.sh
+# stop.sh sends SIGINT to om_launch (motors disabled, zero speed) and waits up to 20 s.
+ExecStop=/opt/om2/stop.sh
+TimeoutStopSec=30
+KillMode=mixed
+# robot.sh already writes /opt/om2/data/log/robot_<time>.log; don't write everything twice.
+StandardOutput=null
+StandardError=journal
+# om_launch supervises its own processes. robot.sh's exit code is tee's, so systemd
+# can't tell a crash from a clean stop anyway; it refuses to start while ROS1 runs.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
