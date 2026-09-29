@@ -25,6 +25,10 @@ env:
 processes:
   # ros2_control with the Worx board over SPI + the robot model.
   - name: control
+    # diff_drive_controller warns "Velocity command timed out. Braking." once a second whenever
+    # nothing drives (idle, docked) – ~86k lines/day into the log and the bag's /rosout. The braking
+    # itself (cmd_vel_timeout) stays on; only its logger drops to ERROR.
+    ros_args: [--log-level, "diff_drive_base_controller:=error"]
     components:
       - plugin: robot_state_publisher::RobotStatePublisher
         name: robot_state_publisher
