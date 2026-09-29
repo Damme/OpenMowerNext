@@ -78,7 +78,9 @@ controller_server:
       desired_linear_vel: 0.3
       # Default 0.1 s: TF lags more on the Pi (control loop 12-20 Hz) -> TF_ERROR aborts.
       transform_tolerance: 0.5
-      lookahead_dist: 0.4
+      # 0.4 snaked on the robot (±20 deg heading, 2026-09-29: 0.65 s cmd->yaw lag at crawl speed);
+      # 0.8 set live the same day, somewhat better. use_velocity_scaled_lookahead_dist is off.
+      lookahead_dist: 0.8
       # No collision check: the local costmap holds only the map (the lines are
       # drivable - the mower recorded them), the planner keeps the path inside.
       # On the rim (outline passes run 4 cm inside the line) RPP's projected arc
@@ -87,7 +89,8 @@ controller_server:
       min_lookahead_dist: 0.25
       max_lookahead_dist: 0.6
       lookahead_time: 1.0
-      regulated_linear_scaling_min_radius: 0.9
+      # 0.9 made every small correction a crawl at w = 0.3/0.9 = 0.33 rad/s (bang-bang).
+      regulated_linear_scaling_min_radius: 0.3
       regulated_linear_scaling_min_speed: 0.12
       min_approach_linear_velocity: 0.05
       rotate_to_heading_angular_vel: 0.8
