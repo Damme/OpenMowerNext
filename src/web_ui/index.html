@@ -180,9 +180,10 @@ input[type=range].wide { width: 100%; }
       <div id="areas-other"></div>
     </section>
     <section id="t-bumps">
-      <p class="muted">What the mower learned by bumping. Obstacles it felt its way around (purple: the bumper outline
-        at each touch; the sensor doesn't say where on the bumper; kept until Reset mission or a new mission from the
-        beginning), and edge corrections: spots where
+      <p class="muted">What the mower learned by bumping (kept until Reset mission or a new mission from the beginning).
+        A first bump isn't believed: the mower tries again (dashed), and if it drives through there it was a false
+        detection (grey). Bumped again: confirmed (purple). The thin lines are the bumper at each touch; the filled
+        cells are what is left after erasing everywhere the mower drove since - where the obstacle can be. Edge corrections: spots where
         the outline runs further in after perimeter bumps (dashed circles, kept across missions). Tap one on the map to
         forget it. Many corrections along one edge: re-record that boundary.</p>
       <div id="felt"></div>
@@ -429,12 +430,13 @@ function renderAreas() {
 }
 
 // ---- felt obstacles / edge corrections ----------------------------------------
-function obsPoints(o) { return o.lines.flat(); }
+function obsPoints(o) { return o.lines.flat().concat(o.cells || []); }
+const OBS_STATE = { pending: "not confirmed yet", confirmed: "confirmed", gone: "false detection / gone" };
 function obsCenter(o) { const p = obsPoints(o); let x = 0, y = 0; p.forEach(([a, b]) => { x += a; y += b; }); return [x / p.length, y / p.length]; }
 function forgetObstacle(o) {
   const c = obsCenter(o);
-  if (confirm("Forget felt obstacle " + o.id + " (" + o.lines.length + " touch" + (o.lines.length === 1 ? "" : "es") +
-      ")? If it's still there the mower bumps into it again and feels its way around once more."))
+  if (confirm("Forget felt obstacle " + o.id + " (" + OBS_STATE[o.state] + ", " + o.lines.length + " touch" +
+      (o.lines.length === 1 ? "" : "es") + ")? If it's still there the mower bumps into it again and feels its way around once more."))
     cmd({ c: "forget", kind: "obstacle", x: c[0], y: c[1] });
 }
 function forgetEdge(e) {
@@ -459,10 +461,10 @@ function renderFelt() {
   const o = S.obs || { obstacles: [], edges: [] };
   for (const ob of o.obstacles) {
     const c = obsCenter(ob);
-    box.append(feltRow(css.bump, "Obstacle " + ob.id, ob.lines.length + " touch" + (ob.lines.length === 1 ? "" : "es") +
-      " · at " + c[0].toFixed(1) + ", " + c[1].toFixed(1),
+    box.append(feltRow(ob.state === "gone" ? css.muted : css.bump, "Obstacle " + ob.id + " · " + OBS_STATE[ob.state],
+      ob.lines.length + " touch" + (ob.lines.length === 1 ? "" : "es") + " · at " + c[0].toFixed(1) + ", " + c[1].toFixed(1),
       () => { S.feltSel = "o" + ob.id; S.follow = false; fitBox(bbox(obsPoints(ob), [Infinity, Infinity, -Infinity, -Infinity]).map((v, i) => v + (i < 2 ? -2 : 2))); },
-      () => forgetObstacle(ob), false));
+      () => forgetObstacle(ob), ob.state !== "confirmed"));
   }
   for (const e of o.edges) {
     box.append(feltRow(css.edge, "Edge correction " + Math.round(e.offset * 100) + " cm inward", "at " + e.x.toFixed(1) + ", " + e.y.toFixed(1),
@@ -588,11 +590,22 @@ function render() {
         ctx.fillText("−" + Math.round(e.offset * 100) + " cm", X(e.x), Y(e.y) + 4);
       }
     }
-    // Each touch: the bumper outline where it touched, as thick as the costmap band.
-    ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = css.bump;
+    // Each touch: the bumper outline where it touched (thin; dashed while not
+    // confirmed, grey when it was a false detection). Filled: what is left of the
+    // marks - where the obstacle can still be (erased where the mower drove since).
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
     for (const ob of S.obs.obstacles) {
-      ctx.lineWidth = Math.max(S.obs.depth * view.s, 3) + (S.feltSel === "o" + ob.id ? 3 : 0);
+      const sel = S.feltSel === "o" + ob.id, gone = ob.state === "gone";
+      ctx.strokeStyle = gone ? css.muted : css.bump; ctx.lineWidth = sel ? 3 : 1.5;
+      ctx.setLineDash(ob.state === "confirmed" ? [] : [4, 3]);
       for (const l of ob.lines) { path(l); ctx.stroke(); }
+      ctx.setLineDash([]);
+      if (ob.cells && ob.cells.length) {
+        const k = Math.max(0.05 * view.s, 2);
+        ctx.fillStyle = css.bump; ctx.globalAlpha = ob.state === "confirmed" ? 0.85 : 0.35;
+        for (const [x, y] of ob.cells) ctx.fillRect(X(x) - k / 2, Y(y) - k / 2, k, k);
+        ctx.globalAlpha = 1;
+      }
     }
     ctx.lineCap = "butt"; ctx.lineJoin = "miter";
   }
