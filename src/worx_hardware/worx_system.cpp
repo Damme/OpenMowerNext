@@ -173,6 +173,11 @@ void WorxSystem::startNode()
         link_->send(cmdMotorsDisable(), true);
       } else {
         RCLCPP_WARN(node_->get_logger(), "Emergency cleared");
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          emergency_cleared_at_ = std::chrono::steady_clock::now();
+        }
+        link_->send(cmdResetEmergency(), true);  // older firmware: "Unknown command", harmless
         if (active_ && motors_enabled_) link_->send(cmdMotorsEnable());
       }
       res->success = true;
@@ -598,11 +603,42 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     if (cfg_.bump_detection && !docking_mode_ && blocked && moved_recently && last_pwm_l_ > 0 && last_pwm_r_ > 0) {
       registerBump("BlockForward");
     }
+    // Bumper presses counted by the firmware (5 ms debounce): none is missed
+    // between reports. Same rule as a Collision in Digital.
+    if (m.motor_pulse->bumps) {
+      const uint32_t b = *m.motor_pulse->bumps;
+      if (
+        last_board_bumps_ && b > *last_board_bumps_ && cfg_.bump_detection && !docking_mode_ &&
+        (collision_ || (last_pwm_l_ > 0 && last_pwm_r_ > 0)))
+      {
+        registerBump("Bumper");
+      }
+      last_board_bumps_ = b;  // a board reset (smaller count) just re-baselines
+    }
+    if (m.motor_pulse->emergency && *m.motor_pulse->emergency == 1 && !emergency_ &&
+        now - emergency_cleared_at_ > std::chrono::milliseconds(1500))
+    {
+      const int reason = m.motor_pulse->emergency_reason.value_or(0);
+      RCLCPP_ERROR(
+        get_logger(), "Board emergency (%s): latched (clear with /worx/emergency false)",
+        reason ? emergencyReasonText(reason).c_str() : "reason unknown");
+      emergency_ = true;
+      blade_lockout_ = true;
+    }
     const double dl = wheel_scale_ * odo_left_.update(m.motor_pulse->left, m.motor_pulse->dir_left);
     const double dr = wheel_scale_ * odo_right_.update(m.motor_pulse->right, m.motor_pulse->dir_right);
     dist_left_ += dl;
     dist_right_ += dr;
-    const double dt = std::chrono::duration<double>(now - last_pulse_).count();
+    // Speed over the board's own sample interval when it reports one ("ms"):
+    // frames that arrive bunched up (SPI pauses) gave speed spikes like 2.07 m/s.
+    double dt = std::chrono::duration<double>(now - last_pulse_).count();
+    if (m.motor_pulse->ms) {
+      if (last_board_ms_) {
+        const double board_dt = static_cast<uint32_t>(*m.motor_pulse->ms - *last_board_ms_) / 1000.0;
+        if (board_dt > 1e-3 && board_dt < 1.0) dt = board_dt;
+      }
+      last_board_ms_ = m.motor_pulse->ms;
+    }
     if (dt > 1e-3 && dt < 1.0) {
       vel_left_ = dl / dt;
       vel_right_ = dr / dt;
@@ -616,7 +652,10 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     last_pulse_ = now;
     last_.motor_pulse = m.motor_pulse;
   }
-  if (m.battery) battery_ = m.battery;
+  if (m.battery) {
+    battery_ = m.battery;
+    if (m.battery->state) last_.power_state = m.battery->state;  // repeated every 1.25 s
+  }
   if (m.motor_current) last_.motor_current = m.motor_current;
   if (m.motor_pwm) last_.motor_pwm = m.motor_pwm;
   if (m.digital_corrupt) RCLCPP_WARN(get_logger(), "Garbled Digital frame ignored: %s", m.digital_corrupt->c_str());
@@ -722,6 +761,18 @@ void WorxSystem::publishStatus()
         st.analog_names.push_back(name);
         st.analog_values.push_back(v);
       }
+    }
+    if (battery_ && battery_->contact) {  // charger pins (firmware 2026-09+)
+      st.analog_names.push_back("ChargerConnected");
+      st.analog_values.push_back(*battery_->contact);
+    }
+    if (battery_ && battery_->charge_enable) {
+      st.analog_names.push_back("ChargerEnable");
+      st.analog_values.push_back(*battery_->charge_enable);
+    }
+    if (last_.motor_pulse && last_.motor_pulse->emergency_reason) {
+      st.analog_names.push_back("EmgReason");
+      st.analog_values.push_back(*last_.motor_pulse->emergency_reason);
     }
     if (last_.boundary) {
       for (const auto & [name, v] : *last_.boundary) {

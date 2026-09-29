@@ -116,6 +116,7 @@ void FakeBoardTransport::handleCommand(const std::string & msg)
   } else if (j.contains("ping")) {
     ++pings_;
   }
+  // MOTORREQ_RESETEMG: the fake board never raises an emergency itself.
 }
 
 void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
@@ -155,7 +156,9 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
       {"Right", static_cast<long long>(ticks_r_)},
       {"Mow", enabled_ && pwm_mow_ != 0 ? 180 : 0},
       {"DirLeft", pwm_l_ < 0 ? 1 : 0},
-      {"DirRight", pwm_r_ < 0 ? 1 : 0}, {"Emergancy", 0}, {"BlockForward", block_forward_ ? 1 : 0}};
+      {"DirRight", pwm_r_ < 0 ? 1 : 0}, {"Emergancy", 0}, {"EmgReason", 0}, {"Motors", enabled_ ? 1 : 0},
+      {"BlockForward", block_forward_ ? 1 : 0}, {"Bumps", bumps_},
+      {"ms", static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count())}};
     queue(p.dump());
   }
   if (std::chrono::duration<double>(now - last_status_).count() >= opt_.status_period_s) {
@@ -190,6 +193,7 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
 void FakeBoardTransport::setCollision(bool active)
 {
   std::lock_guard<std::mutex> l(mutex_);
+  if (active && !collision_) ++bumps_;  // firmware bump counter
   collision_ = active;
 }
 

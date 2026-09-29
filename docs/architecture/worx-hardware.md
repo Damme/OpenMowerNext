@@ -7,7 +7,8 @@ title: Worx hardware
 
 Worx Landroid mowers run with the Worx mainboard and its firmware, which talks JSON over SPI.
 The `open_mower_next/WorxSystem` [ros2_control](https://control.ros.org) hardware plugin drives that board.
-The firmware protocol is unchanged, so the same board works with open_mower_ros and OpenMowerNext.
+The protocol is the one open_mower_ros used. The firmware from 2026-09 (LandLord branch `worx-next`) adds fields and
+one command; the plugin works with both.
 
 Select it with `OM_HARDWARE=worx`. That picks `config/hardware/worx.yaml` (dimensions, plugin settings),
 `description/ros2_control_worx.xacro`, the Worx Nav2 overrides (`config/hardware/worx_nav2.yaml`), and starts the
@@ -17,11 +18,28 @@ LSM6DSV IMU node. The micro-ROS agent isn't started.
 
 - Full-duplex SPI (`/dev/spidev0.0`, mode 0, 1.5 MHz), fixed 250-byte transfers every 1 ms.
 - A message is `0x01` + JSON + `0xFF`; unused bytes are `0x00`. Received messages may span transfers.
-- Host → board: `MOTORREQ_SETSPEED {left, right, mow}` (PWM), `MOTORREQ_ENABLE`, `MOTORREQ_DISABLE`,
-  `ping {count}` every 2 s (resets the firmware's SPI watchdog).
-- Board → host: `MotorPulse` (cumulative tick magnitudes + direction bits, blade pulses, `Emergancy`, `BlockForward`),
-  `Battery` (`mV`, `mA`, `Temp`, `InCharger`), `MotorCurrent`, `MotorPWM`, `Digital`, `Analog`, `Boundary`,
-  `motorState`, `powerState`, and `DEBUG` text lines.
+- Host → board: `MOTORREQ_SETSPEED {left, right, mow}` (PWM; a negative `mow` runs the blade in reverse),
+  `MOTORREQ_ENABLE`, `MOTORREQ_DISABLE`, `MOTORREQ_RESETEMG`, and `ping {count}` every 2 s. Any valid command resets
+  the firmware's SPI watchdog (older firmware: only `ping`).
+- Board → host: `MotorPulse` (20 Hz: cumulative tick magnitudes + direction bits, blade pulses, `Emergancy`,
+  `BlockForward`), `Battery` (`mV`, `mA`, `Temp`, `InCharger`), `MotorCurrent`, `MotorPWM`, `Digital`, `Analog`,
+  `Boundary`, `motorState`, `powerState`, and `DEBUG` text lines. `Battery`, `Digital`, `Analog`, `MotorPWM` and
+  `MotorCurrent` take turns, each every 1.25 s.
+
+Added by the 2026-09 firmware:
+
+| Field | Meaning |
+|---|---|
+| `MotorPulse.EmgReason` | bits of the latched emergency: 1 tilt, 2 STOP key, 4 lift (motors on, 100 ms) |
+| `MotorPulse.Motors` | real motor enable state |
+| `MotorPulse.Bumps` | debounced bumper presses since boot (Stuck/Stuck2/Collision low for 5 ms) |
+| `MotorPulse.ms` | board time of the sample; the plugin computes wheel speed over it |
+| `Battery.State`, `.Contact`, `.Enable` | `powerState`, the `CHARGER_CONNECTED` and `CHARGER_ENABLE` pins |
+| `Digital` | also sent at once when an input changes |
+| `motorState` | the real state (`MOTORREQ_ENABLE`/`_DISABLE`/`_IDLE`/`_EMGSTOP`), not the last request |
+
+A firmware emergency stays latched: `MOTORREQ_ENABLE` is refused and `SETSPEED` ignored until `MOTORREQ_RESETEMG`,
+which the firmware refuses while the STOP key or the lift sensor is still active.
 
 ## Interfaces
 
@@ -48,7 +66,10 @@ the manual blade runs. Both start from `config/hardware/worx.yaml`.
 
 ## Safety
 
-- `/worx/emergency` zeroes all outputs until it's cleared.
+- `/worx/emergency` zeroes all outputs until it's cleared. A firmware emergency (`Emergancy` 1) latches it too, with
+  the reason in the log. Clearing it sends `MOTORREQ_RESETEMG`; if the board still reports the emergency 1.5 s
+  later (cause still present), it latches again.
+- A `Collision` in `Digital` or a new `Bumps` count while driving forward is a bump: forward motion blocked, blade off.
 - The blade stays off after an emergency, link loss or motor disable until its command has been 0 once, so a held
   command can't restart it.
 - The blade stops after `blade_idle_timeout` (25 s) without drive commands.

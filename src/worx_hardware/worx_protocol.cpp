@@ -84,6 +84,28 @@ std::string cmdPing(int count)
   return j.dump();
 }
 
+std::string cmdResetEmergency()
+{
+  ojson j;
+  j["MOTORREQ_RESETEMG"] = ojson::object();
+  return j.dump();
+}
+
+std::string emergencyReasonText(int reason)
+{
+  std::string s;
+  auto add = [&](int bit, const char * name) {
+    if (!(reason & bit)) return;
+    if (!s.empty()) s += "+";
+    s += name;
+  };
+  add(kEmgTilt, "tilt");
+  add(kEmgStop, "stop");
+  add(kEmgLift, "lift");
+  if (reason & ~(kEmgTilt | kEmgStop | kEmgLift)) s += s.empty() ? "unknown" : "+unknown";
+  return s;
+}
+
 namespace
 {
 std::optional<long long> intField(const nlohmann::json & obj, const char * key)
@@ -128,6 +150,9 @@ BoardMessage parseMessage(const std::string & msg)
     if (auto v = intField(*it, "CellLow")) b.cell_low = static_cast<int>(*v);
     if (auto v = intField(*it, "CellHigh")) b.cell_high = static_cast<int>(*v);
     if (auto v = intField(*it, "InCharger")) b.in_charger = static_cast<int>(*v);
+    if (auto s = it->find("State"); s != it->end() && s->is_string()) b.state = s->get<std::string>();
+    if (auto v = intField(*it, "Contact")) b.contact = static_cast<int>(*v);
+    if (auto v = intField(*it, "Enable")) b.charge_enable = static_cast<int>(*v);
     m.battery = b;
   }
   if (auto it = j.find("MotorPulse"); it != j.end() && it->is_object()) {
@@ -139,6 +164,10 @@ BoardMessage parseMessage(const std::string & msg)
     p.dir_right = intField(*it, "DirRight").value_or(0) != 0;
     if (auto v = intField(*it, "Emergancy")) p.emergency = static_cast<int>(*v);
     if (auto v = intField(*it, "BlockForward")) p.block_forward = static_cast<int>(*v);
+    if (auto v = intField(*it, "EmgReason")) p.emergency_reason = static_cast<int>(*v);
+    if (auto v = intField(*it, "Motors")) p.motors = static_cast<int>(*v);
+    if (auto v = intField(*it, "Bumps")) p.bumps = static_cast<uint32_t>(*v);
+    if (auto v = intField(*it, "ms")) p.ms = static_cast<uint32_t>(*v);
     m.motor_pulse = p;
   }
   if (auto it = j.find("MotorCurrent"); it != j.end() && it->is_object()) {

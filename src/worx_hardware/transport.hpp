@@ -95,6 +95,7 @@ private:
   std::chrono::steady_clock::time_point last_step_, last_pulse_, last_status_;
   int status_slot_ = 0;
   bool collision_ = false, lift_ = false, block_forward_ = false;
+  uint32_t bumps_ = 0;
   double speed_factor_ = 1.0;
 };
 

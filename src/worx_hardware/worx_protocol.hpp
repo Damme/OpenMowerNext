@@ -47,6 +47,7 @@ std::string cmdSetSpeed(int left, int right, int mow);  // {"MOTORREQ_SETSPEED":
 std::string cmdMotorsEnable();                          // {"MOTORREQ_ENABLE":{}}
 std::string cmdMotorsDisable();                         // {"MOTORREQ_DISABLE":{}}
 std::string cmdPing(int count);                         // {"ping":{"count":..}} resets the firmware SPI watchdog
+std::string cmdResetEmergency();                        // {"MOTORREQ_RESETEMG":{}} (firmware 2026-09+)
 
 // ---- status (board -> host) ---------------------------------------------------
 struct Battery
@@ -55,9 +56,19 @@ struct Battery
   int ma = 0;
   int temp_raw = 0;  // 0.1 degC
   std::optional<int> cell_low, cell_high, in_charger;
+  // Firmware 2026-09+: powerState, CHARGER_CONNECTED and CHARGER_ENABLE pins
+  std::optional<std::string> state;
+  std::optional<int> contact, charge_enable;
 };
 
+// Firmware emergency reasons (MotorPulse "EmgReason" bits)
+constexpr int kEmgTilt = 1 << 0;
+constexpr int kEmgStop = 1 << 1;
+constexpr int kEmgLift = 1 << 2;
+std::string emergencyReasonText(int reason);  // "tilt+stop", "" for 0
+
 // {"MotorPulse":{"Left":2068,"Right":2357,"Mow":182,"DirLeft":0,"DirRight":0,"Emergancy":0,"BlockForward":0}}
+// Firmware 2026-09+ adds "EmgReason", "Motors", "Bumps" and "ms" (see the fields).
 struct MotorPulse
 {
   uint32_t left = 0, right = 0;  // cumulative tick magnitudes (count up in both directions)
@@ -65,6 +76,10 @@ struct MotorPulse
   bool dir_left = false, dir_right = false;  // true = reverse
   std::optional<int> emergency;      // firmware field "Emergancy"
   std::optional<int> block_forward;  // firmware field "BlockForward"
+  std::optional<int> emergency_reason;  // kEmg* bits, latched with Emergancy
+  std::optional<int> motors;            // real motor enable state
+  std::optional<uint32_t> bumps;        // debounced bumper presses since boot
+  std::optional<uint32_t> ms;           // board time of the sample [ms]
 };
 
 struct Triple
@@ -89,7 +104,9 @@ struct BoardMessage
   std::optional<std::string> digital_corrupt;
   std::optional<std::map<std::string, int>> analog;    // {"Rain":..,"boardTemp":..}
   std::optional<std::map<std::string, int>> boundary;  // perimeter wire signal
-  std::optional<std::string> motor_state;  // MOTORREQ_ENABLE / _DISABLE / _SETSPEED
+  // Old firmware: last request (mostly _SETSPEED). 2026-09+: real state, one of
+  // MOTORREQ_ENABLE / _DISABLE / _IDLE / _EMGSTOP.
+  std::optional<std::string> motor_state;
   std::optional<std::string> power_state;  // e.g. "StartCharging", "Charging"
 };
 

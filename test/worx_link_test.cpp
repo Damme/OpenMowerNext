@@ -38,6 +38,7 @@ TEST(WorxProtocol, CommandsMatchRos1KeyOrder)
   EXPECT_EQ(cmdMotorsEnable(), R"({"MOTORREQ_ENABLE":{}})");
   EXPECT_EQ(cmdMotorsDisable(), R"({"MOTORREQ_DISABLE":{}})");
   EXPECT_EQ(cmdPing(7), R"({"ping":{"count":7}})");
+  EXPECT_EQ(cmdResetEmergency(), R"({"MOTORREQ_RESETEMG":{}})");
 }
 
 TEST(WorxProtocol, DecoderHandlesSplitNopAndGarbage)
@@ -85,12 +86,16 @@ TEST(WorxProtocol, ParsesRealFirmwareMessages)
   EXPECT_EQ(p.motor_pulse->emergency, 0);
   EXPECT_EQ(p.motor_pulse->block_forward, 1);
 
+  EXPECT_FALSE(p.motor_pulse->ms);
+  EXPECT_FALSE(p.motor_pulse->bumps);
+
   p = parseMessage(R"({"Battery":{"mV":28443,"mA":382,"Temp":236,"CellLow":1,"CellHigh":1,"InCharger":1}})");
   ASSERT_TRUE(p.battery);
   EXPECT_EQ(p.battery->mv, 28443);
   EXPECT_EQ(p.battery->ma, 382);
   EXPECT_EQ(p.battery->temp_raw, 236);
   EXPECT_EQ(p.battery->in_charger, 1);
+  EXPECT_FALSE(p.battery->state);
 
   p = parseMessage(R"({"Digital":{"Stuck":0,"Stuck2":0,"Door":1,"Door2":1,"Lift":1,"Collision":1,"Stop":0,"Rain":0}})");
   ASSERT_TRUE(p.digital);
@@ -123,6 +128,33 @@ TEST(WorxProtocol, ParsesRealFirmwareMessages)
   EXPECT_TRUE(p.is_json);
   EXPECT_FALSE(p.motor_pulse);
   EXPECT_FALSE(p.battery);
+}
+
+// Firmware 2026-09+ (LandLord worx-next): extra MotorPulse and Battery fields.
+TEST(WorxProtocol, ParsesFirmware2026Fields)
+{
+  auto p = parseMessage(
+    R"({"MotorPulse":{"Left":10,"Right":20,"Mow":0,"DirLeft":0,"DirRight":0,"Emergancy":1,"EmgReason":6,"Motors":0,)"
+    R"("BlockForward":0,"Bumps":3,"ms":4294967000}})");
+  ASSERT_TRUE(p.motor_pulse);
+  EXPECT_EQ(p.motor_pulse->emergency, 1);
+  EXPECT_EQ(p.motor_pulse->emergency_reason, kEmgStop | kEmgLift);
+  EXPECT_EQ(p.motor_pulse->motors, 0);
+  EXPECT_EQ(p.motor_pulse->bumps, 3u);
+  EXPECT_EQ(p.motor_pulse->ms, 4294967000u);
+
+  p = parseMessage(
+    R"({"Battery":{"mV":29070,"mA":157,"Temp":207,"CellLow":1,"CellHigh":1,"InCharger":1,)"
+    R"("State":"ChargingFinished","Contact":1,"Enable":0}})");
+  ASSERT_TRUE(p.battery);
+  EXPECT_EQ(p.battery->state, "ChargingFinished");
+  EXPECT_EQ(p.battery->contact, 1);
+  EXPECT_EQ(p.battery->charge_enable, 0);
+
+  EXPECT_EQ(emergencyReasonText(0), "");
+  EXPECT_EQ(emergencyReasonText(kEmgTilt), "tilt");
+  EXPECT_EQ(emergencyReasonText(kEmgStop | kEmgLift), "stop+lift");
+  EXPECT_EQ(emergencyReasonText(8), "unknown");
 }
 
 TEST(WheelOdometer, MagnitudeCounterWithDirectionBit)
