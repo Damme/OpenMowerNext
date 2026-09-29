@@ -27,17 +27,29 @@ class SimObstacles(Node):
         spec = self.declare_parameter('obstacles', '').value
         self.front = self.declare_parameter('front', 0.47).value       # base_link -> front edge
         self.half_width = self.declare_parameter('half_width', 0.195).value
+        self.chamfer = self.declare_parameter('chamfer', 0.10).value     # front corners cut at 45 deg
         self.obstacles = self.parse(spec)
         self.add_on_set_parameters_callback(self.on_params)
         self.state = None
         self.tf = tf2_ros.Buffer()
         tf2_ros.TransformListener(self.tf, self)
+        self.edge = self.front_edge()
         self.client = self.create_client(SetBool, '/worx/fake/set_collision')
         self.create_timer(0.02, self.tick)
         # Draw them in rviz (they are not in the map: the robot only finds them by bumping).
         self.marker_pub = self.create_publisher(MarkerArray, '/worx_sim/obstacles', 1)
         self.create_timer(1.0, self.publish_markers)
         self.get_logger().info(f'{len(self.obstacles)} virtual obstacles: {self.obstacles}')
+
+    def front_edge(self):
+        """The bumper: front face, cut corners and 5 cm of the sides, every 2 cm (base_link)."""
+        f, w, ch = self.front, self.half_width, self.chamfer
+        corners = [(f - ch - 0.05, w), (f - ch, w), (f, w - ch), (f, -(w - ch)), (f - ch, -w), (f - ch - 0.05, -w)]
+        pts = []
+        for (u0, v0), (u1, v1) in zip(corners, corners[1:]):
+            n = max(1, math.ceil(math.hypot(u1 - u0, v1 - v0) / 0.02))
+            pts += [(u0 + (u1 - u0) * k / n, v0 + (v1 - v0) * k / n) for k in range(n)]
+        return pts + [corners[-1]]
 
     @staticmethod
     def parse(spec):
@@ -78,9 +90,7 @@ class SimObstacles(Node):
         x, y = t.transform.translation.x, t.transform.translation.y
         yaw = yaw_of(t.transform.rotation)
         c, s = math.cos(yaw), math.sin(yaw)
-        # Sample the front edge of the body.
-        edge = [(x + self.front * c - o * s, y + self.front * s + o * c)
-                for o in (-self.half_width, 0.0, self.half_width)]
+        edge = [(x + u * c - v * s, y + u * s + v * c) for u, v in self.edge]
         hit = any(math.hypot(px - ox, py - oy) < r for px, py in edge for ox, oy, r in self.obstacles)
         if hit != self.state and self.client.service_is_ready():
             self.client.call_async(SetBool.Request(data=hit))
