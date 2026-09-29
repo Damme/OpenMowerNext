@@ -172,19 +172,12 @@ global_costmap:
         plugin: "open_mower_next::costmap_layers::RimCostLayer"
         from_cost: 152   # static layer: grid.edge_band_value 60 -> 60/100 * 254 (drawn mid-grey in rviz)
         to_cost: 253     # INSCRIBED: centre forbidden, footprint allowed
+      # mower_logic's felt obstacles. Every message replaces the last one: the
+      # ObstacleLayer used before never cleared a mark mower_logic had dropped,
+      # and on 2026-09-29 the robot stood in one ("Start occupied" everywhere).
       bump_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
-        footprint_clearing_enabled: false
-        observation_sources: bumps
-        bumps:
-          topic: /mower_logic/bump_obstacles
-          data_type: "PointCloud2"
-          marking: true
-          clearing: false
-          min_obstacle_height: -1.0
-          max_obstacle_height: 1.0
-          obstacle_min_range: 0.0
-          obstacle_max_range: 1000.0
+        plugin: "open_mower_next::costmap_layers::BumpLayer"
+        topic: /mower_logic/bump_obstacles
       # Wide, soft gradient around exclusions AND the area edges (unknown), so
       # transits keep a margin where there is room (tire marks; a GPS glitch
       # near the edge must not put the robot outside). ~120 at 0.5 m, ~60 at 0.8 m.

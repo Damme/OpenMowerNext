@@ -3,5 +3,8 @@
     <class type="open_mower_next::costmap_layers::RimCostLayer" base_class_type="nav2_costmap_2d::Layer">
       <description>Rewrites one cost value to another (the area rim: centre forbidden, footprint allowed).</description>
     </class>
+    <class type="open_mower_next::costmap_layers::BumpLayer" base_class_type="nav2_costmap_2d::Layer">
+      <description>Obstacles found by bumping (mower_logic ~/bump_obstacles); every message replaces the previous set.</description>
+    </class>
   </library>
 </class_libraries>
