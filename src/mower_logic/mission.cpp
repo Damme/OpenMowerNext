@@ -216,25 +216,57 @@ std::string Mission::summary() const
 
 bool Mission::skipPastPoint(double x, double y, double clearance_m, int max_bumps, bool count_bump)
 {
+  return skipPast([&](double px, double py) { return std::hypot(px - x, py - y) <= clearance_m; }, max_bumps,
+                  count_bump);
+}
+
+bool Mission::skipPast(const std::function<bool(double, double)> & near_fn, int max_bumps, bool count_bump)
+{
+  // near_fn may take other locks (the context's obstacles): not called under mutex_.
+  std::vector<std::pair<double, double>> pts;
+  size_t pass = 0, from = 0;
   {
     std::lock_guard<std::mutex> l(mutex_);
     if (!active_ || !planned_ || pass_ >= passes_.size()) return false;
-    const auto & poses = passes_[pass_].path.poses;
-    if (!count_bump || ++bumps_ <= max_bumps) {
-      bool near = false;
-      for (size_t i = pose_; i + 2 < poses.size(); ++i) {
-        const auto & q = poses[i].pose.position;
-        if (std::hypot(q.x - x, q.y - y) <= clearance_m) {
-          near = true;
-        } else if (near) {
-          pose_ = i;
-          no_backtrack_ = true;
-          return true;
-        }
-      }
+    if (count_bump && ++bumps_ > max_bumps) {
+      pts.clear();
+    } else {
+      pass = pass_;
+      from = pose_;
+      for (const auto & p : passes_[pass_].path.poses) pts.emplace_back(p.pose.position.x, p.pose.position.y);
     }
   }
+  std::optional<size_t> resume;
+  bool near = false;
+  for (size_t i = from; i + 2 < pts.size(); ++i) {
+    if (near_fn(pts[i].first, pts[i].second)) {
+      near = true;
+    } else if (near) {
+      resume = i;
+      break;
+    }
+  }
+  if (resume) {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (pass_ == pass && active_) {
+      pose_ = *resume;
+      no_backtrack_ = true;
+      return true;
+    }
+    return false;  // the mission moved on meanwhile (operator skip)
+  }
   passDone();  // obstacle at the end of the pass, or bumped too often
+  return false;
+}
+
+bool Mission::countBump(int max_bumps)
+{
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (!active_ || !planned_ || pass_ >= passes_.size()) return false;
+    if (++bumps_ <= max_bumps) return true;
+  }
+  passDone();
   return false;
 }
 

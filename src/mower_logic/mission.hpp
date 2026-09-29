@@ -63,6 +63,12 @@ public:
   // Returns false when the rest of the pass was skipped.
   // count_bump false: a planned skip around a known obstacle (no bump).
   bool skipPastPoint(double x, double y, double clearance_m, int max_bumps, bool count_bump = true);
+  // The same for an obstacle of any shape: near(x, y) is true for poses too
+  // close to it. Continues at the first pose after the near ones.
+  bool skipPast(const std::function<bool(double, double)> & near, int max_bumps, bool count_bump = true);
+  // A bump that is handled without skipping (felt around, or in a transit):
+  // counts towards max_bumps too. False (pass skipped) when there were too many.
+  bool countBump(int max_bumps);
 
   std::string summary() const;
 

@@ -47,6 +47,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
         "src/srv/FindNearestDockingStation.srv"
         "src/srv/PolygonCoverage.srv"
         "src/srv/AreaCoverage.srv"
+        "src/srv/ForgetObstacle.srv"
         "src/msg/Area.msg"
         "src/msg/Map.msg"
         "src/msg/DockingStation.msg"

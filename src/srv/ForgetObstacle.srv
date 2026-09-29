@@ -1,0 +1,13 @@
+# mower_logic ~/forget_obstacle: forget what bumping taught near a point (web UI).
+string KIND_OBSTACLE = "obstacle"            # the felt obstacle nearest to (x, y)
+string KIND_EDGE = "edge"                    # the perimeter (edge) correction nearest to (x, y)
+string KIND_ALL_OBSTACLES = "all_obstacles"
+string KIND_ALL_EDGES = "all_edges"
+
+string kind
+float64 x       # map frame, m
+float64 y
+float64 radius  # m; 0: 0.5
+---
+bool success
+string message

@@ -169,6 +169,7 @@ processes:
             mission_file: $(env OM_MISSION_PATH /data/mission.txt)
             auto_resume: $(env OM_AUTO_RESUME false)
             edge_corrections_file: $(env OM_EDGE_CORRECTIONS_PATH /data/edge_corrections.txt)
+            obstacles_file: $(env OM_OBSTACLES_PATH /data/felt_obstacles.txt)
             controller_id: FTC
             goal_checker_id: ftc_goal_checker
             progress_checker_id: ftc_progress_checker

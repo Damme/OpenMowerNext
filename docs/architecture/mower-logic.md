@@ -31,13 +31,31 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
   mower's width, so that rim is known to be clear. On Worx the planner (Smac lattice, real footprint) keeps the
   centre inside the line and the footprint inside line + rim (map_server `grid.edge_band`, `RimCostLayer`),
   nothing beyond. The inflation around exclusions and area edges keeps transits well inside where there is room.
-- A bump (worx_hardware) stops the transit or pass: back up `bump_backup` (0.3 m; if Nav2 refuses at the rim,
-  straight back the way it came without costmap checks), mark the obstacle
-  (`~/bump_obstacles` → the planner's costmap: discs at the front-left corner, centre and front-right corner, since
-  the sensor doesn't say where it was hit; never under the robot's own footprint, never outside the areas), continue the pass at the first pose
-  `bump_clearance` (0.9 m) past it. Later loops/passes stop before a known obstacle (`bump_lookahead`) and go
-  around it without touching it; repeated bumps at one spot refresh it (`bump_merge_distance`). More than `max_bumps_per_pass` bumps, or an obstacle at the end of a pass,
-  skips the rest of the pass.
+- A bump (worx_hardware) stops the transit or pass. The bumper only says *that* the front touched something, not
+  where. Each bump records a **contact**: a thin band (`bump_mark_depth` 0.10 m, `bump_mark_gap` 0.02 m outside the
+  bumper) along the part of the front outline that can have touched: the whole front when driving straight, only
+  the half facing the obstacle while feeling around it. Contacts whose marks come within `bump_merge_distance`
+  (0.3 m) form one **felt obstacle**; its shape is what the robot has felt of it so far, not a fixed-size blob.
+  The marks go to the planner's costmap (`~/bump_obstacles` → `costmap_layers::BumpLayer`, every message replaces
+  the last, so a forgotten mark is really gone; never under the robot's own footprint, never outside the areas).
+- **Feeling around** (`FeelAround`, like a robot vacuum around a chair leg), after a bump on a pass: back off
+  `feel_backoff` (0.15 m, long enough for the bump latch to clear), turn away `feel_turn` (40°) to the side with more
+  room, then arc back towards the obstacle (radius `feel_arc_radius` 0.6 m, `feel_speed` 0.15 m/s: bumps are only
+  detected driving forward). Each bump on the arc adds a contact and starts that over from there, so the robot works
+  its way around the outline. Once it crosses the pass beyond the obstacle, the pass continues at the first pose
+  clear of the felt marks (`bump_avoid_radius`, at most 1 m on). The blade is off while feeling (`feel_blade`).
+  It gives up at `feel_max_contacts` (12), `feel_max_travel` (8 m), `feel_timeout` (150 s), `feel_max_offset` (2 m
+  from the pass), after a full circle, or when the next step would leave line + rim: then it backs up and goes
+  around what was felt with a transit, continuing at the first pose `bump_clearance` (0.35 m) from the marks.
+  Not near the end of a pass (less than 1.2 m left): that skips the rest.
+- Later loops/passes stop before a known obstacle (pass poses within `bump_avoid_radius`, 0.3 m, of its marks, up
+  to `bump_lookahead` ahead) and go around it with a transit without touching it. A transit that bumps retries (the
+  planner now sees the new contact). Every bump on or on the way to a pass counts (feeling around one obstacle
+  once): more than `max_bumps_per_pass` skips the rest of the pass.
+- Felt obstacles are kept (to look at them and fix the map) until `reset_mission` or a new mission from the
+  beginning; a resumed mission keeps them, also across restarts (`obstacles_file`, robot: `/data/felt_obstacles.txt`,
+  `obstacle x y yaw side` per contact). `~/obstacles` (JSON, latched) has them and
+  the edge corrections for the web UI, `~/forget_obstacle` (`ForgetObstacle.srv`) drops one or all of either.
 - A bump on an outline pass with the robot centre within `edge_bump_distance` (0.35 m) of a recorded line is the
   edge itself (overgrown plants, GPS a few cm off), not an obstacle: the outline is shifted inward around the spot
   (`edge_correction_step` 0.10 m per bump, at most `edge_correction_max` 0.20 m, full within
@@ -64,7 +82,13 @@ and the executor forces the blade off whenever no pass is running.
 | `/mower_logic/go_home` | dock, keep the mission |
 | `/mower_logic/stop` | idle where it is, keep the mission |
 | `/mower_logic/skip_pass`, `/mower_logic/skip_area` | skip ahead |
-| `/mower_logic/reset_mission` | forget progress |
+| `/mower_logic/reset_mission` | forget progress and the felt obstacles |
 | `/mower_logic/clear_emergency` | clear a latched emergency (`/worx/emergency`, lift); refused while the robot is lifted, the bumper is pressed, or the firmware reports its own (tilt) emergency, which ROS can't reset over SPI |
 
+`/mower_logic/forget_obstacle` (`open_mower_next/ForgetObstacle`): `kind` `obstacle` / `edge` (the one nearest to
+`x`, `y` within `radius`, default 0.5 m) or `all_obstacles` / `all_edges`. A forgotten edge correction stays in the
+plan being mowed; the next plan of the area doesn't have it.
+
 `/mower_logic/state` (`std_msgs/String`, JSON, 1 Hz): state, command, mission progress, battery, docked, GPS, emergency.
+`/mower_logic/obstacles` (`std_msgs/String`, JSON, latched, on change): felt obstacles (the middle line of each
+contact's band) and edge corrections.

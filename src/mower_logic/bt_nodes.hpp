@@ -156,6 +156,31 @@ private:
 
 // ---- actions ------------------------------------------------------------------------
 
+// Before Nav2 plans from where the robot stands: bump marks under its footprint
+// are left out of the published marks, but the costmap keeps the old set until
+// its next update (1 Hz) - a plan started at once could begin "in" the
+// obstacle ("Start occupied"). Waits that long when something was left out.
+class MarksSettle
+{
+public:
+  BT::NodeStatus check(Context & ctx)
+  {
+    const auto now = Context::Clock::now();
+    if (!until_) {
+      if (!ctx.refreshObstacles()) return BT::NodeStatus::SUCCESS;
+      until_ = now + std::chrono::milliseconds(1500);
+      RCLCPP_INFO(ctx.node->get_logger(), "Bump marks under the robot left out - waiting for the costmap");
+    }
+    if (now < *until_) return BT::NodeStatus::RUNNING;
+    until_.reset();
+    return BT::NodeStatus::SUCCESS;
+  }
+  void reset() { until_.reset(); }
+
+private:
+  std::optional<Context::Clock::time_point> until_;
+};
+
 // Drives to a pass start (transit controller), through a random via point on
 // longer transits (Context::transitVia).
 class Transit : public RosAction<nav2_msgs::action::NavigateThroughPoses>
@@ -168,7 +193,13 @@ public:
 protected:
   bool abortOnBump() const override { return true; }
   bool staleOnSkip() const override { return true; }
-  void onCancel() override { ctx_->bump_on_pass = false; }
+  BT::NodeStatus beforeSend() override { return settle_.check(*ctx_); }
+  void onCancel() override
+  {
+    ctx_->bump_on_pass = false;
+    settle_.reset();
+  }
+  MarksSettle settle_;
   bool makeGoal(Goal & g) override
   {
     auto goal = getInput<geometry_msgs::msg::PoseStamped>("goal");
@@ -261,9 +292,15 @@ protected:
     double along = 0.0;
     for (size_t i = search_from_; i < path_.poses.size() && along <= ctx_->params.bump_lookahead; ++i) {
       const auto & q = path_.poses[i].pose.position;
-      if (auto o = ctx_->knownObstacleNear(q.x, q.y, ctx_->params.bump_avoid_radius)) {
-        RCLCPP_INFO(ctx_->node->get_logger(), "Known obstacle ahead at (%.2f, %.2f) - going around it", o->x, o->y);
-        ctx_->skip_target = o;
+      if (auto id = ctx_->obstacleNear(q.x, q.y, ctx_->params.bump_avoid_radius)) {
+        RCLCPP_INFO(ctx_->node->get_logger(), "Known obstacle %d ahead at (%.2f, %.2f) - going around it", *id, q.x,
+                    q.y);
+        Context::Bump target;
+        target.time = Context::Clock::now();
+        target.x = q.x;
+        target.y = q.y;
+        target.obstacle = *id;
+        ctx_->skip_target = target;
         ctx_->skip_counts_as_bump = false;
         ctx_->avoiding_known_obstacle = true;
         onHalted();
@@ -378,6 +415,9 @@ public:
 
 protected:
   bool makeGoal(Goal &) override { return true; }
+  BT::NodeStatus beforeSend() override { return settle_.check(*ctx_); }
+  void onCancel() override { settle_.reset(); }
+  MarksSettle settle_;
   BT::NodeStatus onResult(const Result & r) override
   {
     if (r.code == rclcpp_action::ResultCode::SUCCEEDED && r.result->code == 0) {

@@ -3,6 +3,7 @@
 // GPS, emergency, rain), the operator command, mission progress and the ROS
 // handles the behaviour tree nodes use.
 
+#include "mower_logic/felt_obstacles.hpp"
 #include "mower_logic/mission.hpp"
 
 #include "open_mower_next/msg/map.hpp"
@@ -18,6 +19,7 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -67,12 +69,19 @@ struct Params
   std::string mission_file;          // mission progress kept across restarts (empty: memory only)
   double resume_backtrack = 0.5;     // m re-mowed before a resume point
   double resume_direct_distance = 0.3;  // m: robot this close to the pass -> no transit (0 = always transit)
-  // Bumps (WorxStatus.bumps): back up, mark an obstacle for Nav2, continue past it.
-  // A bump marks the contact area: three discs along the front (left corner,
-  // centre, right corner) - the sensor doesn't say where it was hit, and when
-  // turning it is often a corner. Points outside the areas are dropped.
-  double bump_front_offset = 0.62;   // m from base_link to the disc centres (front edge 0.47)
-  double bump_obstacle_radius = 0.18;
+  // Bumps (WorxStatus.bumps). The sensor only says THAT the front touched
+  // something. Each bump records a contact (felt_obstacles.hpp): a thin band
+  // just outside the part of the front that can have touched. Contacts close
+  // together are one obstacle - its shape is what the robot has felt of it, not
+  // a fixed-size blob. Marks outside the areas are dropped.
+  double bump_mark_gap = 0.02;       // m between the bumper and the band
+  double bump_mark_depth = 0.10;     // m band depth
+  double bump_merge_distance = 0.3;  // m between marks: the same obstacle
+  int bump_max_contacts = 30;        // per obstacle (the oldest go)
+  // Felt obstacles are kept (Daniel: to look at them and fix the map) until the
+  // mission is reset or a new one starts from the beginning, also across
+  // restarts in this file. Empty: memory only.
+  std::string obstacles_file;
   // Never mark cells under the robot's current footprint (+ margin): with the
   // footprint inside an obstacle nothing can move ("Start occupied", back-up
   // refused) - a slow Digital report while turning put marks under the robot.
@@ -80,15 +89,33 @@ struct Params
   double footprint_front_chamfer = 0.10;  // m cut off each front corner at 45 deg (the real corners are round)
   double bump_keep_free = 0.1;       // m around the footprint
   double corner_max_reverse = 1.0;   // m: back up at most this far to turn at a tight corner
-  double bump_clearance = 0.9;       // m: pass continues at the first pose this far from the disc centre
+  // Going around an obstacle with a transit (feeling gave up, or a known
+  // obstacle ahead): the pass continues at the first pose this far from its marks.
+  double bump_clearance = 0.35;
   double bump_backup = 0.3;          // m reversed after a bump
   double bump_backup_speed = 0.1;
-  int max_bumps_per_pass = 4;
-  // Known bump obstacles are avoided on later passes/loops before touching them:
+  int max_bumps_per_pass = 4;        // feeling around one obstacle counts once
+  // Known obstacles are avoided on later passes/loops before touching them:
   // the pass is checked this far ahead of the robot.
-  double bump_merge_distance = 0.4;  // m: a bump this close to a known obstacle replaces it
   double bump_lookahead = 1.0;       // m along the pass
-  double bump_avoid_radius = 0.5;    // m from a disc centre (radius + half body + margin)
+  double bump_avoid_radius = 0.3;    // m from a mark: closer and the body (half width 0.195) touches it
+  // Feeling around an obstacle after a bump on a pass, like a robot vacuum
+  // around a chair leg: back off, turn away, arc back towards the obstacle
+  // until it bumps again (back off, turn away a bit more, ...) or the robot is
+  // back on the pass beyond it. Each bump adds to the obstacle's felt shape.
+  // Gives up (then: a transit around what was felt) at the limits, or when the
+  // map edge is in the way.
+  bool feel_around = true;
+  double feel_speed = 0.15;          // m/s forward (bumps are only detected driving forward, > bump_min_speed)
+  double feel_backoff = 0.15;        // m back after each bump (turning in place then clears a flat obstacle)
+  double feel_turn = 0.7;            // rad turned away after each bump
+  double feel_arc_radius = 0.6;      // m: the arc back towards the obstacle
+  double feel_rejoin_distance = 0.2; // m from a pass pose beyond the obstacle: back on the pass
+  double feel_max_travel = 8.0;      // m driven while feeling
+  int feel_max_contacts = 12;
+  double feel_max_offset = 2.0;      // m away from the pass
+  double feel_timeout = 150.0;       // s
+  bool feel_blade = false;           // blade on while arcing around (off: safer, the ring around the obstacle stays long)
   // Perimeter bumps (overgrown plants, GPS a few cm off): on an outline pass
   // with the centre this close to an edge, the outline is shifted inward
   // around the spot instead of going around an obstacle, and the correction is
@@ -187,20 +214,38 @@ public:
   // Random via point between the robot and goal (nullopt: go direct).
   std::optional<geometry_msgs::msg::PoseStamped> transitVia(const geometry_msgs::msg::PoseStamped & goal);
 
-  // Bumps. Each one adds an obstacle point (published for the costmaps).
+  // Bumps. Each one adds a contact to a felt obstacle (published for the costmaps).
   struct Bump
   {
     Clock::time_point time;
-    double x = 0, y = 0;  // obstacle (disc centre) in map
-    double yaw = 0;       // robot heading at the bump
+    double x = NAN, y = NAN;  // robot (base_link) at the bump, map; NAN: no pose then
+    double yaw = 0;
+    int obstacle = -1;        // the felt obstacle the contact went to (-1: none)
+    uint64_t contact = 0;     // the contact's id in it
   };
   std::optional<Bump> lastBump() const;
   bool bumpedSince(Clock::time_point t) const;
   // The bump a recovery has to handle (newer than the last one handled).
   std::optional<Bump> takeBump();
   void clearBumpObstacles();
-  // Forget the obstacle marked for this bump (handled as an edge correction).
+  // Forget the contact of this bump (handled as an edge correction).
   void dropBumpObstacle(const Bump & b);
+  // Felt obstacles (FeltObstacle ids).
+  std::optional<int> obstacleNear(double x, double y, double radius) const;  // nearest one within radius of its marks
+  double obstacleDistance(int id, double x, double y) const;  // infinity when it's gone
+  size_t obstacleContacts(int id) const;
+  // FeelAround: while it arcs, which front corner can touch (+1 left, -1 right,
+  // 0 any) and the obstacle new contacts belong to (-1: by distance).
+  std::atomic<int> bump_side{0};
+  std::atomic<int> feel_obstacle{-1};
+  // Operator (web UI): forget the felt obstacle / edge correction nearest to
+  // (x, y) within radius, or all of them. The message says what happened.
+  bool forgetObstacle(double x, double y, double radius, bool all, std::string & message);
+  bool forgetEdgeCorrection(double x, double y, double radius, bool all, std::string & message);
+  // Publish the marks now. True when marks under the robot were left out: the
+  // costmap still has them until its next update (1 s), so a plan started now
+  // could begin "in" an obstacle.
+  bool refreshObstacles();
   std::atomic<bool> bump_on_pass{false};  // the last interrupted action was FollowPass
   std::atomic<bool> pass_is_outline{false};  // the pass GetPass handed out last
   // Behaviour tree thread only: the last reversal (bump recovery or a blind
@@ -217,8 +262,6 @@ public:
     return last_reversal && Clock::now() - last_reversal->time < std::chrono::seconds(60) &&
            std::hypot(x - last_reversal->x, y - last_reversal->y) < 1.0;
   }
-  // Known bump obstacle within radius of (x, y), if any.
-  std::optional<Bump> knownObstacleNear(double x, double y, double radius) const;
   // Behaviour tree thread only: where SkipPastBump continues the pass.
   std::optional<Bump> skip_target;
   // Set by GetPass when the pass was cut before a corner the body can't drive:
@@ -232,6 +275,8 @@ public:
   bool continue_from_here = false, force_transit = false;
   bool skip_counts_as_bump = true;
   bool avoiding_known_obstacle = false;
+  // Behaviour tree thread only: a bump on a pass that FeelAround should handle.
+  std::optional<Bump> feel_request;
 
   void setBlade(bool on);
   bool setMotors(bool on);  // /worx/motors_enabled, asynchronous; false: service not available
@@ -244,7 +289,8 @@ public:
 
 private:
   void onBump();
-  void publishObstacles();
+  bool publishObstacles();  // true: marks under the robot left out
+  void publishMarkers();    // ~/obstacles (JSON for the web UI) when something changed
   mutable std::mutex mutex_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   double battery_ = NAN;
@@ -263,7 +309,11 @@ private:
   std::mt19937 rng_{std::random_device{}()};
   std::optional<Bump> last_bump_;
   Clock::time_point handled_bump_{};
-  std::vector<Bump> obstacles_;
+  std::vector<FeltObstacle> obstacles_;
+  int next_obstacle_id_ = 1;
+  uint64_t next_contact_id_ = 1;
+  unsigned markers_version_ = 1, markers_published_ = 0;  // mutex_
+  MarkShape markShape() const;
   struct EdgeCorrection
   {
     double x = 0, y = 0, offset = 0;  // spot in map, inward shift (m)
@@ -271,12 +321,15 @@ private:
   std::vector<EdgeCorrection> edge_corrections_;
   void loadEdgeCorrections();
   void saveEdgeCorrections() const;
+  void loadObstacles();
+  void saveObstacles() const;  // mutex_ held
   // Shift outline poses near (cx, cy) inward by delta (tapered). mutex_ held.
   void shiftOutline(std::vector<open_mower_next::msg::CoveragePath> & passes, double cx, double cy,
                     double delta) const;
   double distanceToLines(double x, double y) const;  // nearest recorded line; mutex_ held
   bool insideAreas(double x, double y) const;        // mutex_ held
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr markers_pub_;
   rclcpp::TimerBase::SharedPtr obstacle_timer_;
   bool blade_on_ = false;
 

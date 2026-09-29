@@ -128,7 +128,7 @@ public:
       return NodeStatus::FAILURE;
     }
     RCLCPP_INFO(ctx_->node->get_logger(), "Starting mission over %zu areas", areas.size());
-    ctx_->clearBumpObstacles();
+    ctx_->clearBumpObstacles();  // a new mission from the beginning (a resumed one keeps them)
     ctx_->mission.begin(areas);
     return NodeStatus::SUCCESS;
   }
@@ -164,6 +164,7 @@ public:
     for (int guard = 0; guard < 50; ++guard) {
       pass = m.currentPass(ctx_->params.resume_backtrack);
       if (!pass) return NodeStatus::FAILURE;
+      if (startsAtKnownObstacle(*pass)) continue;
       if (cutAtUndrivable(*pass)) break;
     }
     if (!pass) return NodeStatus::FAILURE;
@@ -250,6 +251,33 @@ private:
     if (good < poses.size()) ctx_->corner_yaw = yawOf(poses[good].pose);
     poses.resize(bad);
     ctx_->segment_resume = resume;
+    return true;
+  }
+
+  // A pass (or its continuation) starting at a felt obstacle: the transit's goal
+  // lies in its marks and the planner searches until max_iterations (sim
+  // 2026-09-29: two lanes ending at an obstacle failed 3 attempts each).
+  // Continue at the first pose clear of it (bump_clearance); none left: pass done.
+  // Returns true when the mission moved on (ask again).
+  bool startsAtKnownObstacle(const Mission::Pass & pass)
+  {
+    const auto & poses = pass.path.poses;
+    const auto & q = poses.front().pose.position;
+    const auto id = ctx_->obstacleNear(q.x, q.y, ctx_->params.bump_avoid_radius);
+    if (!id) return false;
+    size_t i = 1;
+    while (i < poses.size() &&
+           ctx_->obstacleDistance(*id, poses[i].pose.position.x, poses[i].pose.position.y) <= ctx_->params.bump_clearance) {
+      ++i;
+    }
+    if (i + 3 < poses.size()) {
+      RCLCPP_INFO(ctx_->node->get_logger(), "Pass starts at known obstacle %d - starting past it at pose %zu", *id,
+                  pass.start_index + i);
+      ctx_->mission.continueAt(pass.start_index + i);
+    } else {
+      RCLCPP_INFO(ctx_->node->get_logger(), "Rest of the pass is at known obstacle %d - skipped", *id);
+      ctx_->mission.passDone();
+    }
     return true;
   }
 
@@ -536,6 +564,297 @@ private:
   std::chrono::steady_clock::time_point deadline_{};
 };
 
+// After a bump on a pass: feel around the obstacle like a robot vacuum around a
+// chair leg, and back onto the pass beyond it. Back off (the bump latch
+// clears), turn away by feel_turn, arc back towards the obstacle; a bump on the
+// arc starts that over from there, each one adding to the obstacle's felt
+// shape (Context::bump_side: only the front corner facing the obstacle can
+// touch while arcing). Done when the robot crosses the pass beyond the
+// obstacle: the pass continues there. The blade stays off (feel_blade).
+// FAILURE when not applicable or it gave up (limits, map edge): the fallback
+// backs up and goes around what was felt with a transit (SkipPastBump).
+class FeelAround : public BT::StatefulActionNode
+{
+public:
+  FeelAround(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
+  : BT::StatefulActionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {}; }
+
+  NodeStatus onStart() override
+  {
+    const auto req = std::exchange(ctx_->feel_request, std::nullopt);
+    if (!req || req->obstacle < 0) return NodeStatus::FAILURE;
+    const auto & p = ctx_->params;
+    const auto pass = ctx_->mission.currentPass(0.0);
+    const auto pose = ctx_->robotPose();
+    if (!pass || !pose || pass->path.poses.size() < 3) return NodeStatus::FAILURE;
+    if (!ctx_->mission.countBump(p.max_bumps_per_pass)) {
+      RCLCPP_WARN(ctx_->node->get_logger(), "Bumped too often on this pass - rest skipped: %s",
+                  ctx_->mission.summary().c_str());
+      ctx_->skip_target.reset();
+      return NodeStatus::FAILURE;
+    }
+    ctx_->skip_counts_as_bump = false;  // counted here; a transit around after giving up doesn't count again
+    obstacle_ = req->obstacle;
+    base_ = pass->start_index;
+    generation_ = ctx_->mission.generation();
+    pts_.clear();
+    arc_.clear();
+    double along = 0.0;
+    for (size_t i = 0; i < pass->path.poses.size(); ++i) {
+      const auto & q = pass->path.poses[i].pose;
+      if (i) along += std::hypot(q.position.x - pts_.back().x, q.position.y - pts_.back().y);
+      pts_.push_back({q.position.x, q.position.y, yawOf(q.orientation)});
+      arc_.push_back(along);
+    }
+    if (along < 1.2) {
+      RCLCPP_INFO(ctx_->node->get_logger(), "Obstacle near the end of the pass - not feeling around it");
+      return NodeStatus::FAILURE;
+    }
+    // Side: where the footprint fits further out (more room), left on a tie.
+    const double x0 = pose->pose.position.x, y0 = pose->pose.position.y, yaw0 = yawOf(pose->pose.orientation);
+    int best_room = 0;
+    side_ = 0;
+    for (const int s : {1, -1}) {
+      int room = 0;
+      for (double off = 0.3; off <= 1.01; off += 0.1) {
+        const double qx = x0 + 0.3 * std::cos(yaw0) - s * off * std::sin(yaw0);
+        const double qy = y0 + 0.3 * std::sin(yaw0) + s * off * std::cos(yaw0);
+        if (!ctx_->footprintFits(qx, qy, yaw0)) break;
+        ++room;
+      }
+      if (room > best_room) {
+        best_room = room;
+        side_ = s;
+      }
+    }
+    if (side_ == 0) {
+      RCLCPP_WARN(ctx_->node->get_logger(), "No room beside obstacle %d to feel around it", obstacle_);
+      return NodeStatus::FAILURE;
+    }
+    contacts_ = 0;
+    travel_ = 0.0;
+    last_x_ = x0;
+    last_y_ = y0;
+    started_ = Clock::now();
+    known_contacts_ = 0;
+    ctx_->feel_obstacle = obstacle_;
+    ctx_->setBranch("FEELING_AROUND");
+    RCLCPP_INFO(ctx_->node->get_logger(), "Feeling around obstacle %d on its %s", obstacle_,
+                side_ > 0 ? "left" : "right");
+    startBackoff(x0, y0);
+    return NodeStatus::RUNNING;
+  }
+
+  NodeStatus onRunning() override
+  {
+    const auto & p = ctx_->params;
+    const auto pose = ctx_->robotPose();
+    if (!pose) return giveUp("no robot pose");
+    if (ctx_->mission.generation() != generation_) {
+      cleanup();
+      ctx_->skip_target.reset();
+      return NodeStatus::FAILURE;  // operator skipped the pass meanwhile
+    }
+    const double x = pose->pose.position.x, y = pose->pose.position.y, yaw = yawOf(pose->pose.orientation);
+    travel_ += std::hypot(x - last_x_, y - last_y_);
+    last_x_ = x;
+    last_y_ = y;
+    const auto now = Clock::now();
+    if (std::chrono::duration<double>(now - started_).count() > p.feel_timeout) return giveUp("took too long");
+    if (travel_ > p.feel_max_travel) return giveUp("drove too far");
+    if (ctx_->takeBump()) {
+      ++contacts_;
+      if (contacts_ >= p.feel_max_contacts) return giveUp("too many bumps");
+      ctx_->drive(0.0, 0.0);
+      if (p.feel_blade) ctx_->setBlade(false);
+      startBackoff(x, y);
+      return NodeStatus::RUNNING;
+    }
+    double off = 1e9;
+    for (const auto & q : pts_) off = std::min(off, std::hypot(q.x - x, q.y - y));
+    if (off > p.feel_max_offset) return giveUp("too far from the pass");
+
+    switch (phase_) {
+      case Phase::BACKOFF: {
+        // Reverse at least feel_backoff, and long enough for the bump latch
+        // (worx_hardware collision_hold 1 s of non-forward commands).
+        const bool far = std::hypot(x - phase_x_, y - phase_y_) >= p.feel_backoff;
+        const bool long_enough = std::chrono::duration<double>(now - phase_start_).count() >= 1.3;
+        if (!far || !long_enough) {
+          ctx_->drive(far ? 0.0 : -p.bump_backup_speed, 0.0);
+          return NodeStatus::RUNNING;
+        }
+        ctx_->drive(0.0, 0.0);
+        // Turn away; less if the full turn would swing the body out of line + rim.
+        for (const double f : {1.0, 0.5}) {
+          const double turn = side_ * p.feel_turn * f;
+          bool ok = true;
+          for (int k = 1; ok && k <= 8; ++k) ok = ctx_->footprintFits(x, y, yaw + turn * k / 8);
+          if (ok) {
+            target_ = yaw + turn;
+            phase_ = Phase::TURN;
+            return NodeStatus::RUNNING;
+          }
+        }
+        return giveUp("no room to turn away");
+      }
+      case Phase::TURN: {
+        const double err = std::remainder(target_ - yaw, 2.0 * M_PI);
+        if (std::abs(err) > 0.05) {
+          ctx_->drive(0.0, std::clamp(2.0 * err, -0.6, 0.6));
+          return NodeStatus::RUNNING;
+        }
+        ctx_->drive(0.0, 0.0);
+        phase_ = Phase::ARC;
+        phase_start_ = now;
+        arc_turned_ = 0.0;
+        arc_last_yaw_ = yaw;
+        if (p.feel_blade) {
+          ctx_->blade_in_use = true;
+          ctx_->setBlade(true);
+        }
+        return NodeStatus::RUNNING;
+      }
+      case Phase::ARC: {
+        if (p.feel_blade && std::chrono::duration<double>(now - phase_start_).count() < p.blade_spinup) {
+          ctx_->drive(0.0, 0.0);
+          return NodeStatus::RUNNING;
+        }
+        if (auto j = rejoinIndex(x, y, yaw)) {
+          ctx_->drive(0.0, 0.0);
+          ctx_->mission.continueAt(base_ + *j);
+          ctx_->continue_from_here = true;
+          ctx_->skip_target.reset();
+          RCLCPP_INFO(ctx_->node->get_logger(),
+                      "Felt around obstacle %d (%d more bump%s, %.1f m driven): back on the pass at pose %zu", obstacle_,
+                      contacts_, contacts_ == 1 ? "" : "s", travel_, base_ + *j);
+          cleanup();
+          return NodeStatus::SUCCESS;
+        }
+        arc_turned_ += std::abs(std::remainder(yaw - arc_last_yaw_, 2.0 * M_PI));
+        arc_last_yaw_ = yaw;
+        if (arc_turned_ > 1.8 * M_PI) return giveUp("went round without meeting the pass");
+        // The obstacle is on the other side than the one we go around on.
+        ctx_->bump_side = -side_;
+        const double w = -side_ * p.feel_speed / p.feel_arc_radius;
+        const double ahead = 0.15, dyaw = w / p.feel_speed * ahead;
+        const double px = x + ahead * std::cos(yaw + dyaw / 2), py = y + ahead * std::sin(yaw + dyaw / 2);
+        if (!ctx_->footprintFits(px, py, yaw + dyaw)) return giveUp("the map edge is in the way");
+        ctx_->drive(p.feel_speed, w);
+        return NodeStatus::RUNNING;
+      }
+    }
+    return NodeStatus::RUNNING;
+  }
+
+  void onHalted() override
+  {
+    ctx_->drive(0.0, 0.0);
+    cleanup();
+  }
+
+private:
+  using Clock = Context::Clock;
+  enum class Phase { BACKOFF, TURN, ARC };
+  struct PassPose
+  {
+    double x, y, yaw;
+  };
+  static double yawOf(const geometry_msgs::msg::Quaternion & q)
+  {
+    return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+  }
+
+  void startBackoff(double x, double y)
+  {
+    ctx_->bump_side = 0;
+    phase_ = Phase::BACKOFF;
+    phase_x_ = x;
+    phase_y_ = y;
+    phase_start_ = Clock::now();
+  }
+
+  // First pass pose the obstacle blocks (as felt so far; recomputed when it grew).
+  size_t blockedFrom()
+  {
+    const size_t n = ctx_->obstacleContacts(obstacle_);
+    if (n == known_contacts_) return blocked_from_;
+    known_contacts_ = n;
+    blocked_from_ = 0;
+    for (size_t i = 0; i < pts_.size() && arc_[i] < 4.0; ++i) {
+      if (ctx_->obstacleDistance(obstacle_, pts_[i].x, pts_[i].y) < ctx_->params.bump_avoid_radius) {
+        blocked_from_ = i;
+        break;
+      }
+    }
+    return blocked_from_;
+  }
+
+  // Robot back on the pass beyond the obstacle: within feel_rejoin_distance of a
+  // pose after the blocked one, heading roughly along. The pass continues at the
+  // first pose from there (at most 1.5 m on) after which bump_lookahead of the
+  // pass is clear of what was felt (bump_avoid_radius) - else FollowPass stops
+  // for the "known obstacle" at once. The marks span more than the obstacle;
+  // the robot standing on the pass shows it's free there (sim 2026-09-29:
+  // crossed 0.4 m past a chair leg, 0.2 m from its marks, and circled on).
+  std::optional<size_t> rejoinIndex(double x, double y, double yaw)
+  {
+    const auto & p = ctx_->params;
+    const size_t from = blockedFrom();
+    for (size_t j = from; j + 2 < pts_.size(); ++j) {
+      if (arc_[j] - arc_[from] < 0.3) continue;
+      if (std::hypot(pts_[j].x - x, pts_[j].y - y) > p.feel_rejoin_distance) continue;
+      if (std::abs(std::remainder(pts_[j].yaw - yaw, 2.0 * M_PI)) > 100.0 * M_PI / 180.0) continue;
+      // Clear poses from j on (only this window: the Pi checks it every tick while crossing).
+      std::vector<bool> clear;
+      for (size_t k = j; k < pts_.size() && arc_[k] - arc_[j] <= 1.5 + p.bump_lookahead; ++k) {
+        clear.push_back(ctx_->obstacleDistance(obstacle_, pts_[k].x, pts_[k].y) >= p.bump_avoid_radius);
+      }
+      for (size_t k = j; k + 2 < pts_.size() && arc_[k] - arc_[j] <= 1.5; ++k) {
+        bool ok = true;
+        for (size_t m = k; ok && m < pts_.size() && arc_[m] - arc_[k] <= p.bump_lookahead; ++m) {
+          ok = m - j < clear.size() && clear[m - j];
+        }
+        if (ok) return k;
+      }
+      return std::nullopt;  // nearest crossing pose decides; the robot moves on and checks again
+    }
+    return std::nullopt;
+  }
+
+  NodeStatus giveUp(const char * why)
+  {
+    ctx_->drive(0.0, 0.0);
+    RCLCPP_WARN(ctx_->node->get_logger(), "Feeling around obstacle %d: %s - going around what was felt (%zu contacts)",
+                obstacle_, why, ctx_->obstacleContacts(obstacle_));
+    cleanup();
+    // skip_target (set by TakeBump) still names the obstacle: SkipPastBump goes around it.
+    return NodeStatus::FAILURE;
+  }
+
+  void cleanup()
+  {
+    ctx_->bump_side = 0;
+    ctx_->feel_obstacle = -1;
+    if (ctx_->params.feel_blade) {
+      ctx_->setBlade(false);
+      ctx_->blade_in_use = false;
+    }
+  }
+
+  CtxPtr ctx_;
+  int obstacle_ = -1, side_ = 0, contacts_ = 0;
+  size_t base_ = 0, blocked_from_ = 0, known_contacts_ = 0;
+  unsigned generation_ = 0;
+  std::vector<PassPose> pts_;
+  std::vector<double> arc_;  // m along the pass
+  Phase phase_ = Phase::BACKOFF;
+  double phase_x_ = 0, phase_y_ = 0, target_ = 0, travel_ = 0, last_x_ = 0, last_y_ = 0;
+  double arc_turned_ = 0, arc_last_yaw_ = 0;
+  Clock::time_point started_{}, phase_start_{};
+};
+
 // SUCCESS when a bump interrupted the pass or transit (consumes it).
 class TakeBump : public BT::ConditionNode
 {
@@ -548,23 +867,31 @@ public:
     const auto b = ctx_->takeBump();
     if (!b) return NodeStatus::FAILURE;
     ctx_->setBranch("BUMP_RECOVERY");
-    // Bumped on a pass: continue it past the obstacle. In a transit: just retry.
+    // Bumped on a pass: feel around the obstacle (else continue past it with a
+    // transit). In a transit: retry, the planner now goes around what was felt.
     ctx_->skip_target.reset();
+    ctx_->feel_request.reset();
     if (ctx_->bump_on_pass.exchange(false)) {
       // At the perimeter it is the edge (plants, GPS a few cm off), not an
       // obstacle: shift the outline inward there and keep following it.
       if (ctx_->pass_is_outline && std::isfinite(b->x)) {
-        const double rx = b->x - ctx_->params.bump_front_offset * std::cos(b->yaw);
-        const double ry = b->y - ctx_->params.bump_front_offset * std::sin(b->yaw);
-        if (const auto off = ctx_->addEdgeCorrection(rx, ry, b->yaw)) {
+        if (const auto off = ctx_->addEdgeCorrection(b->x, b->y, b->yaw)) {
           RCLCPP_WARN(ctx_->node->get_logger(), "Perimeter bump at (%.2f, %.2f): outline %.0f cm inward there (remembered)",
-                      rx, ry, *off * 100.0);
+                      b->x, b->y, *off * 100.0);
           ctx_->dropBumpObstacle(*b);
           return NodeStatus::SUCCESS;  // back up, then the pass resumes a little before the spot
         }
       }
       ctx_->skip_target = b;
       ctx_->skip_counts_as_bump = true;
+      if (ctx_->params.feel_around && std::isfinite(b->x)) ctx_->feel_request = b;
+    } else if (std::isfinite(b->x) && ctx_->mission.active()) {
+      // Transit bumps count for the pass too: the planner can't see how big the
+      // obstacle is, so it could keep bumping into it from new sides.
+      if (!ctx_->mission.countBump(ctx_->params.max_bumps_per_pass)) {
+        RCLCPP_WARN(ctx_->node->get_logger(), "Bumped too often on the way to this pass - skipped: %s",
+                    ctx_->mission.summary().c_str());
+      }
     }
     return NodeStatus::SUCCESS;
   }
@@ -604,9 +931,14 @@ public:
   {
     ctx_->setBranch("MOWING");
     const auto b = std::exchange(ctx_->skip_target, std::nullopt);
-    if (!b || !std::isfinite(b->x)) return NodeStatus::SUCCESS;
-    const bool on_pass = ctx_->mission.skipPastPoint(
-      b->x, b->y, ctx_->params.bump_clearance, ctx_->params.max_bumps_per_pass, ctx_->skip_counts_as_bump);
+    if (!b || b->obstacle < 0 || ctx_->obstacleContacts(b->obstacle) == 0) return NodeStatus::SUCCESS;
+    // Continue at the first pose bump_clearance clear of what was felt of it.
+    const int id = b->obstacle;
+    const double clearance = ctx_->params.bump_clearance;
+    const auto ctx = ctx_;
+    const bool on_pass = ctx_->mission.skipPast(
+      [ctx, id, clearance](double x, double y) { return ctx->obstacleDistance(id, x, y) <= clearance; },
+      ctx_->params.max_bumps_per_pass, ctx_->skip_counts_as_bump);
     RCLCPP_WARN(ctx_->node->get_logger(), on_pass ? "Continuing past the obstacle: %s" : "Rest of the pass skipped: %s",
                 ctx_->mission.summary().c_str());
     return NodeStatus::SUCCESS;
@@ -667,6 +999,7 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   add<MissionFinished>(factory, ctx, "MissionFinished");
   add<TakeBump>(factory, ctx, "TakeBump");
   add<SkipPastBump>(factory, ctx, "SkipPastBump");
+  add<FeelAround>(factory, ctx, "FeelAround");
   add<AvoidingKnownObstacle>(factory, ctx, "AvoidingKnownObstacle");
   add<ReverseAlongTrack>(factory, ctx, "ReverseAlongTrack");
   add<CornerTurn>(factory, ctx, "CornerTurn");

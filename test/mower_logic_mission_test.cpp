@@ -1,7 +1,13 @@
+#include "mower_logic/felt_obstacles.hpp"
 #include "mower_logic/mission.hpp"
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+
+using open_mower_next::mower_logic::Contact;
+using open_mower_next::mower_logic::FeltObstacle;
+using open_mower_next::mower_logic::MarkShape;
 using open_mower_next::mower_logic::Mission;
 using open_mower_next::msg::CoveragePath;
 
@@ -195,4 +201,84 @@ TEST(Mission, NothingSavedWithoutAMissionAndBadTextIgnored)
   EXPECT_FALSE(m.restore("openmower_mission 1\nareas a\narea 3\n"));
   EXPECT_FALSE(m.restore("something else\n"));
   EXPECT_FALSE(m.active());
+}
+
+TEST(Mission, SkipPastAnyShapeAndCountBumps)
+{
+  Mission m;
+  m.begin({"a"});
+  m.setPlan({straight(100, 0.1), straight(10)});
+  m.setPoseIndex(20);
+  // Obstacle covering x in [3.0, 3.5] of the pass.
+  auto near = [](double x, double) { return x >= 3.0 && x <= 3.5; };
+  ASSERT_TRUE(m.skipPast(near, 4));
+  EXPECT_EQ(m.currentPass(0.5)->start_index, 36u);  // first pose after it, no backtrack
+  // Nothing of the rest is near: the pass is done (as for an obstacle at the end).
+  EXPECT_FALSE(m.skipPast([](double, double) { return false; }, 4));
+  EXPECT_EQ(m.currentPass(0.0)->path.poses.size(), 10u);
+
+  Mission m2;
+  m2.begin({"a"});
+  m2.setPlan({straight(100, 0.1), straight(10)});
+  EXPECT_TRUE(m2.countBump(2));
+  EXPECT_TRUE(m2.countBump(2));
+  EXPECT_FALSE(m2.countBump(2));  // third bump: pass skipped
+  EXPECT_EQ(m2.currentPass(0.0)->path.poses.size(), 10u);
+}
+
+TEST(FeltObstacles, ContactMarksAThinBandAtTheFront)
+{
+  MarkShape s;  // front 0.47, half width 0.195, chamfer 0.10, gap 0.02, depth 0.10
+  Contact c;
+  c.x = 1.0;
+  c.y = 2.0;
+  c.yaw = M_PI / 2;  // facing +y
+  c.marks = open_mower_next::mower_logic::contactMarks(c, s);
+  ASSERT_FALSE(c.marks.empty());
+  double min_y = 1e9, max_y = -1e9, min_x = 1e9, max_x = -1e9;
+  for (const auto & [x, y] : c.marks) {
+    min_x = std::min(min_x, x);
+    max_x = std::max(max_x, x);
+    min_y = std::min(min_y, y);
+    max_y = std::max(max_y, y);
+  }
+  // Nothing inside the body; the front face band is 0.49 .. 0.59 ahead.
+  EXPECT_GE(min_y, 2.0 + 0.47 - 0.10 - 0.05 - 1e-9);  // sides behind the cut corners reach back 5 cm
+  EXPECT_NEAR(max_y, 2.0 + 0.47 + 0.12, 1e-9);
+  EXPECT_NEAR(max_x - min_x, 2 * (0.195 + 0.12), 1e-9);  // both sides + band
+  FeltObstacle o{1, {c}};
+  EXPECT_NEAR(o.distance(1.0, 2.0 + 0.49), 0.0, 1e-9);   // on the band
+  EXPECT_NEAR(o.distance(1.0, 2.0 + 0.30), 0.19, 1e-9);  // 0.3 m ahead of the robot centre
+  // No mark inside the footprint (the robot stood there): convex hexagon, counter-clockwise.
+  const double fp[][2] = {{0.47, 0.095}, {0.37, 0.195}, {-0.11, 0.195}, {-0.11, -0.195}, {0.37, -0.195}, {0.47, -0.095}};
+  for (const auto & [x, y] : c.marks) {
+    const double u = y - 2.0, v = -(x - 1.0);  // robot frame (facing +y)
+    bool inside = true;
+    for (int i = 0; i < 6; ++i) {
+      const auto & a = fp[i];
+      const auto & b = fp[(i + 1) % 6];
+      if ((b[0] - a[0]) * (v - a[1]) - (b[1] - a[1]) * (u - a[0]) < 0.01) inside = false;  // 1 cm tolerance
+    }
+    EXPECT_FALSE(inside) << u << " " << v;
+  }
+}
+
+TEST(FeltObstacles, SideContactOnlyMarksThatCorner)
+{
+  MarkShape s;
+  Contact left;
+  left.side = 1;  // facing +x, left = +y
+  left.marks = open_mower_next::mower_logic::contactMarks(left, s);
+  Contact right = left;
+  right.side = -1;
+  right.marks = open_mower_next::mower_logic::contactMarks(right, s);
+  // The cut corner and the outer half of that side's front face (half width 0.195, chamfer 0.10).
+  for (const auto & [x, y] : left.marks) EXPECT_GE(y, 0.0475 - 1e-9);
+  for (const auto & [x, y] : right.marks) EXPECT_LE(y, -0.0475 + 1e-9);
+  EXPECT_LT(left.marks.size(), open_mower_next::mower_logic::contactMarks(Contact{}, s).size() / 2);
+  Contact again = left;
+  again.x += 0.02;
+  EXPECT_TRUE(open_mower_next::mower_logic::sameContact(left, again));
+  again.side = 0;
+  EXPECT_FALSE(open_mower_next::mower_logic::sameContact(left, again));
 }

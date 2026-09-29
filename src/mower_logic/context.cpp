@@ -4,7 +4,10 @@
 #include <tf2/LinearMath/Quaternion.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
+#include <limits>
+#include <set>
 #include <sstream>
 
 namespace open_mower_next::mower_logic
@@ -96,10 +99,17 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
         }
       });
   }
-  // Sensor-data QoS like the costmap obstacle layer; republished so late
-  // subscribers (and a cleared costmap) get the points again.
-  obstacle_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("~/bump_obstacles", rclcpp::SensorDataQoS());
-  obstacle_timer_ = node->create_wall_timer(std::chrono::seconds(1), [this]() { publishObstacles(); });
+  // Latched (costmap_layers::BumpLayer): each message replaces the last. Also
+  // republished every second: marks under the robot are left out, and the
+  // robot moves.
+  obstacle_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("~/bump_obstacles",
+                                                                        rclcpp::QoS(1).reliable().transient_local());
+  // What was felt, for the web UI (JSON, latched, sent when it changes).
+  markers_pub_ = node->create_publisher<std_msgs::msg::String>("~/obstacles", rclcpp::QoS(1).transient_local());
+  obstacle_timer_ = node->create_wall_timer(std::chrono::seconds(1), [this]() {
+    publishObstacles();
+    publishMarkers();
+  });
   grid_sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
     "/map_grid", rclcpp::QoS(1).transient_local().reliable(), [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr m) {
       std::lock_guard<std::mutex> l(mutex_);
@@ -112,6 +122,51 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
       map_ = *m;
     });
   loadEdgeCorrections();
+  loadObstacles();
+}
+
+void Context::loadObstacles()
+{
+  if (params.obstacles_file.empty()) return;
+  std::ifstream f(params.obstacles_file);
+  std::string line;
+  const auto shape = markShape();
+  std::lock_guard<std::mutex> l(mutex_);
+  size_t n = 0;
+  while (std::getline(f, line)) {
+    if (line.empty() || line[0] == '#') continue;
+    std::istringstream s(line);
+    int id = 0;
+    Contact c;
+    if (!(s >> id >> c.x >> c.y >> c.yaw >> c.side)) continue;
+    c.id = next_contact_id_++;
+    c.marks = contactMarks(c, shape);
+    auto it = std::find_if(obstacles_.begin(), obstacles_.end(), [&](const FeltObstacle & o) { return o.id == id; });
+    if (it == obstacles_.end()) {
+      obstacles_.push_back(FeltObstacle{id, {}});
+      it = std::prev(obstacles_.end());
+    }
+    it->contacts.push_back(c);
+    next_obstacle_id_ = std::max(next_obstacle_id_, id + 1);
+    ++n;
+  }
+  RCLCPP_INFO(node->get_logger(), "%zu felt obstacles (%zu contacts) from %s", obstacles_.size(), n,
+              params.obstacles_file.c_str());
+}
+
+void Context::saveObstacles() const
+{
+  if (params.obstacles_file.empty()) return;
+  // Temp file + rename: a crash never leaves half a file.
+  const auto tmp = params.obstacles_file + ".tmp";
+  {
+    std::ofstream f(tmp);
+    f << "# obstacle x y yaw side - felt obstacles (robot pose at each bump, map frame), see mower_logic\n";
+    for (const auto & o : obstacles_) {
+      for (const auto & c : o.contacts) f << o.id << ' ' << c.x << ' ' << c.y << ' ' << c.yaw << ' ' << c.side << '\n';
+    }
+  }
+  std::rename(tmp.c_str(), params.obstacles_file.c_str());
 }
 
 void Context::loadEdgeCorrections()
@@ -226,6 +281,7 @@ std::optional<double> Context::addEdgeCorrection(double x, double y, double yaw)
     delta = total - it->offset;
     it->offset = total;
     saveEdgeCorrections();
+    ++markers_version_;
     // The existing spot keeps its centre so the shift already applied stays consistent.
     const double sx = it->x, sy = it->y;
     mission.editPlan([&](auto & passes) { shiftOutline(passes, sx, sy, delta); });
@@ -243,9 +299,17 @@ void Context::dropBumpObstacle(const Bump & b)
 {
   {
     std::lock_guard<std::mutex> l(mutex_);
+    for (auto & o : obstacles_) {
+      if (o.id != b.obstacle) continue;
+      o.contacts.erase(std::remove_if(o.contacts.begin(), o.contacts.end(),
+                                      [&](const Contact & c) { return c.id == b.contact; }),
+                       o.contacts.end());
+    }
     obstacles_.erase(std::remove_if(obstacles_.begin(), obstacles_.end(),
-                                    [&](const Bump & o) { return o.time == b.time; }),
+                                    [](const FeltObstacle & o) { return o.contacts.empty(); }),
                      obstacles_.end());
+    ++markers_version_;
+    saveObstacles();
   }
   publishObstacles();
 }
@@ -449,6 +513,18 @@ void Context::setBranch(const std::string & b)
   branch_ = b;
 }
 
+MarkShape Context::markShape() const
+{
+  MarkShape m;
+  m.body.front = params.footprint_front;
+  m.body.rear = params.footprint_rear;
+  m.body.half_width = params.footprint_half_width;
+  m.body.chamfer = params.footprint_front_chamfer;
+  m.gap = params.bump_mark_gap;
+  m.depth = params.bump_mark_depth;
+  return m;
+}
+
 void Context::onBump()
 {
   const auto pose = robotPose();
@@ -460,36 +536,94 @@ void Context::onBump()
   }
   const auto & q = pose->pose.orientation;
   const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+  Contact c;
+  c.x = pose->pose.position.x;
+  c.y = pose->pose.position.y;
+  c.yaw = yaw;
+  c.side = bump_side.load();
+  c.marks = contactMarks(c, markShape());
   Bump b;
   b.time = Clock::now();
-  b.x = pose->pose.position.x + params.bump_front_offset * std::cos(yaw);
-  b.y = pose->pose.position.y + params.bump_front_offset * std::sin(yaw);
+  b.x = c.x;
+  b.y = c.y;
   b.yaw = yaw;
-  RCLCPP_WARN(node->get_logger(), "Bump: obstacle marked at (%.2f, %.2f)", b.x, b.y);
+  int contacts = 0;
   {
     std::lock_guard<std::mutex> l(mutex_);
-    last_bump_ = b;
-    // Repeated bumps at the same obstacle refresh it instead of stacking strips
-    // (four stacked strips closed a narrow corridor in the sim).
-    auto same = std::find_if(obstacles_.begin(), obstacles_.end(), [&](const Bump & o) {
-      return std::hypot(o.x - b.x, o.y - b.y) < params.bump_merge_distance;
-    });
-    if (same != obstacles_.end()) {
-      *same = b;
-    } else {
-      obstacles_.push_back(b);
+    c.id = next_contact_id_++;
+    b.contact = c.id;
+    // The obstacle being felt around, else the nearest one whose marks come
+    // within bump_merge_distance of the new ones, else a new obstacle.
+    FeltObstacle * into = nullptr;
+    const int feeling = feel_obstacle.load();
+    for (auto & o : obstacles_) {
+      if (o.id == feeling) into = &o;
     }
+    if (!into) {
+      double best = params.bump_merge_distance;
+      for (auto & o : obstacles_) {
+        for (const auto & [px, py] : c.marks) {
+          const double d = o.distance(px, py);
+          if (d <= best) {
+            best = d;
+            into = &o;
+          }
+        }
+      }
+    }
+    if (!into) {
+      obstacles_.push_back(FeltObstacle{next_obstacle_id_++, {}});
+      into = &obstacles_.back();
+    }
+    // Bumping the same spot again from the same pose refreshes that contact.
+    auto same = std::find_if(into->contacts.begin(), into->contacts.end(),
+                             [&](const Contact & o) { return sameContact(o, c); });
+    if (same != into->contacts.end()) into->contacts.erase(same);
+    into->contacts.push_back(c);
+    if (static_cast<int>(into->contacts.size()) > params.bump_max_contacts) into->contacts.erase(into->contacts.begin());
+    b.obstacle = into->id;
+    contacts = static_cast<int>(into->contacts.size());
+    last_bump_ = b;
+    ++markers_version_;
+    saveObstacles();
   }
+  const char * where = c.side > 0 ? "front left" : c.side < 0 ? "front right" : "front";
+  RCLCPP_WARN(node->get_logger(), "Bump at (%.2f, %.2f), %s: obstacle %d, %d contact%s felt", c.x, c.y, where,
+              b.obstacle, contacts, contacts == 1 ? "" : "s");
   publishObstacles();
 }
 
-std::optional<Context::Bump> Context::knownObstacleNear(double x, double y, double radius) const
+std::optional<int> Context::obstacleNear(double x, double y, double radius) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  std::optional<int> id;
+  double best = radius;
+  for (const auto & o : obstacles_) {
+    const double d = o.distance(x, y);
+    if (d <= best) {
+      best = d;
+      id = o.id;
+    }
+  }
+  return id;
+}
+
+double Context::obstacleDistance(int id, double x, double y) const
 {
   std::lock_guard<std::mutex> l(mutex_);
   for (const auto & o : obstacles_) {
-    if (std::hypot(o.x - x, o.y - y) <= radius) return o;
+    if (o.id == id) return o.distance(x, y);
   }
-  return std::nullopt;
+  return std::numeric_limits<double>::infinity();
+}
+
+size_t Context::obstacleContacts(int id) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  for (const auto & o : obstacles_) {
+    if (o.id == id) return o.contacts.size();
+  }
+  return 0;
 }
 
 std::optional<Context::Bump> Context::lastBump() const
@@ -514,14 +648,98 @@ std::optional<Context::Bump> Context::takeBump()
 
 void Context::clearBumpObstacles()
 {
-  std::lock_guard<std::mutex> l(mutex_);
-  obstacles_.clear();
-  if (last_bump_) handled_bump_ = last_bump_->time;
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (!obstacles_.empty()) {
+      RCLCPP_INFO(node->get_logger(), "Forgetting %zu felt obstacles", obstacles_.size());
+      ++markers_version_;
+    }
+    obstacles_.clear();
+    if (last_bump_) handled_bump_ = last_bump_->time;
+    saveObstacles();
+  }
+  publishObstacles();
+  publishMarkers();
 }
 
-void Context::publishObstacles()
+bool Context::forgetObstacle(double x, double y, double radius, bool all, std::string & message)
 {
-  std::vector<std::pair<double, double>> pts;
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (all) {
+      message = "forgot " + std::to_string(obstacles_.size()) + " felt obstacle(s)";
+      obstacles_.clear();
+    } else {
+      auto best = obstacles_.end();
+      double best_d = radius;
+      for (auto it = obstacles_.begin(); it != obstacles_.end(); ++it) {
+        const double d = it->distance(x, y);
+        if (d <= best_d) {
+          best_d = d;
+          best = it;
+        }
+      }
+      if (best == obstacles_.end()) {
+        message = "no felt obstacle there";
+        return false;
+      }
+      message = "forgot obstacle " + std::to_string(best->id) + " (" + std::to_string(best->contacts.size()) +
+                " contacts)";
+      obstacles_.erase(best);
+    }
+    ++markers_version_;
+    saveObstacles();
+  }
+  publishObstacles();
+  publishMarkers();
+  return true;
+}
+
+bool Context::forgetEdgeCorrection(double x, double y, double radius, bool all, std::string & message)
+{
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (all) {
+      message = "forgot " + std::to_string(edge_corrections_.size()) + " edge correction(s)";
+      edge_corrections_.clear();
+    } else {
+      auto best = edge_corrections_.end();
+      double best_d = radius;
+      for (auto it = edge_corrections_.begin(); it != edge_corrections_.end(); ++it) {
+        const double d = std::hypot(it->x - x, it->y - y);
+        if (d <= best_d) {
+          best_d = d;
+          best = it;
+        }
+      }
+      if (best == edge_corrections_.end()) {
+        message = "no edge correction there";
+        return false;
+      }
+      char text[96];
+      std::snprintf(text, sizeof(text), "forgot the edge correction at (%.2f, %.2f), %.0f cm", best->x, best->y,
+                    best->offset * 100.0);
+      message = text;
+      edge_corrections_.erase(best);
+    }
+    // The plan being mowed keeps its shift; the next plan of the area won't have it.
+    message += " (from the next plan of the area on)";
+    saveEdgeCorrections();
+    ++markers_version_;
+  }
+  publishMarkers();
+  return true;
+}
+
+bool Context::refreshObstacles()
+{
+  return publishObstacles();
+}
+
+bool Context::publishObstacles()
+{
+  std::vector<std::pair<float, float>> pts;
+  bool left_out = false;
   const auto robot = robotPose();
   double rc = 1.0, rs = 0.0;
   if (robot) {
@@ -541,29 +759,21 @@ void Context::publishObstacles()
   };
   {
     std::lock_guard<std::mutex> l(mutex_);
-    // Per bump: discs at the front-left corner, centre and front-right corner
-    // (5 cm spacing, the costmap resolution). Points outside every area are
-    // useless (already blocked) and dropped.
-    const double r = params.bump_obstacle_radius, hw = params.footprint_half_width;
-    auto inside_areas = [&](double px, double py) {
-      bool in = false;
-      for (const auto & a : map_.areas) {
-        if (a.area.polygon.points.size() < 3 || !insidePolygon(px, py, a.area.polygon)) continue;
-        if (a.type == open_mower_next::msg::Area::TYPE_EXCLUSION) return false;
-        in = true;
-      }
-      return in;
-    };
+    // One point per 5 cm cell (the costmap resolution); marks outside every
+    // area are useless (already blocked) and dropped.
+    std::set<std::pair<long, long>> cells;
     for (const auto & o : obstacles_) {
-      // o.x/o.y is the centre disc; the corner discs sit hw to either side.
-      const double c = std::cos(o.yaw), s = std::sin(o.yaw);
-      for (double side : {-hw, 0.0, hw}) {
-        const double cx = o.x - side * s, cy = o.y + side * c;
-        for (double dx = -r; dx <= r + 1e-9; dx += 0.05) {
-          for (double dy = -r; dy <= r + 1e-9; dy += 0.05) {
-            const double px = cx + dx, py = cy + dy;
-            if (dx * dx + dy * dy <= r * r && !near_robot(px, py) && inside_areas(px, py)) pts.emplace_back(px, py);
+      for (const auto & c : o.contacts) {
+        for (const auto & [px, py] : c.marks) {
+          const std::pair<long, long> cell{std::lround(std::floor(px / 0.05)), std::lround(std::floor(py / 0.05))};
+          if (cells.count(cell)) continue;
+          if (near_robot(px, py)) {
+            left_out = true;
+            continue;
           }
+          if (!insideAreas(px, py)) continue;
+          cells.insert(cell);
+          pts.emplace_back(static_cast<float>(px), static_cast<float>(py));
         }
       }
     }
@@ -576,14 +786,50 @@ void Context::publishObstacles()
   mod.resize(pts.size());
   sensor_msgs::PointCloud2Iterator<float> x(cloud, "x"), y(cloud, "y"), z(cloud, "z");
   for (const auto & [px, py] : pts) {
-    *x = static_cast<float>(px);
-    *y = static_cast<float>(py);
+    *x = px;
+    *y = py;
     *z = 0.1f;
     ++x, ++y, ++z;
   }
   obstacle_pub_->publish(cloud);
+  return left_out;
 }
 
+void Context::publishMarkers()
+{
+  std::ostringstream s;
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (markers_version_ == markers_published_) return;
+    markers_published_ = markers_version_;
+    const auto shape = markShape();
+    auto num = [](double v) { return std::round(v * 100.0) / 100.0; };
+    s << "{\"depth\":" << shape.depth << ",\"obstacles\":[";
+    for (size_t i = 0; i < obstacles_.size(); ++i) {
+      const auto & o = obstacles_[i];
+      s << (i ? "," : "") << "{\"id\":" << o.id << ",\"lines\":[";
+      for (size_t k = 0; k < o.contacts.size(); ++k) {
+        s << (k ? "," : "") << "[";
+        const auto line = contactLine(o.contacts[k], shape);
+        for (size_t j = 0; j < line.size(); ++j) {
+          s << (j ? "," : "") << "[" << num(line[j].first) << "," << num(line[j].second) << "]";
+        }
+        s << "]";
+      }
+      s << "]}";
+    }
+    s << "],\"edges\":[";
+    for (size_t i = 0; i < edge_corrections_.size(); ++i) {
+      const auto & c = edge_corrections_[i];
+      s << (i ? "," : "") << "{\"x\":" << num(c.x) << ",\"y\":" << num(c.y) << ",\"offset\":" << num(c.offset)
+        << ",\"radius\":" << params.edge_correction_radius << "}";
+    }
+    s << "]}";
+  }
+  std_msgs::msg::String m;
+  m.data = s.str();
+  markers_pub_->publish(m);
+}
 
 bool Context::footprintFits(double x, double y, double yaw) const
 {

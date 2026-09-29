@@ -3,6 +3,8 @@
 //
 // Commands (std_srvs/Trigger): ~/start_mowing, ~/go_home, ~/stop (idle where it
 // is), ~/skip_pass, ~/skip_area, ~/reset_mission. State: ~/state (String, 1 Hz).
+// Felt obstacles and edge corrections: ~/obstacles (JSON String, latched, on
+// change), ~/forget_obstacle (ForgetObstacle) to drop them.
 #include "mower_logic/mower_logic_node.hpp"
 
 #include "mower_logic/bt_nodes.hpp"
@@ -12,6 +14,8 @@
 #include <rclcpp_components/register_node_macro.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
+
+#include "open_mower_next/srv/forget_obstacle.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -44,8 +48,10 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   p.mission_file = node->declare_parameter("mission_file", p.mission_file);
   p.resume_backtrack = node->declare_parameter("resume_backtrack", p.resume_backtrack);
   p.resume_direct_distance = node->declare_parameter("resume_direct_distance", p.resume_direct_distance);
-  p.bump_front_offset = node->declare_parameter("bump_front_offset", p.bump_front_offset);
-  p.bump_obstacle_radius = node->declare_parameter("bump_obstacle_radius", p.bump_obstacle_radius);
+  p.bump_mark_gap = node->declare_parameter("bump_mark_gap", p.bump_mark_gap);
+  p.bump_mark_depth = node->declare_parameter("bump_mark_depth", p.bump_mark_depth);
+  p.bump_max_contacts = static_cast<int>(node->declare_parameter("bump_max_contacts", p.bump_max_contacts));
+  p.obstacles_file = node->declare_parameter("obstacles_file", p.obstacles_file);
   p.bump_keep_free = node->declare_parameter("bump_keep_free", p.bump_keep_free);
   p.footprint_front = node->declare_parameter("footprint_front", p.footprint_front);
   p.corner_max_reverse = node->declare_parameter("corner_max_reverse", p.corner_max_reverse);
@@ -59,6 +65,17 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   p.bump_merge_distance = node->declare_parameter("bump_merge_distance", p.bump_merge_distance);
   p.bump_lookahead = node->declare_parameter("bump_lookahead", p.bump_lookahead);
   p.bump_avoid_radius = node->declare_parameter("bump_avoid_radius", p.bump_avoid_radius);
+  p.feel_around = node->declare_parameter("feel_around", p.feel_around);
+  p.feel_speed = node->declare_parameter("feel_speed", p.feel_speed);
+  p.feel_backoff = node->declare_parameter("feel_backoff", p.feel_backoff);
+  p.feel_turn = node->declare_parameter("feel_turn", p.feel_turn);
+  p.feel_arc_radius = node->declare_parameter("feel_arc_radius", p.feel_arc_radius);
+  p.feel_rejoin_distance = node->declare_parameter("feel_rejoin_distance", p.feel_rejoin_distance);
+  p.feel_max_travel = node->declare_parameter("feel_max_travel", p.feel_max_travel);
+  p.feel_max_contacts = static_cast<int>(node->declare_parameter("feel_max_contacts", p.feel_max_contacts));
+  p.feel_max_offset = node->declare_parameter("feel_max_offset", p.feel_max_offset);
+  p.feel_timeout = node->declare_parameter("feel_timeout", p.feel_timeout);
+  p.feel_blade = node->declare_parameter("feel_blade", p.feel_blade);
   p.edge_bump_distance = node->declare_parameter("edge_bump_distance", p.edge_bump_distance);
   p.edge_correction_step = node->declare_parameter("edge_correction_step", p.edge_correction_step);
   p.edge_correction_max = node->declare_parameter("edge_correction_max", p.edge_correction_max);
@@ -112,12 +129,32 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   services_.push_back(trigger("stop", [ctx]() { ctx->command = Command::IDLE; return "idle (mission kept)"; }));
   services_.push_back(trigger("skip_pass", [ctx]() { ctx->mission.skipPass(); return ctx->mission.summary(); }));
   services_.push_back(trigger("skip_area", [ctx]() { ctx->mission.skipArea(); return ctx->mission.summary(); }));
-  services_.push_back(trigger("reset_mission", [ctx]() { ctx->mission.clear(); return "mission cleared"; }));
+  services_.push_back(trigger("reset_mission", [ctx]() {
+    ctx->mission.clear();
+    ctx->clearBumpObstacles();  // Daniel: kept to look at until the mission is reset
+    return "mission and felt obstacles cleared";
+  }));
   services_.push_back(node_->create_service<std_srvs::srv::Trigger>(
     "~/clear_emergency", [ctx, this](const std_srvs::srv::Trigger::Request::SharedPtr,
                                      std_srvs::srv::Trigger::Response::SharedPtr res) {
       res->success = ctx->clearEmergency(res->message);
       RCLCPP_WARN(node_->get_logger(), "clear_emergency: %s", res->message.c_str());
+    }));
+
+  services_.push_back(node_->create_service<srv::ForgetObstacle>(
+    "~/forget_obstacle", [ctx, this](const srv::ForgetObstacle::Request::SharedPtr req,
+                                     srv::ForgetObstacle::Response::SharedPtr res) {
+      const double r = req->radius > 0.0 ? req->radius : 0.5;
+      using R = srv::ForgetObstacle::Request;
+      if (req->kind == R::KIND_OBSTACLE || req->kind == R::KIND_ALL_OBSTACLES) {
+        res->success = ctx->forgetObstacle(req->x, req->y, r, req->kind == R::KIND_ALL_OBSTACLES, res->message);
+      } else if (req->kind == R::KIND_EDGE || req->kind == R::KIND_ALL_EDGES) {
+        res->success = ctx->forgetEdgeCorrection(req->x, req->y, r, req->kind == R::KIND_ALL_EDGES, res->message);
+      } else {
+        res->success = false;
+        res->message = "unknown kind '" + req->kind + "'";
+      }
+      RCLCPP_INFO(node_->get_logger(), "forget_obstacle %s: %s", req->kind.c_str(), res->message.c_str());
     }));
 
   auto state_pub = node_->create_publisher<std_msgs::msg::String>("~/state", rclcpp::QoS(1).transient_local());

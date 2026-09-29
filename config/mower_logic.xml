@@ -7,8 +7,10 @@
   Daniel): start_mowing continues the kept mission.
   The blade is only ever on inside FollowPass.
   A bump (worx_hardware: firmware BlockForward / Collision) stops the transit or
-  pass; MowPass then backs up and continues the pass beyond the obstacle, which
-  is marked in the costmaps (~/bump_obstacles).
+  pass. On a pass MowPass feels its way around the obstacle like a robot vacuum
+  (FeelAround) and continues the pass beyond it; what was felt is marked in the
+  planner's costmap (~/bump_obstacles). If feeling gives up, it backs up and
+  goes around the felt marks with a transit.
 -->
 <root BTCPP_format="4" main_tree_to_execute="Main">
 
@@ -145,13 +147,20 @@
         </Sequence>
         <Sequence name="bump_recovery">
           <TakeBump/>
-          <ForceSuccess>
-            <Fallback>
-              <BackUp/>
-              <ReverseAlongTrack/>
-            </Fallback>
-          </ForceSuccess>
-          <SkipPastBump/>
+          <Fallback>
+            <!-- Bump on a pass: feel around the obstacle back onto the pass. Not
+                 applicable or given up: back up and go around what was felt. -->
+            <FeelAround/>
+            <Sequence>
+              <ForceSuccess>
+                <Fallback>
+                  <BackUp/>
+                  <ReverseAlongTrack/>
+                </Fallback>
+              </ForceSuccess>
+              <SkipPastBump/>
+            </Sequence>
+          </Fallback>
         </Sequence>
         <Sequence>
           <PassFailed/>
