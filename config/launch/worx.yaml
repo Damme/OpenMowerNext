@@ -170,6 +170,8 @@ processes:
             auto_resume: $(env OM_AUTO_RESUME false)
             edge_corrections_file: $(env OM_EDGE_CORRECTIONS_PATH /data/edge_corrections.txt)
             obstacles_file: $(env OM_OBSTACLES_PATH /data/felt_obstacles.txt)
+            # Daniel 2026-09-29: blade on while feeling around an obstacle (off left too much unmown)
+            feel_blade: $(env OM_FEEL_BLADE true)
             controller_id: FTC
             goal_checker_id: ftc_goal_checker
             progress_checker_id: ftc_progress_checker
