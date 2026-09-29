@@ -86,6 +86,10 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr gps_pub_;
   bool gps_require_rtk_fixed_ = true;
+  // Final docking approach (at the staging pose and in, incl. retries): no GPS either.
+  // Under the dock roof RTK flips fixed/float with false fixes; 2026-09-29 three
+  // approaches ended 10-20 cm beside the contacts while GPS kept switching on/off.
+  std::atomic<bool> final_approach_{false};
   std::string gps_gate_reason_ = "starting";
 
   template <typename ActionT, typename GoalHandleT>

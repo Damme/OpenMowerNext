@@ -70,6 +70,8 @@ void open_mower_next::docking_helper::DockingHelperNode::gateGps(sensor_msgs::ms
   std::string why;
   if (charger_present_)
     why = "on the charger";
+  else if (final_approach_)
+    why = "final docking approach";
   else if (gps_require_rtk_fixed_ && m->status.status != sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX)
     why = "no RTK fixed solution";
   if (why != gps_gate_reason_)
@@ -322,11 +324,15 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
   std::shared_ptr<uint16_t> current_retries = std::make_shared<uint16_t>(0);
   // Shared with the result callback, which may run after this function returns.
   auto docking_active = std::make_shared<std::atomic<bool>>(true);
-  // Docking mode off again however this ends (success, failure, cancel).
+  // Docking mode off and GPS back again however this ends (success, failure, cancel).
   struct DockingModeOff
   {
     DockingHelperNode * self;
-    ~DockingModeOff() { self->setDockingMode(false); }
+    ~DockingModeOff()
+    {
+      self->final_approach_ = false;
+      self->setDockingMode(false);
+    }
   } docking_mode_off{this};
 
   auto nav2_goal = nav2_msgs::action::DockRobot::Goal();
@@ -353,6 +359,9 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
        current_retries](typename rclcpp_action::ClientGoalHandle<nav2_msgs::action::DockRobot>::SharedPtr,
                         const std::shared_ptr<const nav2_msgs::action::DockRobot::Feedback> feedback) {
         RCLCPP_INFO(get_logger(), "Docking state: %d, retries: %d", feedback->state, feedback->num_retries);
+        // From the staging pose in (2 initial perception, 3 controlling, 4 waiting for
+        // charge, 5 retrying = back to staging and in again): dead reckoning only.
+        final_approach_ = feedback->state >= 2 && feedback->state <= 5;
 
         *current_status = feedback->state;
         *current_retries = feedback->num_retries;
