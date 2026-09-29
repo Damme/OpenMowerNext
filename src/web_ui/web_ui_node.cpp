@@ -1,7 +1,8 @@
 // web_ui: the robot's control page, reachable only from the local VPN (web_server.hpp).
 //
 // One page (index.html, compiled into the library) talks JSON over a WebSocket:
-//   robot -> page  {"t":"state"} 2 Hz, {"t":"pose"} 5 Hz, {"t":"map"} on change, {"t":"log"} results/events
+//   robot -> page  {"t":"state"} 2 Hz, {"t":"pose"} 5 Hz, {"t":"map"} on change, {"t":"log"} results/events,
+//                  {"t":"obs"} on change: what mower_logic felt by bumping (obstacles, edge corrections)
 //   page -> robot  {"c":"<command>", ...}, see handle()
 // Commands use what already exists: mower_logic's services, worx_hardware's motor enable,
 // map_recorder's actions/services and map_server's remove_area. Manual driving publishes
@@ -32,6 +33,7 @@
 #include "open_mower_next/action/record_docking_station.hpp"
 #include "open_mower_next/msg/map.hpp"
 #include "open_mower_next/msg/worx_status.hpp"
+#include "open_mower_next/srv/forget_obstacle.hpp"
 #include "open_mower_next/srv/remove_area.hpp"
 
 #include <algorithm>
@@ -242,6 +244,15 @@ private:
         map_ = m;
         sendMap(0);
       });
+    obstacles_sub_ = create_subscription<std_msgs::msg::String>(
+      "/mower_logic/obstacles", rclcpp::QoS(1).transient_local(), [this](std_msgs::msg::String::ConstSharedPtr m) {
+        auto j = Json::parse(m->data, nullptr, false);
+        if (j.is_discarded() || !j.is_object()) return;
+        j["t"] = "obs";
+        obstacles_ = j.dump();
+        send(0, obstacles_);
+      });
+    forget_client_ = create_client<srv::ForgetObstacle>("/mower_logic/forget_obstacle");
 
     for (const char * name :
          {"start_mowing", "go_home", "stop", "skip_pass", "skip_area", "reset_mission", "clear_emergency"}) {
@@ -266,6 +277,9 @@ private:
     gps_sub_.reset();
     odom_sub_.reset();
     map_sub_.reset();
+    obstacles_sub_.reset();
+    obstacles_.clear();
+    forget_client_.reset();
     logic_clients_.clear();
     motors_client_.reset();
     worx_params_client_.reset();
@@ -346,6 +360,7 @@ private:
     server_->send(client, state().dump());
     for (const auto & line : log_) server_->send(client, line);
     if (!rec_points_.empty()) server_->send(client, Json{{"t", "rec"}, {"pts", rec_points_}}.dump());
+    if (!obstacles_.empty()) server_->send(client, obstacles_);
   }
 
   void send(uint64_t client, const std::string & text)
@@ -396,6 +411,8 @@ private:
       recordDock(m.at("name").get<std::string>());
     } else if (c == "dock_cancel") {
       if (dock_goal_) rec_dock_client_->async_cancel_goal(dock_goal_);
+    } else if (c == "forget") {
+      forget(m.at("kind").get<std::string>(), m.value("x", 0.0), m.value("y", 0.0));
     } else {
       send(client, logLine(false, "unknown command " + c));
     }
@@ -484,6 +501,26 @@ private:
     t.twist.linear.x = v;
     t.twist.angular.z = w;
     joy_pub_->publish(t);
+  }
+
+  // ---- felt obstacles / edge corrections ------------------------------------
+
+  void forget(const std::string & kind, double x, double y)
+  {
+    if (!forget_client_ || !forget_client_->service_is_ready()) {
+      event(false, "Forget: /mower_logic/forget_obstacle not available");
+      return;
+    }
+    if (!std::isfinite(x) || !std::isfinite(y)) return;
+    auto req = std::make_shared<srv::ForgetObstacle::Request>();
+    req->kind = kind;
+    req->x = x;
+    req->y = y;
+    req->radius = 0.6;
+    forget_client_->async_send_request(req, [this](rclcpp::Client<srv::ForgetObstacle>::SharedFuture f) {
+      const auto r = f.get();
+      event(r->success, "Forget: " + r->message);
+    });
   }
 
   // ---- manual blade ------------------------------------------------------------
@@ -813,6 +850,9 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<msg::Map>::SharedPtr map_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr obstacles_sub_;
+  std::string obstacles_;  // last {"t":"obs"} message
+  rclcpp::Client<srv::ForgetObstacle>::SharedPtr forget_client_;
   Json logic_, worx_;
   rclcpp::Time logic_time_{0, 0, RCL_ROS_TIME}, worx_time_{0, 0, RCL_ROS_TIME}, gps_time_{0, 0, RCL_ROS_TIME};
   int gps_status_ = -1;

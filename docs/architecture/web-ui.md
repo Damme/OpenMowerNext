@@ -15,6 +15,10 @@ The page shows the map (areas, dock, robot, trail), battery, GPS, motor and mowe
 - **Drive**: a joystick (touch or mouse) and arrow keys / WASD, and the blade on/off switch.
 - **Blade**: PWM and direction (sign) the blade runs at when it's switched on by hand.
 - **Areas**: switch mowing areas on/off, remove areas.
+- **Bumps**: what the mower learned by bumping: obstacles it felt its way around (drawn purple on the map, the
+  bumper outline at each touch; kept until Reset mission or a new mission from the beginning) and edge corrections (dashed circles, where the outline runs further in
+  after perimeter bumps). Forget one (tap it on the map, or the list) or all of them. Many corrections along one
+  edge mean that boundary is worth re-recording.
 - **Record**: record an area boundary (automatic points while driving, or points by hand) and the docking station.
 - **Log**: results of commands, including those sent from other open pages.
 
@@ -90,10 +94,13 @@ JSON text messages over `ws://<host>:<port>/ws`.
 
 - Robot → page: `{"t":"state"}` (2 Hz), `{"t":"pose","x","y","yaw"}` (5 Hz, from `pose_topic`,
   default `/odometry/filtered/map`), `{"t":"map","areas":[…],"docks":[…]}` (on connect and when the map changes;
-  polygons simplified to 2 cm), `{"t":"rec","pts":[…]}` (boundary being recorded), `{"t":"log","ok","msg","time"}`.
+  polygons simplified to 2 cm), `{"t":"rec","pts":[…]}` (boundary being recorded), `{"t":"log","ok","msg","time"}`,
+  `{"t":"obs","depth","obstacles":[{"id","lines":[[[x,y],…],…]}],"edges":[{"x","y","offset","radius"}]}` (mower_logic's
+  `~/obstacles`, on connect and when it changes).
 - Page → robot: `{"c":"logic","name":…}`, `{"c":"motors","on":…}`, `{"c":"joy","v":-1..1,"w":-1..1}`, `{"c":"blade","on":…}`, `{"c":"blade_pwm","pwm":…}`,
   `{"c":"area","id":…,"enabled":…}`, `{"c":"area_remove","id":…}`, `{"c":"rec_start","name","type","auto"}`,
   `{"c":"rec_auto","auto"}`, `{"c":"rec_point"}`, `{"c":"rec_finish"}`, `{"c":"rec_cancel"}`,
-  `{"c":"dock_start","name"}`, `{"c":"dock_cancel"}`.
+  `{"c":"dock_start","name"}`, `{"c":"dock_cancel"}`, `{"c":"forget","kind","x","y"}` (mower_logic's
+  `~/forget_obstacle`: `obstacle` / `edge` nearest to x, y within 0.6 m, `all_obstacles`, `all_edges`).
 
 Source: `src/web_ui/` (`web_server.*` ROS-free server, `web_ui_node.cpp`, `index.html`).

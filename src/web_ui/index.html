@@ -9,6 +9,7 @@
   --bg: #f4f5f2; --panel: #ffffff; --text: #1d211c; --muted: #636b61; --line: #d9ddd5;
   --accent: #2f7d32; --accent-text: #ffffff; --danger: #c62828; --warn: #b26a00; --info: #1e62b0;
   --area: #2f7d32; --area-off: #8a9187; --nav: #1e62b0; --excl: #c62828; --robot: #111; --rec: #e36a00;
+  --bump: #8e24aa; --edge: #00796b;
   --grid: rgba(0,0,0,.06);
   color-scheme: light;
 }
@@ -17,6 +18,7 @@
     --bg: #111411; --panel: #1b1f1a; --text: #e5e9e2; --muted: #9aa396; --line: #30362e;
     --accent: #5cb860; --accent-text: #0c150c; --danger: #ef5350; --warn: #f0a13a; --info: #64a8f0;
     --area: #5cb860; --area-off: #6d746a; --nav: #64a8f0; --excl: #ef5350; --robot: #f5f5f5; --rec: #ff9a3c;
+    --bump: #d17be6; --edge: #4db6ac;
     --grid: rgba(255,255,255,.05);
     color-scheme: dark;
   }
@@ -65,6 +67,7 @@ label.check { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 .area .name { flex: 1; min-width: 0; }
 .area .name div:first-child { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .area.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
 .switch { position: relative; width: 44px; height: 26px; flex: none; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch span { position: absolute; inset: 0; background: var(--area-off); border-radius: 13px; transition: .15s; }
@@ -130,6 +133,7 @@ input[type=range].wide { width: 100%; }
       <button data-tab="drive">Drive</button>
       <button data-tab="blade">Blade</button>
       <button data-tab="areas">Areas</button>
+      <button data-tab="bumps">Bumps</button>
       <button data-tab="rec">Record</button>
       <button data-tab="log">Log</button>
     </nav>
@@ -140,7 +144,7 @@ input[type=range].wide { width: 100%; }
         <button data-logic="go_home">Go home</button></div>
       <div class="row"><button class="danger" data-logic="stop">Stop</button></div>
       <div class="row"><button data-logic="skip_pass">Skip pass</button><button data-logic="skip_area">Skip area</button></div>
-      <div class="row"><button data-logic="reset_mission" data-confirm="Forget the mission progress? The next start plans from the beginning.">Reset mission</button></div>
+      <div class="row"><button data-logic="reset_mission" data-confirm="Forget the mission progress and the felt obstacles? The next start plans from the beginning.">Reset mission</button></div>
       <h2>Robot</h2>
       <div class="row"><button id="b-motors-on">Motors on</button><button id="b-motors-off">Motors off</button></div>
       <div id="details" class="muted"></div>
@@ -175,6 +179,16 @@ input[type=range].wide { width: 100%; }
       <h2>Other areas</h2>
       <div id="areas-other"></div>
     </section>
+    <section id="t-bumps">
+      <p class="muted">What the mower learned by bumping. Obstacles it felt its way around (purple: the bumper outline
+        at each touch; the sensor doesn't say where on the bumper; kept until Reset mission or a new mission from the
+        beginning), and edge corrections: spots where
+        the outline runs further in after perimeter bumps (dashed circles, kept across missions). Tap one on the map to
+        forget it. Many corrections along one edge: re-record that boundary.</p>
+      <div id="felt"></div>
+      <div class="row" style="margin-top:8px"><button id="b-forget-obs">Forget all obstacles</button>
+        <button id="b-forget-edges">Forget all edge corrections</button></div>
+    </section>
     <section id="t-rec">
       <h2>Area boundary</h2>
       <div class="row"><input type="text" id="rec-name" placeholder="Name, e.g. front lawn" maxlength="60"></div>
@@ -206,7 +220,7 @@ input[type=range].wide { width: 100%; }
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const S = { ws: null, state: null, map: null, pose: null, trail: [], rec: [], sel: null, follow: true };
+const S = { ws: null, state: null, map: null, pose: null, trail: [], rec: [], sel: null, follow: true, obs: null, feltSel: null };
 
 // ---- connection -------------------------------------------------------------
 function connect() {
@@ -221,6 +235,7 @@ function connect() {
     else if (m.t === "pose") { onPose(m); }
     else if (m.t === "map") { const first = !S.map; S.map = m; renderAreas(); if (first) fit(); draw(); }
     else if (m.t === "rec") { S.rec = m.pts || []; draw(); }
+    else if (m.t === "obs") { S.obs = m; renderFelt(); draw(); }
     else if (m.t === "log") { addLog(m); }
   };
 }
@@ -413,13 +428,76 @@ function renderAreas() {
   if (!other.childElementCount) other.innerHTML = '<p class="muted">none</p>';
 }
 
+// ---- felt obstacles / edge corrections ----------------------------------------
+function obsPoints(o) { return o.lines.flat(); }
+function obsCenter(o) { const p = obsPoints(o); let x = 0, y = 0; p.forEach(([a, b]) => { x += a; y += b; }); return [x / p.length, y / p.length]; }
+function forgetObstacle(o) {
+  const c = obsCenter(o);
+  if (confirm("Forget felt obstacle " + o.id + " (" + o.lines.length + " touch" + (o.lines.length === 1 ? "" : "es") +
+      ")? If it's still there the mower bumps into it again and feels its way around once more."))
+    cmd({ c: "forget", kind: "obstacle", x: c[0], y: c[1] });
+}
+function forgetEdge(e) {
+  if (confirm("Forget the edge correction here (outline " + Math.round(e.offset * 100) + " cm inward)? From the next plan " +
+      "of that area on the outline follows the recorded line there again."))
+    cmd({ c: "forget", kind: "edge", x: e.x, y: e.y });
+}
+function feltRow(color, title, sub, onShow, onForget, dashed) {
+  const row = document.createElement("div"); row.className = "area";
+  const sw = document.createElement("span"); sw.className = "swatch";
+  sw.style.background = dashed ? "transparent" : color; sw.style.border = "2px " + (dashed ? "dashed " : "solid ") + color;
+  const name = document.createElement("div"); name.className = "name";
+  const n1 = document.createElement("div"); n1.textContent = title;
+  const n2 = document.createElement("div"); n2.className = "muted"; n2.textContent = sub;
+  name.append(n1, n2); name.onclick = onShow;
+  const del = document.createElement("button"); del.className = "small"; del.textContent = "Forget"; del.onclick = onForget;
+  row.append(sw, name, del);
+  return row;
+}
+function renderFelt() {
+  const box = $("felt"); box.innerHTML = "";
+  const o = S.obs || { obstacles: [], edges: [] };
+  for (const ob of o.obstacles) {
+    const c = obsCenter(ob);
+    box.append(feltRow(css.bump, "Obstacle " + ob.id, ob.lines.length + " touch" + (ob.lines.length === 1 ? "" : "es") +
+      " · at " + c[0].toFixed(1) + ", " + c[1].toFixed(1),
+      () => { S.feltSel = "o" + ob.id; S.follow = false; fitBox(bbox(obsPoints(ob), [Infinity, Infinity, -Infinity, -Infinity]).map((v, i) => v + (i < 2 ? -2 : 2))); },
+      () => forgetObstacle(ob), false));
+  }
+  for (const e of o.edges) {
+    box.append(feltRow(css.edge, "Edge correction " + Math.round(e.offset * 100) + " cm inward", "at " + e.x.toFixed(1) + ", " + e.y.toFixed(1),
+      () => { S.feltSel = "e" + e.x + "," + e.y; S.follow = false; fitBox([e.x - 3, e.y - 3, e.x + 3, e.y + 3]); },
+      () => forgetEdge(e), true));
+  }
+  if (!box.childElementCount) box.innerHTML = '<p class="muted">nothing yet</p>';
+  $("b-forget-obs").disabled = !o.obstacles.length;
+  $("b-forget-edges").disabled = !o.edges.length;
+}
+$("b-forget-obs").onclick = () => { if (confirm("Forget every felt obstacle?")) cmd({ c: "forget", kind: "all_obstacles" }); };
+$("b-forget-edges").onclick = () => { if (confirm("Forget every edge correction? From the next plan of each area on the outlines follow the recorded lines again.")) cmd({ c: "forget", kind: "all_edges" }); };
+// Tap on the map: the felt obstacle / edge correction under the finger.
+function feltAt(px, py) {
+  if (!S.obs) return null;
+  const x = (px - view.ox) / view.s, y = (view.oy - py) / view.s, tol = Math.max(0.25, 18 / view.s);
+  let best = null, bd = tol;
+  for (const ob of S.obs.obstacles) for (const [a, b] of obsPoints(ob)) {
+    const d = Math.hypot(a - x, b - y); if (d < bd) { bd = d; best = { ob }; }
+  }
+  if (best) return best;
+  bd = Infinity;
+  for (const e of S.obs.edges) {
+    const d = Math.hypot(e.x - x, e.y - y); if (d < Math.max(e.radius, tol) && d < bd) { bd = d; best = { e }; }
+  }
+  return best;
+}
+
 // ---- map --------------------------------------------------------------------
 const cv = $("map"), ctx = cv.getContext("2d");
 const view = { s: 10, ox: 0, oy: 0 };  // px per m, screen position of map (0,0)
 let css = {};
 function readColors() { const st = getComputedStyle(document.documentElement);
-  for (const k of ["area", "area-off", "nav", "excl", "robot", "rec", "grid", "muted", "accent", "text"]) css[k] = st.getPropertyValue("--" + k).trim(); }
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); draw(); });
+  for (const k of ["area", "area-off", "nav", "excl", "robot", "rec", "grid", "muted", "accent", "text", "bump", "edge"]) css[k] = st.getPropertyValue("--" + k).trim(); }
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); renderFelt(); draw(); });
 readColors();
 function resize() {
   const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
@@ -500,6 +578,24 @@ function render() {
       ctx.lineTo(X(d.x + Math.cos(d.yaw) * 0.6), Y(d.y + Math.sin(d.yaw) * 0.6)); ctx.stroke();
     }
   }
+  if (S.obs) {
+    for (const e of S.obs.edges) {
+      const sel = S.feltSel === "e" + e.x + "," + e.y;
+      ctx.beginPath(); ctx.arc(X(e.x), Y(e.y), Math.max(e.radius * view.s, 6), 0, 7);
+      ctx.strokeStyle = css.edge; ctx.lineWidth = sel ? 3 : 1.5; ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
+      if (view.s > 40) {
+        ctx.fillStyle = css.edge; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "center";
+        ctx.fillText("−" + Math.round(e.offset * 100) + " cm", X(e.x), Y(e.y) + 4);
+      }
+    }
+    // Each touch: the bumper outline where it touched, as thick as the costmap band.
+    ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = css.bump;
+    for (const ob of S.obs.obstacles) {
+      ctx.lineWidth = Math.max(S.obs.depth * view.s, 3) + (S.feltSel === "o" + ob.id ? 3 : 0);
+      for (const l of ob.lines) { path(l); ctx.stroke(); }
+    }
+    ctx.lineCap = "butt"; ctx.lineJoin = "miter";
+  }
   if (S.trail.length > 1) { path(S.trail); ctx.strokeStyle = css.muted; ctx.globalAlpha = 0.6; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1; }
   if (S.rec.length) {
     path(S.rec); ctx.strokeStyle = css.rec; ctx.lineWidth = 2.5; ctx.stroke();
@@ -520,11 +616,14 @@ function render() {
 
 // pan / pinch / wheel
 const ptrs = new Map(); let pinch = null;
-cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]); S.follow = false;
+let tap = null;  // single pointer that hasn't moved: a tap
+cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
+  tap = ptrs.size === 1 ? { x: e.offsetX, y: e.offsetY, t: Date.now(), follow: S.follow } : null; S.follow = false;
   if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), s: view.s }; } });
 cv.addEventListener("pointermove", (e) => {
   if (!ptrs.has(e.pointerId)) return;
   const prev = ptrs.get(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
+  if (tap && Math.hypot(e.offsetX - tap.x, e.offsetY - tap.y) > 6) tap = null;
   if (ptrs.size === 1) { view.ox += e.offsetX - prev[0]; view.oy += e.offsetY - prev[1]; }
   else if (ptrs.size === 2 && pinch) {
     const [a, b] = [...ptrs.values()], mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
@@ -533,7 +632,16 @@ cv.addEventListener("pointermove", (e) => {
   draw();
 });
 const up = (e) => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; };
-cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+cv.addEventListener("pointerup", (e) => {
+  const t = tap; tap = null; up(e);
+  if (!t || e.type !== "pointerup" || Date.now() - t.t > 600) return;
+  const hit = feltAt(e.offsetX, e.offsetY);
+  if (!hit) { S.follow = t.follow; return; }
+  if (hit.ob) { S.feltSel = "o" + hit.ob.id; draw(); forgetObstacle(hit.ob); }
+  else { S.feltSel = "e" + hit.e.x + "," + hit.e.y; draw(); forgetEdge(hit.e); }
+  S.feltSel = null; draw();
+});
+cv.addEventListener("pointercancel", (e) => { tap = null; up(e); });
 cv.addEventListener("wheel", (e) => { e.preventDefault(); S.follow = false; zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0015)); draw(); }, { passive: false });
 function zoomAt(px, py, f) {
   const s = Math.min(Math.max(view.s * f, 0.5), 400); f = s / view.s;
@@ -591,6 +699,7 @@ addEventListener("blur", () => { joy.keys.clear(); joy.release(); });
 document.addEventListener("visibilitychange", () => { if (document.hidden) { joy.keys.clear(); joy.release(); } });
 
 // ---- start ------------------------------------------------------------------
+renderFelt();
 let tab = "mow"; try { tab = localStorage.getItem("om.tab") || "mow"; } catch {}
 showTab(document.querySelector('nav button[data-tab="' + tab + '"]') ? tab : "mow");
 renderState();
