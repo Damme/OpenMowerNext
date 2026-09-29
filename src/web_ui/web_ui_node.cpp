@@ -146,6 +146,7 @@ public:
     max_linear_ = declare_parameter("max_linear", 0.3);
     max_angular_ = declare_parameter("max_angular", 1.0);
     joy_timeout_ = declare_parameter("joy_timeout", 0.3);
+    motors_idle_timeout_ = declare_parameter("motors_idle_timeout", 25.0);
 
     joy_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel_joy", 10);
 
@@ -306,7 +307,10 @@ private:
           setBlade(false);
           event(false, "Page closed with the blade on: blade off");
         }
-        if (pages_.erase(e.client) && pages_.empty()) deactivate();
+        if (pages_.erase(e.client) && pages_.empty()) {
+          if (auto_motors_) autoMotorsOff("Last page closed");
+          deactivate();
+        }
       } else if (pages_.count(e.client)) {
         try {
           handle(e.client, Json::parse(e.text));
@@ -317,6 +321,7 @@ private:
     }
     if (driving_ && (now() - last_joy_).seconds() > joy_timeout_) stopDriving();
     bladeWatch();
+    motorsWatch();
     if (pages_.empty()) {
       if (blade_client_ && blade_requests_ == 0) blade_client_.reset();
       if (rec_area_client_ && !rec_goal_ && !rec_pending_) rec_area_client_.reset();
@@ -367,6 +372,7 @@ private:
       }
       trigger(it->second, it->first);
     } else if (c == "motors") {
+      auto_motors_ = false;  // switched by hand: stays so (e.g. off/on to reset a firmware emergency)
       setBool(motors_client_, m.at("on").get<bool>(), "Motors");
     } else if (c == "blade") {
       blade(client, m.at("on").get<bool>());
@@ -395,7 +401,8 @@ private:
     }
   }
 
-  bool driveAllowed(std::string & why) const
+  // need_motors false: manual driving switches the motors on itself (motorsWatch).
+  bool driveAllowed(std::string & why, bool need_motors) const
   {
     if (logic_.is_null() || (now() - logic_time_).seconds() > 3.0) {
       why = "no state from mower_logic";
@@ -405,8 +412,8 @@ private:
       why = "mower_logic is busy (" + logic_.value("command", "?") + "), press Stop first";
       return false;
     }
-    if (worx_.is_object() && !worx_.value("motors", true)) {
-      why = "motors are off (Motors on, in the Mow tab)";
+    if (need_motors && worx_.is_object() && !worx_.value("motors", true)) {
+      why = "motors are off (drive a bit, or Motors on in the Mow tab)";
       return false;
     }
     return true;
@@ -420,7 +427,7 @@ private:
       return;
     }
     std::string why;
-    if (!driveAllowed(why)) {
+    if (!driveAllowed(why, false)) {
       if (driving_) stopDriving();
       if ((now() - last_refusal_).seconds() > 2.0) {
         last_refusal_ = now();
@@ -428,10 +435,39 @@ private:
       }
       return;
     }
+    if (!auto_motors_ && worx_.is_object() && !worx_.value("motors", true) && motors_client_) {
+      auto_motors_ = true;
+      setBool(motors_client_, true, "Motors (manual driving)");
+    }
     publishTwist(std::clamp(v, -1.0, 1.0) * max_linear_, std::clamp(w, -1.0, 1.0) * max_angular_);
     driving_ = true;
     joy_client_ = client;
     last_joy_ = now();
+    last_activity_ = now();
+  }
+
+  // Motors switched on here for manual driving go off again after motors_idle_timeout
+  // without joystick or manual blade. mower_logic takes over once it leaves IDLE
+  // (it switches them itself); the Motors buttons take over when pressed.
+  void motorsWatch()
+  {
+    if (!auto_motors_) return;
+    if (logic_.is_object() && logic_.value("command", "IDLE") != "IDLE") {
+      auto_motors_ = false;
+      return;
+    }
+    if (driving_ || bladeRunning()) last_activity_ = now();
+    if ((now() - last_activity_).seconds() > motors_idle_timeout_) {
+      autoMotorsOff("No manual driving for " + std::to_string(static_cast<int>(motors_idle_timeout_)) + " s");
+    }
+  }
+
+  void autoMotorsOff(const std::string & why)
+  {
+    auto_motors_ = false;
+    if (!motors_client_) return;
+    event(true, why + ": motors off");
+    setBool(motors_client_, false, "Motors");
   }
 
   void stopDriving()
@@ -459,7 +495,7 @@ private:
       return;
     }
     std::string why;
-    if (!driveAllowed(why)) {
+    if (!driveAllowed(why, true)) {
       event(false, "Blade refused: " + why);
       return;
     }
@@ -723,7 +759,7 @@ private:
   {
     const auto t = now();
     std::string why;
-    const bool can_drive = driveAllowed(why);
+    const bool can_drive = driveAllowed(why, false);
     Json s = {{"t", "state"},
               {"logic", (t - logic_time_).seconds() < 3.0 ? logic_ : Json()},
               {"worx", (t - worx_time_).seconds() < 3.0 ? worx_ : Json()},
@@ -763,12 +799,14 @@ private:
   std::set<uint64_t> pages_;  // open WebSocket clients
   std::string disabled_file_, pose_topic_;
   std::set<std::string> only_areas_;
-  double max_linear_ = 0.3, max_angular_ = 1.0, joy_timeout_ = 0.3;
+  double max_linear_ = 0.3, max_angular_ = 1.0, joy_timeout_ = 0.3, motors_idle_timeout_ = 25.0;
+  bool auto_motors_ = false;  // motors switched on by manual driving (motorsWatch switches them off)
 
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr joy_pub_;
   bool driving_ = false;
   uint64_t joy_client_ = 0;
   rclcpp::Time last_joy_{0, 0, RCL_ROS_TIME}, last_refusal_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_activity_{0, 0, RCL_ROS_TIME};
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr logic_sub_;
   rclcpp::Subscription<msg::WorxStatus>::SharedPtr worx_sub_;

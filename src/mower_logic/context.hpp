@@ -118,6 +118,12 @@ struct Params
   // Areas to leave out (one area id per line, e.g. mow_4; '#' comments), re-read at
   // every mission start so an area can be switched off without a restart.
   std::string disabled_areas_file;   // empty: none
+  // Daniel 2026-09-29: motors on as soon as the tree leaves a parked state (IDLE,
+  // CHARGING, WAITING_FOR_RAIN, EMERGENCY), off once it has been parked this long.
+  // Only switched on these changes: the web UI's manual Motors on/off (emergency
+  // reset) isn't overridden while the state stays the same.
+  bool auto_motors = true;
+  double motors_off_delay = 2.0;     // s
 };
 
 class Context
@@ -136,7 +142,8 @@ public:
   std::atomic<int> undock_failures{0};
   std::atomic<int> skipped_passes_in_row{0};
   std::atomic<bool> blade_in_use{false};  // set by FollowPass while it runs
-  std::atomic<bool> count_failure{true};  // false: last pass "failure" was an early end, resume without counting
+  std::atomic<bool> count_failure{true};
+  std::atomic<bool> parked{false};        // a parking Hold was ticked in this tick (tick thread)  // false: last pass "failure" was an early end, resume without counting
 
   // ---- inputs ----
   double batteryFraction() const;
@@ -227,6 +234,7 @@ public:
   bool avoiding_known_obstacle = false;
 
   void setBlade(bool on);
+  bool setMotors(bool on);  // /worx/motors_enabled, asynchronous; false: service not available
   // Direct drive command (twist_mux navigation input), for the last-resort reverse.
   void drive(double linear, double angular);
   rclcpp::Client<open_mower_next::srv::AreaCoverage>::SharedPtr coverage_client;
@@ -243,7 +251,7 @@ private:
   bool charger_ = false;
   bool emergency_ = false;
   bool worx_emergency_ = false, board_emergency_ = false, lift_ = false, collision_ = false;
-  rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr emergency_client_;
+  rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr emergency_client_, motors_client_;
   std::optional<Clock::time_point> last_rain_;
   std::optional<Clock::time_point> gps_good_since_, gps_last_good_;
   bool needs_charging_ = false;

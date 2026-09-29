@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <optional>
 #include <sstream>
 
 namespace open_mower_next::mower_logic
@@ -87,6 +88,8 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
     }
   }
   p.disabled_areas_file = node->declare_parameter("disabled_areas_file", p.disabled_areas_file);
+  p.auto_motors = node->declare_parameter("auto_motors", p.auto_motors);
+  p.motors_off_delay = node->declare_parameter("motors_off_delay", p.motors_off_delay);
   const auto tree_file = node->declare_parameter(
     "tree", ament_index_cpp::get_package_share_directory("open_mower_next") + "/config/mower_logic.xml");
   const double rate = node->declare_parameter("tick_rate", 10.0);
@@ -184,10 +187,23 @@ void MowerLogicNode::run(const std::string & tree_file, double rate, bool log_tr
   RCLCPP_INFO(node_->get_logger(), "mower_logic ready (%s)", tree_file.c_str());
 
   rclcpp::WallRate loop(rate);
+  std::optional<bool> motors;  // last automatic switch (none yet)
+  auto parked_since = Context::Clock::now();
   while (rclcpp::ok() && !stop_) {
+    ctx_->parked = false;
     tree.tickOnce();
     // Belt and braces: nothing but FollowPass may keep the blade on.
     if (!ctx_->blade_in_use) ctx_->setBlade(false);
+    if (ctx_->params.auto_motors) {
+      const auto now = Context::Clock::now();
+      if (!ctx_->parked) parked_since = now;
+      if (!ctx_->parked && motors != true) {
+        if (ctx_->setMotors(true)) motors = true;
+      } else if (ctx_->parked && motors != false &&
+                 std::chrono::duration<double>(now - parked_since).count() >= ctx_->params.motors_off_delay) {
+        if (ctx_->setMotors(false)) motors = false;
+      }
+    }
     loop.sleep();
   }
   tree.haltTree();

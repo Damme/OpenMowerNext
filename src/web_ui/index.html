@@ -288,10 +288,12 @@ function renderBlade(w) {
   bb.textContent = on ? "Blade off" : "Blade on";
   bb.classList.toggle("bladeon", on);
   const dr = (S.state && S.state.drive) || {};
-  if (!on && S.state) bb.disabled = !b || !dr.ok;
+  // Driving switches the motors on by itself, the blade doesn't: it needs them on already.
+  const why = !dr.ok ? dr.why || "" : w && !w.motors ? "Motors are off: drive a bit, or Motors on in the Mow tab." : "";
+  if (!on && S.state) bb.disabled = !b || !!why;
   $("blade-info").textContent = !b ? "no board data" : on
     ? "Running at PWM " + fmtPwm(b.cmd) + " · " + b.current + " mA · " + b.pulses + " pulses. Stops on its own after blade_idle_timeout (25 s) without driving."
-    : "Set to PWM " + fmtPwm(b.pwm) + " (Blade tab)." + (dr.ok ? "" : " " + (dr.why || ""));
+    : "Set to PWM " + fmtPwm(b.pwm) + " (Blade tab)." + (why ? " " + why : "");
   if (b) {
     $("bpwm").max = b.max;
     if (!blade.dirty) { $("bpwm").value = Math.abs(b.pwm); $("bdir-rev").checked = b.pwm < 0; $("bdir-fwd").checked = b.pwm >= 0; }

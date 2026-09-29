@@ -49,6 +49,17 @@ Everything goes through interfaces that already exist:
 | remove area | `/remove_area` (map_server) |
 | recording | `/record_area_boundary`, `/record_docking_station` (actions), `/set_recording_mode`, `/add_boundary_point`, `/finish_area_recording` (map_recorder) |
 
+## Motors
+
+mower_logic switches the motors itself (`auto_motors`): on as soon as it leaves a parked state (`IDLE`,
+`CHARGING`, `WAITING_FOR_RAIN`, `EMERGENCY`), off once it has been parked for `motors_off_delay` (2 s). It only
+switches when that changes, so the Motors on/off buttons still work in between (off → on is also how the Worx
+firmware resets an emergency).
+
+Manual driving switches the motors on by itself, and they go off again after `motors_idle_timeout` (25 s) without
+joystick input or a running manual blade, when the last page closes, or never if a Motors button was pressed since
+(then they stay as set). The manual blade needs the motors on already.
+
 Manual driving is accepted only while mower_logic's command is `IDLE`. Speeds are scaled on the robot to
 `max_linear` / `max_angular` (0.3 m/s, 1.0 rad/s), and a zero command follows `joy_timeout` (0.3 s) after the last
 message, or at once when the page closes or loses focus. twist_mux's own 0.5 s timeout stays behind it.

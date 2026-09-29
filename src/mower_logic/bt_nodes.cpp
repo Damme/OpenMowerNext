@@ -93,14 +93,23 @@ public:
   NodeStatus onStart() override
   {
     ctx_->setBlade(false);
-    ctx_->setBranch(getInput<std::string>("state").value_or(name()));
+    state_ = getInput<std::string>("state").value_or(name());
+    ctx_->setBranch(state_);
+    return onRunning();
+  }
+  NodeStatus onRunning() override
+  {
+    // Standing still on purpose (the others - WAITING_FOR_GPS, RETRYING - are out on the lawn mid-mission).
+    if (state_ == "IDLE" || state_ == "CHARGING" || state_ == "WAITING_FOR_RAIN" || state_ == "EMERGENCY") {
+      ctx_->parked = true;
+    }
     return NodeStatus::RUNNING;
   }
-  NodeStatus onRunning() override { return NodeStatus::RUNNING; }
   void onHalted() override {}
 
 private:
   CtxPtr ctx_;
+  std::string state_;
 };
 
 class BeginMission : public BT::SyncActionNode

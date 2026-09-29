@@ -42,6 +42,7 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf);
   coverage_client = node->create_client<open_mower_next::srv::AreaCoverage>("/area_coverage");
   emergency_client_ = node->create_client<std_srvs::srv::SetBool>("/worx/emergency");
+  motors_client_ = node->create_client<std_srvs::srv::SetBool>("/worx/motors_enabled");
   blade_pub_ = node->create_publisher<std_msgs::msg::Float64MultiArray>("/mower_controller/commands", 10);
   drive_pub_ = node->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel_nav", 10);
 
@@ -419,6 +420,20 @@ void Context::setBlade(bool on)
   std_msgs::msg::Float64MultiArray m;
   m.data = {on ? 1.0 : 0.0};
   blade_pub_->publish(m);
+}
+
+bool Context::setMotors(bool on)
+{
+  if (!motors_client_->service_is_ready()) {
+    RCLCPP_WARN_THROTTLE(node->get_logger(), *node->get_clock(), 10000, "Motors %s: /worx/motors_enabled not available",
+                         on ? "on" : "off");
+    return false;
+  }
+  RCLCPP_INFO(node->get_logger(), "Motors %s", on ? "on" : "off");
+  auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
+  req->data = on;
+  motors_client_->async_send_request(req);
+  return true;
 }
 
 std::string Context::lastBranch() const
