@@ -18,6 +18,9 @@ bool in_charger
 int32 left_pwm_cmd           # last PWM sent
 int32 right_pwm_cmd
 int32 mow_pwm_cmd
+bool manual_mow                # blade switched on by hand (/worx/manual_mow), runs at manual_mow_pwm
+int32 manual_mow_pwm         # worx_hardware parameter manual_mow_pwm: blade PWM, the sign is the direction
+int32 manual_mow_max_pwm     # limit for |manual_mow_pwm|
 int32[3] motor_pwm           # reported by the board: left, right, mow
 int32[3] motor_current       # reported by the board: left, right, mow
 int32 mow_pulses             # blade pulses per report (~180 while mowing)

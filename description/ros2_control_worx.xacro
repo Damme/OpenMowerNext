@@ -15,6 +15,8 @@
             <param name="pwm_per_mps">${worx['pwm_per_mps']}</param>
             <param name="max_pwm">${worx['max_pwm']}</param>
             <param name="mow_pwm">${worx['mow_pwm']}</param>
+            <param name="manual_mow_pwm">${worx['manual_mow_pwm']}</param>
+            <param name="manual_mow_max_pwm">${worx['manual_mow_max_pwm']}</param>
             <param name="invert_left">${worx['invert_left']}</param>
             <param name="invert_right">${worx['invert_right']}</param>
             <param name="digital_inverted">${worx['digital_inverted']}</param>

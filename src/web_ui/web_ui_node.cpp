@@ -8,7 +8,9 @@
 // /cmd_vel_joy (twist_mux, top priority), only while mower_logic is IDLE, scaled to
 // max_linear/max_angular here and stopped joy_timeout after the last message.
 // Area on/off rewrites mower_logic's disabled_areas_file (read when a mission is planned).
-// Nothing here switches the blade.
+// The blade is only switched by hand (Drive tab): worx_hardware's /worx/manual_mow, only
+// while mower_logic is IDLE, at its runtime parameter manual_mow_pwm (Blade tab, sign =
+// direction). It goes off again when a mission starts or the page that switched it on closes.
 //
 // All ROS callbacks run on this component's own executor thread; the web thread only
 // fills inbox_, which tick() empties.
@@ -17,6 +19,7 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nlohmann/json.hpp>
+#include <rcl_interfaces/srv/set_parameters.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
@@ -213,7 +216,10 @@ private:
                  {"collision", m->collision}, {"bumps", m->bumps},         {"motors", m->motors_enabled},
                  {"power", m->power_state},   {"v", r3(m->battery_voltage)},
                  {"a", r3(m->battery_current)},  {"in_charger", m->in_charger},
-                 {"pwm", {m->motor_pwm[0], m->motor_pwm[1], m->motor_pwm[2]}}};
+                 {"pwm", {m->motor_pwm[0], m->motor_pwm[1], m->motor_pwm[2]}},
+                 {"blade", {{"manual", m->manual_mow},        {"pwm", m->manual_mow_pwm},
+                            {"max", m->manual_mow_max_pwm},   {"cmd", m->mow_pwm_cmd},
+                            {"current", m->motor_current[2]}, {"pulses", m->mow_pulses}}}};
         for (size_t i = 0; i < m->digital_names.size() && i < m->digital_active.size(); ++i) {
           if (m->digital_names[i] == "Rain") worx_["rain"] = static_cast<bool>(m->digital_active[i]);
         }
@@ -241,6 +247,8 @@ private:
       logic_clients_[name] = create_client<std_srvs::srv::Trigger>(std::string("/mower_logic/") + name);
     }
     motors_client_ = create_client<std_srvs::srv::SetBool>("/worx/motors_enabled");
+    if (!blade_client_) blade_client_ = create_client<std_srvs::srv::SetBool>("/worx/manual_mow");
+    worx_params_client_ = create_client<rcl_interfaces::srv::SetParameters>("/worx_hardware/set_parameters");
     rec_mode_client_ = create_client<std_srvs::srv::SetBool>("/set_recording_mode");
     rec_point_client_ = create_client<std_srvs::srv::Trigger>("/add_boundary_point");
     rec_finish_client_ = create_client<std_srvs::srv::Trigger>("/finish_area_recording");
@@ -259,6 +267,7 @@ private:
     map_sub_.reset();
     logic_clients_.clear();
     motors_client_.reset();
+    worx_params_client_.reset();
     rec_mode_client_.reset();
     rec_point_client_.reset();
     rec_finish_client_.reset();
@@ -267,6 +276,7 @@ private:
     map_.reset();
     have_pose_ = false;
     // Action clients stay while a recording runs (a page opened later can finish it); tick() drops them after.
+    // So does the blade client until its last request (switching the blade off) is answered.
   }
 
   void push(Inbox && e)
@@ -292,6 +302,10 @@ private:
           stopDriving();
           event(false, "Page closed while driving: stopped");
         }
+        if (bladeRunning() && e.client == blade_page_) {
+          setBlade(false);
+          event(false, "Page closed with the blade on: blade off");
+        }
         if (pages_.erase(e.client) && pages_.empty()) deactivate();
       } else if (pages_.count(e.client)) {
         try {
@@ -302,7 +316,9 @@ private:
       }
     }
     if (driving_ && (now() - last_joy_).seconds() > joy_timeout_) stopDriving();
+    bladeWatch();
     if (pages_.empty()) {
+      if (blade_client_ && blade_requests_ == 0) blade_client_.reset();
       if (rec_area_client_ && !rec_goal_ && !rec_pending_) rec_area_client_.reset();
       if (rec_dock_client_ && !dock_goal_ && !dock_pending_) rec_dock_client_.reset();
     }
@@ -345,10 +361,17 @@ private:
         send(client, logLine(false, "unknown mower_logic command"));
         return;
       }
-      if (driving_ && (it->first == "start_mowing" || it->first == "go_home")) stopDriving();
+      if (it->first == "start_mowing" || it->first == "go_home") {
+        if (driving_) stopDriving();
+        if (bladeRunning()) setBlade(false);
+      }
       trigger(it->second, it->first);
     } else if (c == "motors") {
       setBool(motors_client_, m.at("on").get<bool>(), "Motors");
+    } else if (c == "blade") {
+      blade(client, m.at("on").get<bool>());
+    } else if (c == "blade_pwm") {
+      setBladePwm(m.at("pwm").get<int>());
     } else if (c == "area") {
       setAreaEnabled(m.at("id").get<std::string>(), m.at("enabled").get<bool>());
     } else if (c == "area_remove") {
@@ -425,6 +448,78 @@ private:
     t.twist.linear.x = v;
     t.twist.angular.z = w;
     joy_pub_->publish(t);
+  }
+
+  // ---- manual blade ------------------------------------------------------------
+
+  void blade(uint64_t client, bool on)
+  {
+    if (!on) {
+      setBlade(false);
+      return;
+    }
+    std::string why;
+    if (!driveAllowed(why)) {
+      event(false, "Blade refused: " + why);
+      return;
+    }
+    blade_page_ = client;
+    setBlade(true);
+  }
+
+  // Switched on from here, or reported on by the hardware (an extra "off" is harmless).
+  bool bladeRunning() const
+  {
+    return blade_on_ || (worx_.is_object() && worx_.value("blade", Json::object()).value("manual", false));
+  }
+
+  void setBlade(bool on)
+  {
+    if (!on) blade_on_ = false;
+    if (!blade_client_ || !blade_client_->service_is_ready()) {
+      event(false, std::string("Blade ") + (on ? "on" : "off") + ": /worx/manual_mow not available");
+      return;
+    }
+    auto req = std::make_shared<SetBool::Request>();
+    req->data = on;
+    ++blade_requests_;
+    blade_client_->async_send_request(req, [this, on](rclcpp::Client<SetBool>::SharedFuture f) {
+      --blade_requests_;
+      const auto r = f.get();
+      if (on && r->success) blade_on_ = true;
+      event(r->success, std::string("Blade ") + (on ? "on" : "off") + (r->message.empty() ? "" : ": " + r->message));
+    });
+  }
+
+  // The hardware switches the blade off on its own (emergency, bump, idle, link); this
+  // switches it off when mower_logic leaves IDLE (a mission started some other way).
+  void bladeWatch()
+  {
+    if (!worx_.is_object() || (now() - worx_time_).seconds() > 3.0) return;
+    if (!worx_.value("blade", Json::object()).value("manual", false)) return;
+    const bool busy = logic_.is_object() && logic_.value("command", "IDLE") != "IDLE";
+    if (busy && blade_requests_ == 0 && (now() - last_blade_off_).seconds() > 1.0) {
+      last_blade_off_ = now();
+      event(false, "mower_logic is busy: manual blade off");
+      setBlade(false);
+    }
+  }
+
+  void setBladePwm(int pwm)
+  {
+    if (!worx_params_client_->service_is_ready()) {
+      event(false, "Blade PWM: /worx_hardware/set_parameters not available");
+      return;
+    }
+    auto req = std::make_shared<rcl_interfaces::srv::SetParameters::Request>();
+    req->parameters.push_back(rclcpp::Parameter("manual_mow_pwm", pwm).to_parameter_msg());
+    worx_params_client_->async_send_request(
+      req, [this, pwm](rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedFuture f) {
+        const auto r = f.get();
+        const bool ok = !r->results.empty() && r->results[0].successful;
+        event(ok, "Blade PWM " + std::to_string(pwm) + (ok ? "" : ": " + (r->results.empty() ? std::string("no result")
+                                                                                             : r->results[0].reason)));
+      });
   }
 
   void trigger(const rclcpp::Client<Trigger>::SharedPtr & client, const std::string & label)
@@ -689,7 +784,12 @@ private:
   msg::Map::ConstSharedPtr map_;
 
   std::map<std::string, rclcpp::Client<Trigger>::SharedPtr> logic_clients_;
-  rclcpp::Client<SetBool>::SharedPtr motors_client_, rec_mode_client_;
+  rclcpp::Client<SetBool>::SharedPtr motors_client_, rec_mode_client_, blade_client_;
+  rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr worx_params_client_;
+  bool blade_on_ = false;  // switched on from a page (the hardware's state is in worx_)
+  uint64_t blade_page_ = 0;
+  int blade_requests_ = 0;
+  rclcpp::Time last_blade_off_{0, 0, RCL_ROS_TIME};
   rclcpp::Client<Trigger>::SharedPtr rec_point_client_, rec_finish_client_;
   rclcpp::Client<srv::RemoveArea>::SharedPtr remove_area_client_;
   rclcpp_action::Client<RecordArea>::SharedPtr rec_area_client_;

@@ -12,12 +12,13 @@ process (Worx manifest `config/launch/worx.yaml`). There's no nginx, MQTT broker
 The page shows the map (areas, dock, robot, trail), battery, GPS, motor and mower_logic state. It has:
 
 - **Mow**: start mowing, go home, stop, skip pass/area, reset mission, clear emergency, motors on/off.
-- **Drive**: a joystick (touch or mouse) and arrow keys / WASD.
+- **Drive**: a joystick (touch or mouse) and arrow keys / WASD, and the blade on/off switch.
+- **Blade**: PWM and direction (sign) the blade runs at when it's switched on by hand.
 - **Areas**: switch mowing areas on/off, remove areas.
 - **Record**: record an area boundary (automatic points while driving, or points by hand) and the docking station.
 - **Log**: results of commands, including those sent from other open pages.
 
-It never switches the blade.
+Missions switch the blade themselves. The page only switches it by hand (see below).
 
 ## Access
 
@@ -41,6 +42,8 @@ Everything goes through interfaces that already exist:
 |---|---|
 | mission buttons | `/mower_logic/{start_mowing,go_home,stop,skip_pass,skip_area,reset_mission,clear_emergency}` (Trigger) |
 | motors on/off | `/worx/motors_enabled` (SetBool) |
+| blade on/off | `/worx/manual_mow` (SetBool) |
+| blade PWM / direction | parameter `manual_mow_pwm` of `/worx_hardware` (`/worx_hardware/set_parameters`) |
 | joystick | `/cmd_vel_joy` (TwistStamped) → twist_mux, priority above navigation |
 | areas on/off | rewrites mower_logic's `disabled_areas_file`, read when a new mission is planned |
 | remove area | `/remove_area` (map_server) |
@@ -49,6 +52,18 @@ Everything goes through interfaces that already exist:
 Manual driving is accepted only while mower_logic's command is `IDLE`. Speeds are scaled on the robot to
 `max_linear` / `max_angular` (0.3 m/s, 1.0 rad/s), and a zero command follows `joy_timeout` (0.3 s) after the last
 message, or at once when the page closes or loses focus. twist_mux's own 0.5 s timeout stays behind it.
+
+## Blade by hand
+
+The blade can only be switched on while mower_logic's command is `IDLE` and the motors are on. It runs at
+`manual_mow_pwm` (default 1850, within ±`manual_mow_max_pwm`; negative = reverse). It goes off:
+
+- when the page that switched it on closes,
+- when Start mowing / Go home is pressed, or mower_logic leaves `IDLE` in any other way (while a page is open),
+- in worx_hardware: emergency, lift, bump, motors off, board link loss, and `blade_idle_timeout` (25 s) without
+  drive commands. It then stays off until it's switched on again.
+
+The PWM can change while the blade runs; the direction only while it's off. Blade on/off/PWM results appear in the log.
 
 ## Resources
 
@@ -65,7 +80,7 @@ JSON text messages over `ws://<host>:<port>/ws`.
 - Robot → page: `{"t":"state"}` (2 Hz), `{"t":"pose","x","y","yaw"}` (5 Hz, from `pose_topic`,
   default `/odometry/filtered/map`), `{"t":"map","areas":[…],"docks":[…]}` (on connect and when the map changes;
   polygons simplified to 2 cm), `{"t":"rec","pts":[…]}` (boundary being recorded), `{"t":"log","ok","msg","time"}`.
-- Page → robot: `{"c":"logic","name":…}`, `{"c":"motors","on":…}`, `{"c":"joy","v":-1..1,"w":-1..1}`,
+- Page → robot: `{"c":"logic","name":…}`, `{"c":"motors","on":…}`, `{"c":"joy","v":-1..1,"w":-1..1}`, `{"c":"blade","on":…}`, `{"c":"blade_pwm","pwm":…}`,
   `{"c":"area","id":…,"enabled":…}`, `{"c":"area_remove","id":…}`, `{"c":"rec_start","name","type","auto"}`,
   `{"c":"rec_auto","auto"}`, `{"c":"rec_point"}`, `{"c":"rec_finish"}`, `{"c":"rec_cancel"}`,
   `{"c":"dock_start","name"}`, `{"c":"dock_cancel"}`.

@@ -47,6 +47,8 @@ worx:
   pwm_per_mps: 1230.0          # ROS1 worx_comms MAXSPEED
   max_pwm: 1230                # 60 % PWM
   mow_pwm: 1850
+  manual_mow_pwm: 1850         # blade PWM when switched on by hand (web UI Drive tab); sign = direction
+  manual_mow_max_pwm: 1850     # limit for manual_mow_pwm (both directions)
   invert_left: false
   invert_right: false
   tick_counter_bits: 32

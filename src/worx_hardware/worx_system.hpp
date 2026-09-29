@@ -9,7 +9,9 @@
 //
 // Besides the joints, an internal node publishes /power (BatteryState),
 // /power/charger_present (Bool, used by the docking plugin), /worx/status and
-// offers /worx/emergency (SetBool, latched) and /worx/motors_enabled (SetBool).
+// offers /worx/emergency (SetBool, latched), /worx/motors_enabled (SetBool) and
+// /worx/manual_mow (SetBool: blade on by hand at the runtime parameter manual_mow_pwm,
+// whose sign is the blade direction).
 
 #include "worx_hardware/speed_controller.hpp"
 #include "worx_hardware/wheel_odometer.hpp"
@@ -68,6 +70,8 @@ private:
     int max_pwm = 1230;
     int mow_pwm = 1850;                // blade PWM at effort 1.0
     bool blade_enabled = true;         // false: blade PWM always 0 (tests near the dock)
+    int manual_mow_pwm = 1850;         // blade PWM for /worx/manual_mow, sign = direction
+    int manual_mow_max_pwm = 1850;     // |manual_mow_pwm| limit
     bool invert_left = false;
     bool invert_right = false;
     double link_timeout = 1.0;         // s without board messages -> link_ok false
@@ -97,6 +101,7 @@ private:
   void publishStatus();
   void sendSpeed(int left, int right, int mow, bool force);
   void registerBump(const char * source);  // with mutex_ held
+  bool manualMowRefused(std::string & why) const;
   void startNode();
   void stopNode();
 
@@ -147,6 +152,10 @@ private:
   // Blade stays off after emergency/deactivate/motor disable/link loss until its
   // command has been <= 0 once (the effort controller holds the last command).
   std::atomic<bool> blade_lockout_{true};
+  // Blade switched on by hand (/worx/manual_mow): overrides the mower joint's effort
+  // with manual_mow_pwm_. Anything that locks the blade out also switches it off.
+  std::atomic<bool> manual_mow_{false};
+  std::atomic<int> manual_mow_pwm_{0};
 
   // Internal node.
   rclcpp::Node::SharedPtr node_;
@@ -155,8 +164,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::BatteryState>::SharedPtr battery_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr charger_pub_;
   rclcpp::Publisher<open_mower_next::msg::WorxStatus>::SharedPtr status_pub_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_, docking_srv_, fake_charger_srv_,
-    fake_collision_srv_, fake_lift_srv_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_srv_, motors_srv_, docking_srv_, manual_mow_srv_,
+    fake_charger_srv_, fake_collision_srv_, fake_lift_srv_;
   FakeBoardTransport * fake_board_ = nullptr;  // owned by link_, only with transport=fake
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr fake_battery_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr fake_speed_sub_;

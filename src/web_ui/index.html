@@ -79,6 +79,14 @@ label.check { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 #knob { position: absolute; width: 72px; height: 72px; left: 74px; top: 74px; border-radius: 50%; background: var(--accent);
   box-shadow: 0 2px 8px rgba(0,0,0,.3); pointer-events: none; }
 #joyinfo { text-align: center; font-variant-numeric: tabular-nums; }
+button.bladeon { background: var(--danger); border-color: var(--danger); color: #fff; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+.seg label { flex: 1; text-align: center; padding: 10px 0; font-weight: 600; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; width: 0; height: 0; }
+.seg label:has(input:checked) { background: var(--accent); color: var(--accent-text); }
+.seg label:has(input:disabled) { opacity: .45; cursor: default; }
+input[type=range].wide { width: 100%; }
+.big { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: center; margin: 4px 0 8px; }
 #log div { font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--line); }
 #log div.bad { color: var(--danger); }
 #log time { color: var(--muted); margin-right: 6px; font-variant-numeric: tabular-nums; }
@@ -104,6 +112,7 @@ label.check { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
   <span class="chip" id="c-batt">–</span>
   <span class="chip" id="c-gps">–</span>
   <span class="chip" id="c-motors">–</span>
+  <span class="chip bad" id="c-blade" hidden>blade on</span>
 </header>
 <div id="emergency"><strong>Emergency</strong><span id="emg-why"></span>
   <button class="small" data-logic="clear_emergency">Clear</button></div>
@@ -119,6 +128,7 @@ label.check { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
     <nav>
       <button data-tab="mow" class="active">Mow</button>
       <button data-tab="drive">Drive</button>
+      <button data-tab="blade">Blade</button>
       <button data-tab="areas">Areas</button>
       <button data-tab="rec">Record</button>
       <button data-tab="log">Log</button>
@@ -136,9 +146,27 @@ label.check { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
       <div id="details" class="muted"></div>
     </section>
     <section id="t-drive">
+      <div class="row"><button id="b-blade">Blade on</button></div>
+      <div id="blade-info" class="muted">–</div>
       <div id="joyslot"></div>
       <p class="muted">Drag the knob, or hold the arrow keys / WASD. Only while mower_logic is idle; the robot stops
-        0.3 s after the last command. The blade is never switched from here.</p>
+        0.3 s after the last command.</p>
+    </section>
+    <section id="t-blade">
+      <p class="muted">PWM and direction of the blade when it's switched on by hand (Drive tab). Missions use their own
+        setting. The direction can only change while the blade is off.</p>
+      <h2>Direction</h2>
+      <div class="seg">
+        <label><input type="radio" name="bdir" id="bdir-fwd" value="1" checked> Forward (+)</label>
+        <label><input type="radio" name="bdir" id="bdir-rev" value="-1"> Reverse (−)</label>
+      </div>
+      <h2>PWM</h2>
+      <div class="big" id="bpwm-val">–</div>
+      <input type="range" class="wide" id="bpwm" min="0" max="1850" step="50" value="1850">
+      <div class="row" style="margin-top:8px"><button class="primary" id="b-bpwm-apply">Apply</button>
+        <button id="b-bpwm-reset">Undo</button></div>
+      <h2>Now</h2>
+      <div id="blade-now" class="muted">–</div>
     </section>
     <section id="t-areas">
       <p class="muted">Switched-off areas are skipped from the next new mission on (Reset mission to apply now).</p>
@@ -224,6 +252,7 @@ function renderState() {
   const motorsOn = w && w.motors;
   setChip("c-motors", w ? (w.link ? "motors " + (motorsOn ? "on" : "off") : "board link lost") : "no board data",
           w && w.link ? (motorsOn ? "ok" : "") : "bad");
+  renderBlade(w);
   const emg = (l && l.emergency) || (w && w.emergency);
   $("emergency").classList.toggle("on", !!emg);
   if (emg && w) $("emg-why").textContent = [w.lift && "lift", w.collision && "collision"].filter(Boolean).join(", ");
@@ -247,6 +276,44 @@ function renderState() {
   $("b-dock-cancel").disabled = !online || !dk.active;
   $("dock-status").textContent = dk.active ? dk.msg || "running" : "";
 }
+
+// ---- blade ------------------------------------------------------------------
+const blade = { dirty: false };  // the Blade tab's inputs were changed and not applied yet
+function bladeInput() { return (+$("bpwm").value) * ($("bdir-rev").checked ? -1 : 1); }
+function fmtPwm(v) { return (v > 0 ? "+" : "") + v; }
+function renderBlade(w) {
+  const b = w && w.blade, on = !!(b && b.manual);
+  $("c-blade").hidden = !on;
+  const bb = $("b-blade");
+  bb.textContent = on ? "Blade off" : "Blade on";
+  bb.classList.toggle("bladeon", on);
+  const dr = (S.state && S.state.drive) || {};
+  if (!on && S.state) bb.disabled = !b || !dr.ok;
+  $("blade-info").textContent = !b ? "no board data" : on
+    ? "Running at PWM " + fmtPwm(b.cmd) + " · " + b.current + " mA · " + b.pulses + " pulses. Stops on its own after blade_idle_timeout (25 s) without driving."
+    : "Set to PWM " + fmtPwm(b.pwm) + " (Blade tab)." + (dr.ok ? "" : " " + (dr.why || ""));
+  if (b) {
+    $("bpwm").max = b.max;
+    if (!blade.dirty) { $("bpwm").value = Math.abs(b.pwm); $("bdir-rev").checked = b.pwm < 0; $("bdir-fwd").checked = b.pwm >= 0; }
+    $("bdir-fwd").disabled = $("bdir-rev").disabled = on;
+    $("blade-now").textContent = "Setting " + fmtPwm(b.pwm) + " (max ±" + b.max + ") · blade " + (on ? "on" : "off") +
+      " · sent " + fmtPwm(b.cmd) + " · board " + w.pwm[2] + " · " + b.current + " mA · " + b.pulses + " pulses";
+  } else $("blade-now").textContent = "no board data";
+  $("bpwm-val").textContent = fmtPwm(bladeInput()) + (blade.dirty ? " (not applied)" : "");
+  $("b-bpwm-apply").disabled = !b || !blade.dirty;
+  $("b-bpwm-reset").disabled = !blade.dirty;
+}
+$("b-blade").onclick = () => {
+  const b = S.state && S.state.worx && S.state.worx.blade;
+  if (b && b.manual) { cmd({ c: "blade", on: false }); return; }
+  if (!b) return;
+  if (confirm("Start the blade at PWM " + fmtPwm(b.pwm) + (b.pwm < 0 ? " (reverse)" : "") + "? Keep hands and feet away."))
+    cmd({ c: "blade", on: true });
+};
+const bladeEdit = () => { blade.dirty = true; renderState(); };
+$("bpwm").oninput = bladeEdit; $("bdir-fwd").onchange = bladeEdit; $("bdir-rev").onchange = bladeEdit;
+$("b-bpwm-apply").onclick = () => { if (send({ c: "blade_pwm", pwm: bladeInput() })) { blade.dirty = false; renderState(); } else toast("Not connected", true); };
+$("b-bpwm-reset").onclick = () => { blade.dirty = false; renderState(); };
 
 // ---- log --------------------------------------------------------------------
 function addLog(m) {

@@ -37,6 +37,11 @@ LSM6DSV IMU node. The micro-ROS agent isn't started.
 | `/worx/status` | `open_mower_next/WorxStatus` | link, emergency, motor state, raw digital/analog/boundary values |
 | `/worx/emergency` | `std_srvs/SetBool` | latch/clear a software emergency (all outputs 0) |
 | `/worx/motors_enabled` | `std_srvs/SetBool` | `MOTORREQ_ENABLE` / `_DISABLE` |
+| `/worx/manual_mow` | `std_srvs/SetBool` | blade on by hand at `manual_mow_pwm` (overrides the `mower_joint` effort) |
+
+The runtime parameter `manual_mow_pwm` (`ros2 param set /worx_hardware manual_mow_pwm -1500`) is the blade PWM for
+`/worx/manual_mow`; the sign is the direction. It's limited to ±`manual_mow_max_pwm`, and its sign can't change while
+the manual blade runs. Both start from `config/hardware/worx.yaml`.
 
 `Digital` inputs are published raw and as "active". Inputs listed in `digital_inverted`
 (default `Door,Door2,Lift,Collision`) read 1 in their normal state.
@@ -47,6 +52,8 @@ LSM6DSV IMU node. The micro-ROS agent isn't started.
 - The blade stays off after an emergency, link loss or motor disable until its command has been 0 once, so a held
   command can't restart it.
 - The blade stops after `blade_idle_timeout` (25 s) without drive commands.
+- The manual blade (`/worx/manual_mow`) is refused while any of these apply, and switched off (not paused) when one
+  does: it has to be switched on again.
 - Without board messages for `link_timeout` all outputs are 0.
 
 ## Bench test and firmware emulator
