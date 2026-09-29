@@ -24,6 +24,7 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -98,7 +99,23 @@ struct Params
   // Known obstacles are avoided on later passes/loops before touching them:
   // the pass is checked this far ahead of the robot.
   double bump_lookahead = 1.0;       // m along the pass
-  double bump_avoid_radius = 0.3;    // m from a mark: closer and the body (half width 0.195) touches it
+  double bump_avoid_radius = 0.25;   // m from a mark: closer and the body (half width 0.195) touches it
+  // Trying again (Daniel: many bumps are false detections, and a 4 cm pin
+  // needs only a few cm to the side). A first bump isn't believed: back off
+  // feel_retry_backoff and mow on along the same line. Driving through the
+  // spot erases it (a false detection). A second bump there confirms it: the
+  // pass is shifted sideways around the spot by feel_sidesteps in turn (m, left
+  // positive) and mowed on. Only when none of them gets past: FeelAround.
+  // Later passes coming near a confirmed obstacle shift just enough around what
+  // is left of it (up to bump_max_swerve) instead of a transit.
+  double feel_retry_backoff = 0.4;
+  // Before a sidestep further: the controller needs the run-up to settle on the
+  // shifted line before the front reaches the spot (0.4 m wasn't enough in the sim).
+  double feel_sidestep_backoff = 1.0;
+  std::vector<double> feel_sidesteps{0.15, -0.15, 0.30, -0.30};
+  double feel_sidestep_length = 0.35;  // m along the pass on each side of the spot shifted fully
+  double feel_sidestep_ramp = 0.7;     // m over which the shift fades in and out
+  double bump_max_swerve = 0.6;        // m
   // Feeling around an obstacle after a bump on a pass, like a robot vacuum
   // around a chair leg: back off, turn away, arc back towards the obstacle
   // until it bumps again (back off, turn away a bit more, ...) or the robot is
@@ -222,6 +239,8 @@ public:
     double yaw = 0;
     int obstacle = -1;        // the felt obstacle the contact went to (-1: none)
     uint64_t contact = 0;     // the contact's id in it
+    bool first = false;       // a new obstacle (pending): try again
+    bool confirmed = false;   // the obstacle is confirmed (bumped again there)
   };
   std::optional<Bump> lastBump() const;
   bool bumpedSince(Clock::time_point t) const;
@@ -231,9 +250,26 @@ public:
   // Forget the contact of this bump (handled as an edge correction).
   void dropBumpObstacle(const Bump & b);
   // Felt obstacles (FeltObstacle ids).
-  std::optional<int> obstacleNear(double x, double y, double radius) const;  // nearest one within radius of its marks
-  double obstacleDistance(int id, double x, double y) const;  // infinity when it's gone
+  // Nearest confirmed one within radius of its marks (not probing_obstacle).
+  std::optional<int> obstacleNear(double x, double y, double radius) const;
+  double obstacleDistance(int id, double x, double y) const;  // infinity when it has no marks (left)
   size_t obstacleContacts(int id) const;
+  FeltObstacle::State obstacleState(int id) const;  // GONE when unknown
+  // Shift the current pass sideways by offset around the pose nearest to
+  // (x, y) (feel_sidestep_length/_ramp). Only if the whole footprint fits
+  // along the new line and (min_clearance > 0) it keeps that far from
+  // obstacle `id`'s marks. Returns the last pose index changed.
+  std::optional<size_t> sidestep(int id, double x, double y, double offset, double min_clearance);
+  // The obstacle being sidestepped on this pass: FollowPass doesn't stop for it
+  // (the shifted line comes close on purpose) until past end_index.
+  struct Probe
+  {
+    int obstacle = -1;
+    size_t pass_key = 0, next = 0, end_index = 0;
+    double offset = 0.0;  // current shift of the pass there
+  };
+  std::optional<Probe> probe;  // behaviour tree thread only
+  std::atomic<int> probing_obstacle{-1};
   // FeelAround: while it arcs, which front corner can touch (+1 left, -1 right,
   // 0 any) and the obstacle new contacts belong to (-1: by distance).
   std::atomic<int> bump_side{0};
@@ -275,8 +311,9 @@ public:
   bool continue_from_here = false, force_transit = false;
   bool skip_counts_as_bump = true;
   bool avoiding_known_obstacle = false;
-  // Behaviour tree thread only: a bump on a pass that FeelAround should handle.
-  std::optional<Bump> feel_request;
+  // Behaviour tree thread only: a bump on a pass that FeelAround should handle,
+  // and one TryAgain should (first bump: same line; confirmed: sidestep).
+  std::optional<Bump> feel_request, try_request;
 
   void setBlade(bool on);
   bool setMotors(bool on);  // /worx/motors_enabled, asynchronous; false: service not available
@@ -289,6 +326,8 @@ public:
 
 private:
   void onBump();
+  void eraseUnderRobot();  // 10 Hz: marks where the body is now are no obstacle
+  std::array<double, 3> erase_last_{NAN, NAN, NAN};  // pose at the last eraseUnderRobot (its timer only)
   bool publishObstacles();  // true: marks under the robot left out
   void publishMarkers();    // ~/obstacles (JSON for the web UI) when something changed
   mutable std::mutex mutex_;
@@ -330,7 +369,7 @@ private:
   bool insideAreas(double x, double y) const;        // mutex_ held
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr markers_pub_;
-  rclcpp::TimerBase::SharedPtr obstacle_timer_;
+  rclcpp::TimerBase::SharedPtr obstacle_timer_, erase_timer_;
   bool blade_on_ = false;
 
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_sub_;

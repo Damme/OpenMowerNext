@@ -39,6 +39,11 @@ public:
   void skipArea();  // also used when planning fails
   // Modify the current area's plan in place (edge corrections); progress is kept.
   void editPlan(const std::function<void(std::vector<open_mower_next::msg::CoveragePath> &)> & fn);
+  // The same for the current pass alone (sidestepping an obstacle); fn gets the
+  // progress index. False without a current pass.
+  bool editCurrentPass(const std::function<void(nav_msgs::msg::Path &, size_t pose_index)> & fn);
+  // Changes whenever the current pass changes (area/pass), for per-pass state.
+  size_t passKey() const;
 
   // The pass to mow next (remaining part), nullopt when the mission is done.
   // resume_backtrack_m re-mows a little before the stop point.

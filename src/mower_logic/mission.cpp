@@ -84,6 +84,20 @@ void Mission::editPlan(const std::function<void(std::vector<open_mower_next::msg
   if (planned_) fn(passes_);
 }
 
+bool Mission::editCurrentPass(const std::function<void(nav_msgs::msg::Path &, size_t)> & fn)
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  if (!active_ || !planned_ || pass_ >= passes_.size()) return false;
+  fn(passes_[pass_].path, pose_);
+  return true;
+}
+
+size_t Mission::passKey() const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  return (static_cast<size_t>(generation_.load()) << 40) ^ (area_ << 20) ^ pass_ ^ (active_ ? 0 : (size_t{1} << 60));
+}
+
 void Mission::skipArea()
 {
   ++generation_;

@@ -65,6 +65,12 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   p.bump_merge_distance = node->declare_parameter("bump_merge_distance", p.bump_merge_distance);
   p.bump_lookahead = node->declare_parameter("bump_lookahead", p.bump_lookahead);
   p.bump_avoid_radius = node->declare_parameter("bump_avoid_radius", p.bump_avoid_radius);
+  p.feel_retry_backoff = node->declare_parameter("feel_retry_backoff", p.feel_retry_backoff);
+  p.feel_sidesteps = node->declare_parameter("feel_sidesteps", p.feel_sidesteps);
+  p.feel_sidestep_backoff = node->declare_parameter("feel_sidestep_backoff", p.feel_sidestep_backoff);
+  p.feel_sidestep_length = node->declare_parameter("feel_sidestep_length", p.feel_sidestep_length);
+  p.feel_sidestep_ramp = node->declare_parameter("feel_sidestep_ramp", p.feel_sidestep_ramp);
+  p.bump_max_swerve = node->declare_parameter("bump_max_swerve", p.bump_max_swerve);
   p.feel_around = node->declare_parameter("feel_around", p.feel_around);
   p.feel_speed = node->declare_parameter("feel_speed", p.feel_speed);
   p.feel_backoff = node->declare_parameter("feel_backoff", p.feel_backoff);

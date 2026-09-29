@@ -2,13 +2,15 @@
 // What the mower learns by bumping into things. The Worx bumper only says THAT
 // the front touched something, not where. One bump = one contact: the part of
 // the front outline that can have touched, marked as a thin band just outside
-// the bumper. Contacts close together form one obstacle, and its shape is
-// whatever the robot has felt of it so far - like a robot vacuum feeling its way
-// around a chair, not a fixed-size blob.
+// the bumper. Contacts close together form one obstacle. Wherever the body
+// drives later, the marks under it are erased (nothing can be there), so what
+// is left maps the real object - or nothing, for a false detection (Daniel
+// 2026-09-29: "trying to map the object itself if it's really there").
 //
 // Pure geometry (no ROS), so it can be unit tested.
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -41,7 +43,8 @@ struct Contact
   // +1 the left corner, -1 the right corner (arcing towards that side): the
   // cut corner, 5 cm of the side and the outer half of that side's front face.
   int side = 0;
-  std::vector<Point> marks;  // filled by contactMarks()
+  std::vector<Point> marks;  // filled by contactMarks(); erased where the body drove since
+  size_t total = 0;          // marks at the bump
 };
 
 // Band points of a contact, map frame: the front outline (front face, the cut
@@ -53,13 +56,37 @@ std::vector<Point> contactLine(const Contact & c, const MarkShape & s);
 
 struct FeltObstacle
 {
+  // PENDING: one bump, not believed yet (tried again first). CONFIRMED: bumped
+  // again at the same spot. GONE: the body drove through where it was felt (a
+  // false detection, or it was moved) - kept to look at in the web UI.
+  enum class State { PENDING, CONFIRMED, GONE };
   int id = 0;
   std::vector<Contact> contacts;
+  State state = State::PENDING;
 
-  // Distance from (x, y) to the nearest mark (infinity without contacts).
+  // Distance from (x, y) to the nearest mark (infinity without marks).
   double distance(double x, double y) const;
   size_t markCount() const;
+  size_t totalMarks() const;
+  // Erase the marks for which inside(x, y) is true; returns how many.
+  size_t erase(const std::function<bool(double, double)> & inside);
 };
+
+// Inside the mower's footprint at (x, y, yaw) (front corners cut)?
+bool insideBody(const Body & b, double x, double y, double yaw, double px, double py);
+
+// A pose of a path (map frame), for jogPath.
+struct PathPose
+{
+  double x = 0, y = 0, yaw = 0;
+};
+
+// Shift a path sideways by offset (m, left of its direction positive) around
+// pose c: fully within `full` m along the path on both sides, fading out over
+// `ramp` m beyond; poses before `from` stay. Headings follow the new line.
+// Returns the index range [first, last] that changed (first > last: none).
+std::pair<size_t, size_t> jogPath(std::vector<PathPose> & poses, size_t from, size_t c, double offset, double full,
+                                  double ramp);
 
 // Is a new contact a repeat of an existing one (nearly the same pose)? Then it
 // replaces it instead of piling up bands at one spot.

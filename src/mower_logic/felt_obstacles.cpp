@@ -110,6 +110,65 @@ size_t FeltObstacle::markCount() const
   return n;
 }
 
+size_t FeltObstacle::totalMarks() const
+{
+  size_t n = 0;
+  for (const auto & c : contacts) n += c.total;
+  return n;
+}
+
+size_t FeltObstacle::erase(const std::function<bool(double, double)> & inside)
+{
+  size_t n = 0;
+  for (auto & c : contacts) {
+    const auto before = c.marks.size();
+    c.marks.erase(std::remove_if(c.marks.begin(), c.marks.end(), [&](const Point & p) { return inside(p.first, p.second); }),
+                  c.marks.end());
+    n += before - c.marks.size();
+  }
+  return n;
+}
+
+bool insideBody(const Body & b, double x, double y, double yaw, double px, double py)
+{
+  const double dx = px - x, dy = py - y, cs = std::cos(yaw), sn = std::sin(yaw);
+  const double u = dx * cs + dy * sn, v = std::abs(-dx * sn + dy * cs);
+  const double ch = std::clamp(b.chamfer, 0.0, std::min(b.half_width, b.front));
+  return u >= -b.rear && u <= b.front && v <= b.half_width && u + v <= b.front + b.half_width - ch;
+}
+
+std::pair<size_t, size_t> jogPath(std::vector<PathPose> & poses, size_t from, size_t c, double offset, double full,
+                                  double ramp)
+{
+  if (poses.empty() || c >= poses.size() || from > c) return {1, 0};
+  // Signed distance along the path from pose c.
+  std::vector<double> s(poses.size(), 0.0);
+  for (size_t i = c + 1; i < poses.size(); ++i)
+    s[i] = s[i - 1] + std::hypot(poses[i].x - poses[i - 1].x, poses[i].y - poses[i - 1].y);
+  for (size_t i = c; i-- > 0;) s[i] = s[i + 1] - std::hypot(poses[i + 1].x - poses[i].x, poses[i + 1].y - poses[i].y);
+  size_t first = poses.size(), last = 0;
+  const auto orig = poses;
+  for (size_t i = from; i < poses.size(); ++i) {
+    const double d = std::abs(s[i]);
+    if (d >= full + ramp) continue;
+    // Smooth (cosine) fade: FTC follows it without a kink.
+    const double w = d <= full ? 1.0 : 0.5 * (1.0 + std::cos(M_PI * (d - full) / ramp));
+    poses[i].x = orig[i].x - offset * w * std::sin(orig[i].yaw);
+    poses[i].y = orig[i].y + offset * w * std::cos(orig[i].yaw);
+    first = std::min(first, i);
+    last = std::max(last, i);
+  }
+  if (first > last) return {1, 0};
+  // Headings along the new line (one pose beyond the changed range on each side too).
+  const size_t a = first > from ? first - 1 : first, b = std::min(poses.size() - 1, last + 1);
+  for (size_t i = a; i <= b; ++i) {
+    const auto & p = poses[i == 0 ? 0 : i - 1];
+    const auto & n = poses[i + 1 < poses.size() ? i + 1 : i];
+    if (std::hypot(n.x - p.x, n.y - p.y) > 1e-6) poses[i].yaw = std::atan2(n.y - p.y, n.x - p.x);
+  }
+  return {first, last};
+}
+
 bool sameContact(const Contact & a, const Contact & b, double max_dist, double max_dyaw)
 {
   return a.side == b.side && std::hypot(a.x - b.x, a.y - b.y) <= max_dist &&

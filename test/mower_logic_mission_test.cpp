@@ -282,3 +282,41 @@ TEST(FeltObstacles, SideContactOnlyMarksThatCorner)
   again.side = 0;
   EXPECT_FALSE(open_mower_next::mower_logic::sameContact(left, again));
 }
+
+TEST(FeltObstacles, JogShiftsAroundThePoseAndFadesOut)
+{
+  using open_mower_next::mower_logic::PathPose;
+  std::vector<PathPose> poses;
+  for (int i = 0; i < 100; ++i) poses.push_back({i * 0.05, 0.0, 0.0});  // 5 m along +x
+  const auto [first, last] = open_mower_next::mower_logic::jogPath(poses, 0, 50, 0.15, 0.35, 0.5);
+  ASSERT_LE(first, last);
+  EXPECT_NEAR(poses[50].y, 0.15, 1e-9);          // fully shifted at the spot (x = 2.5)
+  EXPECT_NEAR(poses[44].y, 0.15, 1e-9);          // 0.3 m before it too
+  EXPECT_NEAR(poses[10].y, 0.0, 1e-9);           // far before: unchanged
+  EXPECT_NEAR(poses[90].y, 0.0, 1e-9);           // far after: unchanged
+  EXPECT_GT(poses[36].y, 0.0);                   // in the ramp: partly
+  EXPECT_LT(poses[36].y, 0.15);
+  EXPECT_GT(poses[37].yaw, 0.0);                 // heading follows the ramp up
+  EXPECT_LT(poses[63].yaw, 0.0);                 // and down
+  EXPECT_NEAR(static_cast<double>(first), 34.0, 1.0);  // 0.85 m before (the fade's edge, rounding)
+  EXPECT_NEAR(static_cast<double>(last), 66.0, 1.0);
+}
+
+TEST(FeltObstacles, DrivingThroughErasesMarks)
+{
+  MarkShape s;
+  Contact c;  // at the origin facing +x
+  c.marks = open_mower_next::mower_logic::contactMarks(c, s);
+  c.total = c.marks.size();
+  FeltObstacle o{1, {c}};
+  // The robot 0.3 m further on the same line: its body covers the front part of the band.
+  const size_t n = o.erase([&](double x, double y) {
+    return open_mower_next::mower_logic::insideBody(s.body, 0.3, 0.0, 0.0, x, y);
+  });
+  EXPECT_GT(n, 0u);
+  EXPECT_LT(o.markCount(), c.total);
+  EXPECT_GT(o.markCount(), 0u);  // the parts beside the body stay
+  EXPECT_TRUE(open_mower_next::mower_logic::insideBody(s.body, 0.0, 0.0, 0.0, 0.46, 0.0));
+  EXPECT_FALSE(open_mower_next::mower_logic::insideBody(s.body, 0.0, 0.0, 0.0, 0.46, 0.18));  // cut corner
+  EXPECT_FALSE(open_mower_next::mower_logic::insideBody(s.body, 0.0, 0.0, 0.0, -0.12, 0.0));
+}

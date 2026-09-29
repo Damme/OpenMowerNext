@@ -286,6 +286,13 @@ protected:
         search_from_ = best_i;
         ctx_->mission.setPoseIndex(start_index_ + best_i);
       }
+      // Past the obstacle being sidestepped: it counts as known again.
+      if (ctx_->probe && ctx_->probing_obstacle == ctx_->probe->obstacle &&
+          start_index_ + search_from_ > ctx_->probe->end_index) {
+        ctx_->probing_obstacle = -1;
+        RCLCPP_INFO(ctx_->node->get_logger(), "Past obstacle %d with the pass %.0f cm to the %s", ctx_->probe->obstacle,
+                    std::abs(ctx_->probe->offset) * 100.0, ctx_->probe->offset > 0 ? "left" : "right");
+      }
     }
     // FTC follows the pass and ignores the costmap: stop before a known bump
     // obstacle instead of hitting it again (outline loops pass it repeatedly).
@@ -293,6 +300,17 @@ protected:
     for (size_t i = search_from_; i < path_.poses.size() && along <= ctx_->params.bump_lookahead; ++i) {
       const auto & q = path_.poses[i].pose.position;
       if (auto id = ctx_->obstacleNear(q.x, q.y, ctx_->params.bump_avoid_radius)) {
+        ctx_->avoiding_known_obstacle = true;
+        // Shift the pass just far enough around what is left of it (smallest
+        // offset first) and mow on; else skip past it with a transit.
+        if (const auto off = swerve(*id, i)) {
+          RCLCPP_INFO(ctx_->node->get_logger(), "Known obstacle %d ahead at (%.2f, %.2f) - swerving %.0f cm to the %s",
+                      *id, q.x, q.y, std::abs(*off) * 100.0, *off > 0 ? "left" : "right");
+          ctx_->continue_from_here = true;
+          ctx_->skip_target.reset();  // avoid_known_obstacle: nothing to skip, the pass goes on here
+          onHalted();
+          return BT::NodeStatus::FAILURE;
+        }
         RCLCPP_INFO(ctx_->node->get_logger(), "Known obstacle %d ahead at (%.2f, %.2f) - going around it", *id, q.x,
                     q.y);
         Context::Bump target;
@@ -347,6 +365,34 @@ protected:
   }
 
 private:
+  // Offset (m, left positive) the pass was shifted by around obstacle id near
+  // pose i, the smallest that keeps bump_avoid_radius; nullopt: none fits.
+  std::optional<double> swerve(int id, size_t i)
+  {
+    // Centre: the pass pose nearest to the obstacle within 1.5 m ahead.
+    size_t c = i;
+    double best = 1e9, along = 0.0;
+    for (size_t k = search_from_; k < path_.poses.size() && along <= ctx_->params.bump_lookahead + 0.5; ++k) {
+      const auto & q = path_.poses[k].pose.position;
+      const double d = ctx_->obstacleDistance(id, q.x, q.y);
+      if (d < best) {
+        best = d;
+        c = k;
+      }
+      if (k + 1 < path_.poses.size()) {
+        const auto & n = path_.poses[k + 1].pose.position;
+        along += std::hypot(n.x - q.x, n.y - q.y);
+      }
+    }
+    const auto & q = path_.poses[c].pose.position;
+    const double need = ctx_->params.bump_avoid_radius + 0.01;
+    for (double m = 0.05; m <= ctx_->params.bump_max_swerve + 1e-9; m += 0.05) {
+      for (const double sgn : {1.0, -1.0}) {
+        if (ctx_->sidestep(id, q.x, q.y, sgn * m, need)) return sgn * m;
+      }
+    }
+    return std::nullopt;
+  }
   void bladeOff()
   {
     ctx_->setBlade(false);

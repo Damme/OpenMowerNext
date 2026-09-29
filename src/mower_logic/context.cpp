@@ -110,6 +110,7 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
     publishObstacles();
     publishMarkers();
   });
+  erase_timer_ = node->create_wall_timer(std::chrono::milliseconds(100), [this]() { eraseUnderRobot(); });
   grid_sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
     "/map_grid", rclcpp::QoS(1).transient_local().reliable(), [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr m) {
       std::lock_guard<std::mutex> l(mutex_);
@@ -136,16 +137,21 @@ void Context::loadObstacles()
   while (std::getline(f, line)) {
     if (line.empty() || line[0] == '#') continue;
     std::istringstream s(line);
-    int id = 0;
+    int id = 0, state = 1;
     Contact c;
     if (!(s >> id >> c.x >> c.y >> c.yaw >> c.side)) continue;
+    s >> state;  // missing (first files): confirmed
     c.id = next_contact_id_++;
     c.marks = contactMarks(c, shape);
+    c.total = c.marks.size();
     auto it = std::find_if(obstacles_.begin(), obstacles_.end(), [&](const FeltObstacle & o) { return o.id == id; });
     if (it == obstacles_.end()) {
       obstacles_.push_back(FeltObstacle{id, {}});
       it = std::prev(obstacles_.end());
     }
+    it->state = state == 0 ? FeltObstacle::State::PENDING
+              : state == 2 ? FeltObstacle::State::GONE : FeltObstacle::State::CONFIRMED;
+    if (it->state == FeltObstacle::State::GONE) c.marks.clear();
     it->contacts.push_back(c);
     next_obstacle_id_ = std::max(next_obstacle_id_, id + 1);
     ++n;
@@ -157,13 +163,18 @@ void Context::loadObstacles()
 void Context::saveObstacles() const
 {
   if (params.obstacles_file.empty()) return;
-  // Temp file + rename: a crash never leaves half a file.
+  // Temp file + rename: a crash never leaves half a file. Marks erased where the
+  // robot drove are not kept: after a restart the bands are whole again.
   const auto tmp = params.obstacles_file + ".tmp";
   {
     std::ofstream f(tmp);
-    f << "# obstacle x y yaw side - felt obstacles (robot pose at each bump, map frame), see mower_logic\n";
+    f << "# obstacle x y yaw side state - felt obstacles: robot pose at each bump (map frame), state 0 pending,"
+         " 1 confirmed, 2 gone; see mower_logic\n";
     for (const auto & o : obstacles_) {
-      for (const auto & c : o.contacts) f << o.id << ' ' << c.x << ' ' << c.y << ' ' << c.yaw << ' ' << c.side << '\n';
+      const int st = o.state == FeltObstacle::State::PENDING ? 0 : o.state == FeltObstacle::State::CONFIRMED ? 1 : 2;
+      for (const auto & c : o.contacts) {
+        f << o.id << ' ' << c.x << ' ' << c.y << ' ' << c.yaw << ' ' << c.side << ' ' << st << '\n';
+      }
     }
   }
   std::rename(tmp.c_str(), params.obstacles_file.c_str());
@@ -297,16 +308,11 @@ void Context::applyEdgeCorrections(std::vector<open_mower_next::msg::CoveragePat
 
 void Context::dropBumpObstacle(const Bump & b)
 {
+  // The whole obstacle: it was the edge, not something on the lawn.
   {
     std::lock_guard<std::mutex> l(mutex_);
-    for (auto & o : obstacles_) {
-      if (o.id != b.obstacle) continue;
-      o.contacts.erase(std::remove_if(o.contacts.begin(), o.contacts.end(),
-                                      [&](const Contact & c) { return c.id == b.contact; }),
-                       o.contacts.end());
-    }
     obstacles_.erase(std::remove_if(obstacles_.begin(), obstacles_.end(),
-                                    [](const FeltObstacle & o) { return o.contacts.empty(); }),
+                                    [&](const FeltObstacle & o) { return o.id == b.obstacle; }),
                      obstacles_.end());
     ++markers_version_;
     saveObstacles();
@@ -525,6 +531,25 @@ MarkShape Context::markShape() const
   return m;
 }
 
+namespace
+{
+// Middle of a contact's band: where the bumper was at the bump.
+Point contactCentre(const Contact & c, const MarkShape & s)
+{
+  const double d = s.body.front + s.gap + s.depth / 2.0;
+  return {c.x + d * std::cos(c.yaw), c.y + d * std::sin(c.yaw)};
+}
+
+const char * stateName(FeltObstacle::State s)
+{
+  switch (s) {
+    case FeltObstacle::State::PENDING: return "pending";
+    case FeltObstacle::State::CONFIRMED: return "confirmed";
+    default: return "gone";
+  }
+}
+}  // namespace
+
 void Context::onBump()
 {
   const auto pose = robotPose();
@@ -542,6 +567,7 @@ void Context::onBump()
   c.yaw = yaw;
   c.side = bump_side.load();
   c.marks = contactMarks(c, markShape());
+  c.total = c.marks.size();
   Bump b;
   b.time = Clock::now();
   b.x = c.x;
@@ -552,16 +578,17 @@ void Context::onBump()
     std::lock_guard<std::mutex> l(mutex_);
     c.id = next_contact_id_++;
     b.contact = c.id;
-    // The obstacle being felt around, else the nearest one whose marks come
-    // within bump_merge_distance of the new ones, else a new obstacle.
+    // The obstacle being felt around, else the nearest one (not gone) whose
+    // marks come within bump_merge_distance of the new ones, else a new one.
     FeltObstacle * into = nullptr;
     const int feeling = feel_obstacle.load();
     for (auto & o : obstacles_) {
-      if (o.id == feeling) into = &o;
+      if (o.id == feeling && o.state != FeltObstacle::State::GONE) into = &o;
     }
     if (!into) {
       double best = params.bump_merge_distance;
       for (auto & o : obstacles_) {
+        if (o.state == FeltObstacle::State::GONE) continue;
         for (const auto & [px, py] : c.marks) {
           const double d = o.distance(px, py);
           if (d <= best) {
@@ -572,8 +599,11 @@ void Context::onBump()
       }
     }
     if (!into) {
-      obstacles_.push_back(FeltObstacle{next_obstacle_id_++, {}});
+      obstacles_.push_back(FeltObstacle{next_obstacle_id_++, {}, FeltObstacle::State::PENDING});
       into = &obstacles_.back();
+      b.first = true;
+    } else if (into->state == FeltObstacle::State::PENDING) {
+      into->state = FeltObstacle::State::CONFIRMED;  // bumped again at the same spot
     }
     // Bumping the same spot again from the same pose refreshes that contact.
     auto same = std::find_if(into->contacts.begin(), into->contacts.end(),
@@ -582,15 +612,73 @@ void Context::onBump()
     into->contacts.push_back(c);
     if (static_cast<int>(into->contacts.size()) > params.bump_max_contacts) into->contacts.erase(into->contacts.begin());
     b.obstacle = into->id;
+    b.confirmed = into->state == FeltObstacle::State::CONFIRMED;
     contacts = static_cast<int>(into->contacts.size());
     last_bump_ = b;
     ++markers_version_;
     saveObstacles();
   }
   const char * where = c.side > 0 ? "front left" : c.side < 0 ? "front right" : "front";
-  RCLCPP_WARN(node->get_logger(), "Bump at (%.2f, %.2f), %s: obstacle %d, %d contact%s felt", c.x, c.y, where,
-              b.obstacle, contacts, contacts == 1 ? "" : "s");
+  if (b.first) {
+    RCLCPP_WARN(node->get_logger(), "Bump at (%.2f, %.2f), %s: obstacle %d, not believed yet", c.x, c.y, where,
+                b.obstacle);
+  } else {
+    RCLCPP_WARN(node->get_logger(), "Bump at (%.2f, %.2f), %s: obstacle %d confirmed, %d touches", c.x, c.y, where,
+                b.obstacle, contacts);
+  }
   publishObstacles();
+}
+
+void Context::eraseUnderRobot()
+{
+  const auto pose = robotPose();
+  if (!pose) return;
+  const auto & q = pose->pose.orientation;
+  const double x = pose->pose.position.x, y = pose->pose.position.y;
+  const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+  // Only while driving forward (both wheels): only then would the bumper have
+  // reported what the body now covers. Turning in place or reversing can sweep
+  // past a pin unnoticed (sim: a sidestepped pin was erased by a turn).
+  const auto last = std::exchange(erase_last_, std::array<double, 3>{x, y, yaw});
+  const double ds = (x - last[0]) * std::cos(yaw) + (y - last[1]) * std::sin(yaw);
+  const double dyaw = std::abs(std::remainder(yaw - last[2], 2.0 * M_PI));
+  if (!std::isfinite(last[0]) || ds < 0.003 || ds < dyaw * params.footprint_half_width) return;
+  const auto shape = markShape();
+  auto inside = [&](double px, double py) { return insideBody(shape.body, x, y, yaw, px, py); };
+  std::vector<std::string> events;
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    bool changed = false, state_changed = false;
+    for (auto & o : obstacles_) {
+      if (o.state == FeltObstacle::State::GONE) continue;
+      if (o.erase(inside)) changed = true;
+      char text[160];
+      if (o.state == FeltObstacle::State::PENDING) {
+        // Driven clearly through where the bumper was (15 cm past it: the pose
+        // at the bump lags a little): nothing there.
+        const auto & c0 = o.contacts.front();
+        const double ahead = shape.body.front + 0.15;
+        const Point ctr{c0.x + ahead * std::cos(c0.yaw), c0.y + ahead * std::sin(c0.yaw)};
+        if (inside(ctr.first, ctr.second)) {
+          std::snprintf(text, sizeof(text), "Bump %d at (%.2f, %.2f) was a false detection: drove through there", o.id,
+                        ctr.first, ctr.second);
+          events.emplace_back(text);
+          o.state = FeltObstacle::State::GONE;
+        }
+      } else if (o.markCount() == 0) {
+        std::snprintf(text, sizeof(text), "Obstacle %d isn't there any more: drove through all of it", o.id);
+        events.emplace_back(text);
+        o.state = FeltObstacle::State::GONE;
+      }
+      if (o.state == FeltObstacle::State::GONE) {
+        for (auto & c : o.contacts) c.marks.clear();
+        state_changed = changed = true;
+      }
+    }
+    if (changed) ++markers_version_;
+    if (state_changed) saveObstacles();
+  }
+  for (const auto & e : events) RCLCPP_WARN(node->get_logger(), "%s", e.c_str());
 }
 
 std::optional<int> Context::obstacleNear(double x, double y, double radius) const
@@ -598,7 +686,9 @@ std::optional<int> Context::obstacleNear(double x, double y, double radius) cons
   std::lock_guard<std::mutex> l(mutex_);
   std::optional<int> id;
   double best = radius;
+  const int probing = probing_obstacle.load();
   for (const auto & o : obstacles_) {
+    if (o.state != FeltObstacle::State::CONFIRMED || o.id == probing) continue;
     const double d = o.distance(x, y);
     if (d <= best) {
       best = d;
@@ -624,6 +714,69 @@ size_t Context::obstacleContacts(int id) const
     if (o.id == id) return o.contacts.size();
   }
   return 0;
+}
+
+FeltObstacle::State Context::obstacleState(int id) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  for (const auto & o : obstacles_) {
+    if (o.id == id) return o.state;
+  }
+  return FeltObstacle::State::GONE;
+}
+
+std::optional<size_t> Context::sidestep(int id, double x, double y, double offset, double min_clearance)
+{
+  const auto pass = mission.currentPass(0.0);
+  if (!pass || pass->path.poses.size() < 3) return std::nullopt;
+  const auto & poses = pass->path.poses;
+  std::vector<PathPose> pp;
+  pp.reserve(poses.size());
+  for (const auto & ps : poses) {
+    const auto & o = ps.pose.orientation;
+    pp.push_back({ps.pose.position.x, ps.pose.position.y,
+                  std::atan2(2.0 * (o.w * o.z + o.x * o.y), 1.0 - 2.0 * (o.y * o.y + o.z * o.z))});
+  }
+  // The pose next to the spot, within the next 4 m of the pass.
+  size_t c = 0;
+  double best = 1e9, along = 0.0;
+  for (size_t i = 0; i < pp.size() && along <= 4.0; ++i) {
+    const double d = std::hypot(pp[i].x - x, pp[i].y - y);
+    if (d < best) {
+      best = d;
+      c = i;
+    }
+    if (i + 1 < pp.size()) along += std::hypot(pp[i + 1].x - pp[i].x, pp[i + 1].y - pp[i].y);
+  }
+  if (best > 1.0) return std::nullopt;
+  const auto [first, last] = jogPath(pp, 0, c, offset, params.feel_sidestep_length, params.feel_sidestep_ramp);
+  if (first > last) return std::nullopt;
+  for (size_t i = first; i <= last; ++i) {
+    if (!footprintFits(pp[i].x, pp[i].y, pp[i].yaw)) return std::nullopt;
+  }
+  // Clear of the obstacle along the new line, also just outside the shifted part.
+  if (min_clearance > 0.0) {
+    for (size_t i = first > 20 ? first - 20 : 0; i < pp.size() && i <= last + 20; ++i) {
+      if (obstacleDistance(id, pp[i].x, pp[i].y) < min_clearance) return std::nullopt;
+    }
+  }
+  const size_t start = pass->start_index;
+  const size_t a = first > 0 ? first - 1 : 0, b = std::min(pp.size() - 1, last + 1);
+  bool written = false;
+  mission.editCurrentPass([&](nav_msgs::msg::Path & path, size_t) {
+    if (start + b >= path.poses.size()) return;
+    for (size_t i = a; i <= b; ++i) {
+      auto & ps = path.poses[start + i].pose;
+      ps.position.x = pp[i].x;
+      ps.position.y = pp[i].y;
+      ps.orientation.x = ps.orientation.y = 0.0;
+      ps.orientation.z = std::sin(pp[i].yaw / 2.0);
+      ps.orientation.w = std::cos(pp[i].yaw / 2.0);
+    }
+    written = true;
+  });
+  if (!written) return std::nullopt;
+  return start + last;
 }
 
 std::optional<Context::Bump> Context::lastBump() const
@@ -655,6 +808,7 @@ void Context::clearBumpObstacles()
       ++markers_version_;
     }
     obstacles_.clear();
+    probing_obstacle = -1;
     if (last_bump_) handled_bump_ = last_bump_->time;
     saveObstacles();
   }
@@ -670,10 +824,16 @@ bool Context::forgetObstacle(double x, double y, double radius, bool all, std::s
       message = "forgot " + std::to_string(obstacles_.size()) + " felt obstacle(s)";
       obstacles_.clear();
     } else {
+      // By its marks, or where the bumper was (a gone one has no marks left).
+      const auto shape = markShape();
       auto best = obstacles_.end();
       double best_d = radius;
       for (auto it = obstacles_.begin(); it != obstacles_.end(); ++it) {
-        const double d = it->distance(x, y);
+        double d = it->distance(x, y);
+        for (const auto & c : it->contacts) {
+          const auto ctr = contactCentre(c, shape);
+          d = std::min(d, std::hypot(ctr.first - x, ctr.second - y));
+        }
         if (d <= best_d) {
           best_d = d;
           best = it;
@@ -683,8 +843,8 @@ bool Context::forgetObstacle(double x, double y, double radius, bool all, std::s
         message = "no felt obstacle there";
         return false;
       }
-      message = "forgot obstacle " + std::to_string(best->id) + " (" + std::to_string(best->contacts.size()) +
-                " contacts)";
+      message = "forgot obstacle " + std::to_string(best->id) + " (" + stateName(best->state) + ", " +
+                std::to_string(best->contacts.size()) + " touches)";
       obstacles_.erase(best);
     }
     ++markers_version_;
@@ -759,10 +919,12 @@ bool Context::publishObstacles()
   };
   {
     std::lock_guard<std::mutex> l(mutex_);
-    // One point per 5 cm cell (the costmap resolution); marks outside every
-    // area are useless (already blocked) and dropped.
+    // Confirmed obstacles only (a first bump is tried again). One point per 5 cm
+    // cell (the costmap resolution); marks outside every area are useless
+    // (already blocked) and dropped.
     std::set<std::pair<long, long>> cells;
     for (const auto & o : obstacles_) {
+      if (o.state != FeltObstacle::State::CONFIRMED) continue;
       for (const auto & c : o.contacts) {
         for (const auto & [px, py] : c.marks) {
           const std::pair<long, long> cell{std::lround(std::floor(px / 0.05)), std::lround(std::floor(py / 0.05))};
@@ -807,7 +969,9 @@ void Context::publishMarkers()
     s << "{\"depth\":" << shape.depth << ",\"obstacles\":[";
     for (size_t i = 0; i < obstacles_.size(); ++i) {
       const auto & o = obstacles_[i];
-      s << (i ? "," : "") << "{\"id\":" << o.id << ",\"lines\":[";
+      // lines: the bumper band at each touch; cells: what is left of the marks
+      // (5 cm cells), i.e. where the obstacle can still be.
+      s << (i ? "," : "") << "{\"id\":" << o.id << ",\"state\":\"" << stateName(o.state) << "\",\"lines\":[";
       for (size_t k = 0; k < o.contacts.size(); ++k) {
         s << (k ? "," : "") << "[";
         const auto line = contactLine(o.contacts[k], shape);
@@ -815,6 +979,16 @@ void Context::publishMarkers()
           s << (j ? "," : "") << "[" << num(line[j].first) << "," << num(line[j].second) << "]";
         }
         s << "]";
+      }
+      s << "],\"cells\":[";
+      std::set<std::pair<long, long>> cells;
+      for (const auto & c : o.contacts) {
+        for (const auto & [px, py] : c.marks) cells.insert({std::lround(std::floor(px / 0.05)), std::lround(std::floor(py / 0.05))});
+      }
+      bool first = true;
+      for (const auto & [cx, cy] : cells) {
+        s << (first ? "" : ",") << "[" << num((cx + 0.5) * 0.05) << "," << num((cy + 0.5) * 0.05) << "]";
+        first = false;
       }
       s << "]}";
     }
