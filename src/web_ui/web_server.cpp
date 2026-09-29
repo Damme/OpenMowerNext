@@ -95,7 +95,7 @@ public:
   void run(http::request<http::string_body> req)
   {
     ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
-    ws_.read_message_max(8192);
+    ws_.read_message_max(256 * 1024);  // an area saved from the map editor (mm, thousands of points)
     ws_.auto_fragment(false);
     ws_.async_accept(req, [self = shared_from_this()](beast::error_code ec) {
       if (ec) return;

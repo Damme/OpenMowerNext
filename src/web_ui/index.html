@@ -59,6 +59,7 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 button.small { padding: 4px 10px; font-size: 13px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .row > button { flex: 1 1 40%; }
+.row.three > button { flex: 1 1 0; padding-left: 4px; padding-right: 4px; }
 .muted { color: var(--muted); font-size: 13px; }
 input[type=text], select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--bg); color: var(--text); width: 100%; }
@@ -89,6 +90,9 @@ button.bladeon { background: var(--danger); border-color: var(--danger); color: 
 .seg label:has(input:checked) { background: var(--accent); color: var(--accent-text); }
 .seg label:has(input:disabled) { opacity: .45; cursor: default; }
 input[type=range].wide { width: 100%; }
+input[type=number] { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); }
+button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
 .big { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: center; margin: 4px 0 8px; }
 #log div { font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--line); }
 #log div.bad { color: var(--danger); }
@@ -173,11 +177,36 @@ input[type=range].wide { width: 100%; }
       <div id="blade-now" class="muted">–</div>
     </section>
     <section id="t-areas">
-      <p class="muted">Switched-off areas are skipped from the next new mission on (Reset mission to apply now).</p>
-      <h2>Mowing areas</h2>
-      <div id="areas-op"></div>
-      <h2>Other areas</h2>
-      <div id="areas-other"></div>
+      <div id="areas-list">
+        <p class="muted">Switched-off areas are skipped from the next new mission on (Reset mission to apply now).
+          Tap an area on the map to find it here, Edit to change its outline.</p>
+        <h2>Mowing areas</h2>
+        <div id="areas-op"></div>
+        <h2>Other areas</h2>
+        <div id="areas-other"></div>
+      </div>
+      <div id="editor" hidden>
+        <h2 id="ed-title">Edit</h2>
+        <div class="row"><input type="text" id="ed-name" placeholder="Name" maxlength="60"></div>
+        <div id="ed-info" class="muted" style="margin-bottom:8px"></div>
+        <div class="row three"><button class="primary" id="ed-save">Save</button><button id="ed-undo">Undo</button>
+          <button id="ed-redo">Redo</button><button id="ed-cancel">Cancel</button></div>
+        <p class="muted">Drag a point or a line to move it (a selection moves together). Click a line to add a point there.
+          Click a point to select it; Range (or Shift-click) then selects everything up to the next point clicked,
+          Ctrl-click adds one. Arrow keys move the selection 1 cm (Shift: 10 cm), Delete removes it. Drag anywhere else
+          to pan. The original outline stays dashed.</p>
+        <h2>Selection</h2>
+        <div class="row three"><button id="ed-range">Range</button><button id="ed-all">All</button><button id="ed-none">None</button>
+          <button id="ed-del">Delete</button></div>
+        <h2>Simplify</h2>
+        <div class="row" style="align-items:center"><label class="muted" for="ed-tol">Tolerance (m)</label>
+          <input type="number" id="ed-tol" value="0.04" min="0.005" max="1" step="0.01" style="width:6em">
+          <button id="ed-simp">Simplify</button></div>
+        <p class="muted">Drops every point that lies less than the tolerance off the line through its neighbours (like
+          JOSM's Simplify way). Only the selected stretch when points are selected, else the whole outline.</p>
+        <h2>Area</h2>
+        <div class="row"><button class="danger" id="ed-delete">Delete area</button></div>
+      </div>
     </section>
     <section id="t-bumps">
       <p class="muted">What the mower learned by bumping (kept until Reset mission or a new mission from the beginning).
@@ -221,7 +250,8 @@ input[type=range].wide { width: 100%; }
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const S = { ws: null, state: null, map: null, pose: null, trail: [], rec: [], sel: null, follow: true, obs: null, feltSel: null };
+const S = { ws: null, state: null, map: null, pose: null, trail: [], rec: [], sel: null, follow: true, obs: null, feltSel: null, tab: "mow" };
+const ed = { a: null, drag: null };  // map editor: the area being edited, the drag under way
 
 // ---- connection -------------------------------------------------------------
 function connect() {
@@ -237,6 +267,7 @@ function connect() {
     else if (m.t === "map") { const first = !S.map; S.map = m; renderAreas(); if (first) fit(); draw(); }
     else if (m.t === "rec") { S.rec = m.pts || []; draw(); }
     else if (m.t === "obs") { S.obs = m; renderFelt(); draw(); }
+    else if (m.t === "area") { edLoad(m); }
     else if (m.t === "log") { addLog(m); }
   };
 }
@@ -291,6 +322,7 @@ function renderState() {
   $("b-dock-start").disabled = !online || dk.active;
   $("b-dock-cancel").disabled = !online || !dk.active;
   $("dock-status").textContent = dk.active ? dk.msg || "running" : "";
+  if (ed.a) edChanged();  // its buttons were just switched with all the others
 }
 
 // ---- blade ------------------------------------------------------------------
@@ -343,6 +375,7 @@ function addLog(m) {
   $("log").prepend(e);
   while ($("log").childElementCount > 100) $("log").lastChild.remove();
   if (Date.now() / 1000 - m.time < 5) toast(m.msg, !m.ok);
+  edResult(m);
 }
 let toastTimer;
 function toast(text, bad) {
@@ -375,6 +408,7 @@ $("b-dock-cancel").onclick = () => cmd({ c: "dock_cancel" });
 
 // ---- tabs -------------------------------------------------------------------
 function showTab(name) {
+  S.tab = name;
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll("section").forEach((s) => s.classList.toggle("active", s.id === "t-" + name));
   // one joystick, shown in Drive and Record
@@ -420,6 +454,9 @@ function renderAreas() {
       sw.append(cb, document.createElement("span"));
       row.append(sw);
     }
+    const edit = document.createElement("button"); edit.className = "small"; edit.textContent = "Edit"; edit.title = "Edit the outline";
+    edit.onclick = () => edStart(a.id);
+    row.append(edit);
     const del = document.createElement("button"); del.className = "small"; del.textContent = "✕"; del.title = "Remove area";
     del.onclick = () => { if (confirm("Remove area \"" + (areaLabel(a)) + "\" from the map? This can't be undone here.")) cmd({ c: "area_remove", id: a.id }); };
     row.append(del);
@@ -427,6 +464,24 @@ function renderAreas() {
   }
   if (!op.childElementCount) op.innerHTML = '<p class="muted">none</p>';
   if (!other.childElementCount) other.innerHTML = '<p class="muted">none</p>';
+}
+function insidePoly(x, y, p) {
+  let c = false;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+    if ((p[i][1] > y) !== (p[j][1] > y) && x < (p[j][0] - p[i][0]) * (y - p[i][1]) / (p[j][1] - p[i][1]) + p[i][0]) c = !c;
+  }
+  return c;
+}
+// Tap on the map in the Areas tab: the smallest area under the finger.
+function areaAt(px, py) {
+  if (!S.map) return null;
+  const x = (px - view.ox) / view.s, y = (view.oy - py) / view.s;
+  let best = null, ba = Infinity;
+  for (const a of S.map.areas) {
+    if (a.pts.length < 3 || !insidePoly(x, y, a.pts)) continue;
+    const s = polyArea(a.pts); if (s < ba) { ba = s; best = a; }
+  }
+  return best;
 }
 
 // ---- felt obstacles / edge corrections ----------------------------------------
@@ -552,7 +607,7 @@ function render() {
   if (S.map) {
     const order = [1, 2, 0];  // navigation below, exclusions on top
     for (const t of order) for (const a of S.map.areas) {
-      if (a.type !== t || a.pts.length < 3) continue;
+      if (a.type !== t || a.pts.length < 3 || (ed.a && ed.a.id === a.id)) continue;
       const col = t === 2 ? (a.enabled ? css.area : css["area-off"]) : t === 1 ? css.nav : css.excl;
       path(a.pts, true);
       ctx.globalAlpha = t === 0 ? 0.35 : t === 1 ? 0.07 : a.enabled ? 0.22 : 0.12;
@@ -564,7 +619,7 @@ function render() {
       ctx.fillStyle = css.text; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "center";
       const placed = [];  // skip a label that would overlap one already drawn
       for (const a of S.map.areas) {
-        if (a.type !== 2 || !a.pts.length) continue;
+        if (a.type !== 2 || !a.pts.length || (ed.a && ed.a.id === a.id)) continue;
         let cx = 0, cy = 0; a.pts.forEach(([x, y]) => { cx += x; cy += y; });
         const t = areaLabel(a), w = ctx.measureText(t).width, lx = X(cx / a.pts.length), ly = Y(cy / a.pts.length);
         const box = [lx - w / 2 - 2, ly - 12, lx + w / 2 + 2, ly + 4];
@@ -609,6 +664,7 @@ function render() {
     }
     ctx.lineCap = "butt"; ctx.lineJoin = "miter";
   }
+  if (ed.a) edDraw();
   if (S.trail.length > 1) { path(S.trail); ctx.strokeStyle = css.muted; ctx.globalAlpha = 0.6; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1; }
   if (S.rec.length) {
     path(S.rec); ctx.strokeStyle = css.rec; ctx.lineWidth = 2.5; ctx.stroke();
@@ -632,11 +688,18 @@ const ptrs = new Map(); let pinch = null;
 let tap = null;  // single pointer that hasn't moved: a tap
 cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
   tap = ptrs.size === 1 ? { x: e.offsetX, y: e.offsetY, t: Date.now(), follow: S.follow } : null; S.follow = false;
+  // Map editor: a drag that starts on a point or a line of the edited outline moves it instead of the map.
+  ed.drag = null;
+  if (ed.a && ptrs.size === 1) {
+    const h = edHit(e.offsetX, e.offsetY, e.pointerType === "mouse" ? 10 : 20);
+    if (h) ed.drag = { h, x0: e.offsetX, y0: e.offsetY, moved: false, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
+  }
   if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), s: view.s }; } });
 cv.addEventListener("pointermove", (e) => {
   if (!ptrs.has(e.pointerId)) return;
   const prev = ptrs.get(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
   if (tap && Math.hypot(e.offsetX - tap.x, e.offsetY - tap.y) > 6) tap = null;
+  if (ed.drag && ptrs.size === 1) { edDragMove(e.offsetX, e.offsetY); return; }
   if (ptrs.size === 1) { view.ox += e.offsetX - prev[0]; view.oy += e.offsetY - prev[1]; }
   else if (ptrs.size === 2 && pinch) {
     const [a, b] = [...ptrs.values()], mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
@@ -646,20 +709,293 @@ cv.addEventListener("pointermove", (e) => {
 });
 const up = (e) => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; };
 cv.addEventListener("pointerup", (e) => {
-  const t = tap; tap = null; up(e);
+  const t = tap, d = ed.drag; tap = null; ed.drag = null; up(e);
+  if (d) { if (!d.moved && t) edTap(d); edChanged(); return; }
   if (!t || e.type !== "pointerup" || Date.now() - t.t > 600) return;
+  if (ed.a) { if (!ed.a.range && !e.shiftKey && !e.ctrlKey) { ed.a.sel.clear(); edChanged(); } return; }
+  if (S.tab === "areas") {
+    const a = areaAt(e.offsetX, e.offsetY);
+    S.sel = a ? a.id : null; renderAreas(); draw();
+    if (!a) S.follow = t.follow;
+    if (a) { const r = document.querySelector("#t-areas .area.sel"); if (r) r.scrollIntoView({ block: "nearest" }); }
+    return;
+  }
   const hit = feltAt(e.offsetX, e.offsetY);
   if (!hit) { S.follow = t.follow; return; }
   if (hit.ob) { S.feltSel = "o" + hit.ob.id; draw(); forgetObstacle(hit.ob); }
   else { S.feltSel = "e" + hit.e.x + "," + hit.e.y; draw(); forgetEdge(hit.e); }
   S.feltSel = null; draw();
 });
-cv.addEventListener("pointercancel", (e) => { tap = null; up(e); });
+cv.addEventListener("pointercancel", (e) => { tap = null; ed.drag = null; up(e); edChanged(); });
 cv.addEventListener("wheel", (e) => { e.preventDefault(); S.follow = false; zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0015)); draw(); }, { passive: false });
 function zoomAt(px, py, f) {
   const s = Math.min(Math.max(view.s * f, 0.5), 400); f = s / view.s;
   view.ox = px - (px - view.ox) * f; view.oy = py - (py - view.oy) * f; view.s = s;
 }
+
+// ---- map editor ---------------------------------------------------------------
+// One area at a time, loaded at full resolution (area_get; the map message is simplified
+// to 2 cm). Points are moved, added, deleted and simplified here only; Save sends the whole
+// outline (area_save), map_server stores it and the map comes back like any other change.
+const cp = (p) => p.map((q) => q.slice());
+const mm = (v) => Math.round(v * 1000) / 1000;
+function edStart(id) {
+  if (ed.a && ed.a.dirty && !confirm("Throw away the changes to " + ed.a.id + "?")) return;
+  cmd({ c: "area_get", id });
+}
+function edLoad(m) {
+  ed.a = { id: m.id, name: m.name, type: m.type, orig: m.pts, pts: cp(m.pts), sel: new Set(), anchor: -1,
+           hist: [], redo: [], range: false, dirty: false, pending: null };
+  ed.drag = null;
+  // A ROS1 default name (shown by id, see areaLabel) stays unless a new one is typed.
+  const label = areaLabel(m);
+  $("ed-name").value = label === (m.name || m.id) ? m.name || "" : "";
+  $("ed-name").placeholder = label;
+  S.sel = m.id;
+  showTab("areas"); focusArea({ pts: m.pts }); edChanged();
+}
+function edClose() { ed.a = null; ed.drag = null; edChanged(); renderAreas(); }
+function edChanged() {
+  const a = ed.a;
+  $("areas-list").hidden = !!a; $("editor").hidden = !a;
+  draw();
+  if (!a) return;
+  $("ed-title").textContent = "Edit " + areaLabel(a) + " (" + a.id + ")";
+  const n = a.pts.length;
+  $("ed-info").textContent = n + " points (was " + a.orig.length + ") · " + polyArea(a.pts).toFixed(1) + " m² (was " +
+    polyArea(a.orig).toFixed(1) + ")" + (a.sel.size ? " · " + a.sel.size + " selected" : "") +
+    (a.range ? " · Range: tap the last point" : "");
+  const busy = !!a.pending;
+  $("ed-range").classList.toggle("on", a.range);
+  $("ed-range").disabled = busy || a.anchor < 0;
+  $("ed-del").disabled = busy || !a.sel.size;
+  $("ed-undo").disabled = busy || !a.hist.length;
+  $("ed-redo").disabled = busy || !a.redo.length;
+  $("ed-save").disabled = busy || !S.ws;
+  $("ed-save").textContent = a.pending === "save" ? "Saving…" : "Save";
+}
+// Before each change: kept for Undo.
+function edPush() {
+  const a = ed.a;
+  a.hist.push({ pts: cp(a.pts), sel: [...a.sel] }); if (a.hist.length > 100) a.hist.shift();
+  a.redo = []; a.dirty = true;
+}
+function edUndo(back) {
+  const a = ed.a, from = back ? a.hist : a.redo, to = back ? a.redo : a.hist;
+  if (!from.length) return;
+  to.push({ pts: a.pts, sel: [...a.sel] });
+  const s = from.pop(); a.pts = s.pts; a.sel = new Set(s.sel); a.anchor = -1; a.range = false; a.dirty = true;
+  edChanged();
+}
+// Keep the points keep(i) says, the selection follows them.
+function edFilter(keep) {
+  const a = ed.a, idx = [], pts = [];
+  a.pts.forEach((p, i) => { if (keep(i)) { idx[i] = pts.length; pts.push(p); } });
+  a.sel = new Set([...a.sel].filter((i) => idx[i] !== undefined).map((i) => idx[i]));
+  a.pts = pts; a.anchor = -1;
+}
+// The selected points as stretches along the outline, each in order (one may wrap past the last point).
+function edRuns() {
+  const a = ed.a, n = a.pts.length;
+  if (a.sel.size === n) return [[...Array(n).keys()]];
+  let u = 0; while (a.sel.has(u)) u++;
+  const runs = []; let cur = null;
+  for (let k = 1; k <= n; k++) {
+    const i = (u + k) % n;
+    if (!a.sel.has(i)) { cur = null; continue; }
+    if (!cur) runs.push(cur = []);
+    cur.push(i);
+  }
+  return runs;
+}
+// Douglas-Peucker on the open stretch idx (its ends stay): marks the points to keep.
+function dpKeep(pts, idx, tol, keep) {
+  const stack = [[0, idx.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    if (b <= a + 1) continue;
+    const [ax, ay] = pts[idx[a]], [bx, by] = pts[idx[b]], dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy);
+    let worst = -1, w = a;
+    for (let i = a + 1; i < b; i++) {
+      const [px, py] = pts[idx[i]];
+      const d = len > 1e-9 ? Math.abs(dx * (py - ay) - dy * (px - ax)) / len : Math.hypot(px - ax, py - ay);
+      if (d > worst) { worst = d; w = i; }
+    }
+    if (worst > tol) { keep.add(idx[w]); stack.push([a, w], [w, b]); }
+  }
+}
+function edSimplify() {
+  const a = ed.a, n = a.pts.length, tol = +$("ed-tol").value;
+  if (!(tol > 0)) { toast("Set a tolerance first", true); return; }
+  const keep = new Set();
+  if (a.sel.size && a.sel.size < n) {
+    for (let i = 0; i < n; i++) if (!a.sel.has(i)) keep.add(i);
+    for (const r of edRuns()) { keep.add(r[0]); keep.add(r[r.length - 1]); dpKeep(a.pts, r, tol, keep); }
+  } else {
+    // the whole ring: split at point 0 and the point farthest from it
+    let far = 0, fd = -1;
+    a.pts.forEach(([x, y], i) => { const d = Math.hypot(x - a.pts[0][0], y - a.pts[0][1]); if (d > fd) { fd = d; far = i; } });
+    const idx = [...Array(n).keys()];
+    keep.add(0); keep.add(far);
+    dpKeep(a.pts, idx.slice(0, far + 1), tol, keep);
+    dpKeep(a.pts, idx.slice(far).concat([0]), tol, keep);
+  }
+  if (keep.size === n) { toast("Nothing to drop at " + Math.round(tol * 1000) / 10 + " cm"); return; }
+  if (keep.size < 3) { toast("That would leave fewer than 3 points", true); return; }
+  edPush(); edFilter((i) => keep.has(i));
+  toast("Simplified: " + n + " → " + a.pts.length + " points");
+  edChanged();
+}
+function edDelete() {
+  const a = ed.a;
+  if (a.pts.length - a.sel.size < 3) { toast("An area needs at least 3 points", true); return; }
+  edPush(); const sel = a.sel; edFilter((i) => !sel.has(i)); a.sel = new Set(); edChanged();
+}
+// Arrow keys: the selection by dx, dy (m).
+function edMove(dx, dy) {
+  const a = ed.a;
+  if (!a.sel.size) return;
+  edPush();
+  for (const i of a.sel) a.pts[i] = [mm(a.pts[i][0] + dx), mm(a.pts[i][1] + dy)];
+  edChanged();
+}
+// What is under the pointer: a point (selected ones first), else a line.
+function edHit(px, py, tolPx) {
+  const a = ed.a, x = (px - view.ox) / view.s, y = (view.oy - py) / view.s, tol = tolPx / view.s, n = a.pts.length;
+  let bv = -1, bd = tol;
+  for (const i of a.sel) { const d = Math.hypot(a.pts[i][0] - x, a.pts[i][1] - y); if (d < bd) { bd = d; bv = i; } }
+  if (bv < 0) a.pts.forEach(([u, v], i) => { const d = Math.hypot(u - x, v - y); if (d < bd) { bd = d; bv = i; } });
+  if (bv >= 0) return { v: bv };
+  let best = null; bd = tol;
+  for (let i = 0; i < n; i++) {
+    const [ax, ay] = a.pts[i], [bx, by] = a.pts[(i + 1) % n], dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    const t = l2 > 1e-12 ? Math.min(Math.max(((x - ax) * dx + (y - ay) * dy) / l2, 0), 1) : 0;
+    const d = Math.hypot(x - ax - t * dx, y - ay - t * dy);
+    if (d < bd) { bd = d; best = { s: i, p: [mm(ax + t * dx), mm(ay + t * dy)] }; }
+  }
+  return best;
+}
+function edDragMove(px, py) {
+  const d = ed.drag, a = ed.a;
+  if (!d.moved) {
+    if (Math.hypot(px - d.x0, py - d.y0) < 4) return;
+    d.moved = true;
+    if (d.h.v !== undefined) { if (!a.sel.has(d.h.v)) { a.sel = new Set([d.h.v]); a.anchor = d.h.v; } }
+    else a.sel = new Set([d.h.s, (d.h.s + 1) % a.pts.length]);
+    edPush();
+    d.idx = [...a.sel]; d.base = d.idx.map((i) => a.pts[i].slice());
+  }
+  const dx = (px - d.x0) / view.s, dy = (d.y0 - py) / view.s;
+  d.idx.forEach((i, k) => { a.pts[i] = [mm(d.base[k][0] + dx), mm(d.base[k][1] + dy)]; });
+  draw();
+}
+// A tap: select a point (Range / Shift: up to it, Ctrl: add), or add a point on a line.
+function edTap(d) {
+  const a = ed.a, n = a.pts.length;
+  if (d.h.v === undefined) {
+    edPush(); a.pts.splice(d.h.s + 1, 0, d.h.p);
+    const at = d.h.s + 1; a.sel = new Set([at]); a.anchor = at; return;
+  }
+  const i = d.h.v;
+  if ((a.range || d.shift) && a.anchor >= 0 && a.anchor !== i) {
+    const f = (i - a.anchor + n) % n, dir = f <= n - f ? 1 : -1;
+    for (let k = a.anchor; ; k = (k + dir + n) % n) { a.sel.add(k); if (k === i) break; }
+    a.range = false; a.anchor = i;
+  } else if (d.ctrl) {
+    if (a.sel.has(i)) a.sel.delete(i); else a.sel.add(i);
+    a.anchor = i;
+  } else {
+    a.sel = a.sel.size === 1 && a.sel.has(i) ? new Set() : new Set([i]);
+    a.anchor = a.sel.size ? i : -1;
+  }
+}
+// Where the outline crosses itself (map_server and the planner expect a simple polygon).
+function edCrossing(p) {
+  const n = p.length;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  for (let i = 0; i < n; i++) {
+    const a = p[i], b = p[(i + 1) % n];
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      const c = p[j], d = p[(j + 1) % n];
+      if (Math.max(c[0], d[0]) < Math.min(a[0], b[0]) || Math.max(a[0], b[0]) < Math.min(c[0], d[0]) ||
+          Math.max(c[1], d[1]) < Math.min(a[1], b[1]) || Math.max(a[1], b[1]) < Math.min(c[1], d[1])) continue;
+      if (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0) return a;
+    }
+  }
+  return null;
+}
+function edDraw() {
+  const a = ed.a, col = a.type === 2 ? css.area : a.type === 1 ? css.nav : css.excl;
+  path(a.orig, true); ctx.strokeStyle = css.muted; ctx.lineWidth = 1; ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([]);
+  path(a.pts, true); ctx.fillStyle = col; ctx.globalAlpha = 0.18; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+  const n = a.pts.length;
+  ctx.strokeStyle = css.rec; ctx.lineWidth = 4; ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    if (a.sel.has(i) && a.sel.has(j)) { ctx.moveTo(X(a.pts[i][0]), Y(a.pts[i][1])); ctx.lineTo(X(a.pts[j][0]), Y(a.pts[j][1])); }
+  }
+  ctx.stroke();
+  // Points: skip one closer than 5 px to the last drawn (recorded outlines: a point every 5 cm).
+  ctx.fillStyle = css.text; let lx = -1e9, ly = -1e9;
+  for (let i = 0; i < n; i++) {
+    const sx = X(a.pts[i][0]), sy = Y(a.pts[i][1]);
+    if (a.sel.has(i) || Math.hypot(sx - lx, sy - ly) < 5) continue;
+    ctx.fillRect(sx - 2, sy - 2, 4, 4); lx = sx; ly = sy;
+  }
+  ctx.fillStyle = css.rec;
+  for (const i of a.sel) { ctx.beginPath(); ctx.arc(X(a.pts[i][0]), Y(a.pts[i][1]), 5, 0, 7); ctx.fill(); }
+  if (a.anchor >= 0 && a.anchor < n) {
+    ctx.strokeStyle = css.text; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.arc(X(a.pts[a.anchor][0]), Y(a.pts[a.anchor][1]), 8, 0, 7); ctx.stroke();
+  }
+}
+// The robot's answer to Save / Delete area (a log line): close the editor when it worked.
+function edResult(m) {
+  const a = ed.a;
+  if (!a || !a.pending || Date.now() / 1000 - m.time > 10) return;
+  const prefix = (a.pending === "save" ? "Save area " : "Remove area ") + a.id + ":";
+  if (!m.msg.startsWith(prefix)) return;
+  a.pending = null;
+  if (m.ok) edClose(); else edChanged();
+}
+$("ed-range").onclick = () => { ed.a.range = !ed.a.range; edChanged(); };
+$("ed-all").onclick = () => { const a = ed.a; a.sel = new Set(a.pts.keys()); a.anchor = -1; a.range = false; edChanged(); };
+$("ed-none").onclick = () => { ed.a.sel = new Set(); ed.a.anchor = -1; ed.a.range = false; edChanged(); };
+$("ed-del").onclick = edDelete;
+$("ed-simp").onclick = edSimplify;
+$("ed-undo").onclick = () => edUndo(true);
+$("ed-redo").onclick = () => edUndo(false);
+$("ed-name").oninput = () => { ed.a.dirty = true; };
+$("ed-cancel").onclick = () => { if (!ed.a.dirty || confirm("Throw away the changes?")) edClose(); };
+$("ed-save").onclick = () => {
+  const a = ed.a, c = edCrossing(a.pts);
+  if (c && !confirm("The outline crosses itself near " + c[0].toFixed(2) + ", " + c[1].toFixed(2) + ". Save anyway?")) return;
+  if (!confirm("Save " + areaLabel(a) + " with " + a.pts.length + " points? Recorded poses more than 5 cm off the new " +
+      "outline are dropped. A saved mission replans this area.")) return;
+  if (send({ c: "area_save", id: a.id, name: $("ed-name").value.trim(), pts: a.pts })) { a.pending = "save"; edChanged(); }
+  else toast("Not connected", true);
+};
+$("ed-delete").onclick = () => {
+  const a = ed.a;
+  if (!confirm("Delete area \"" + areaLabel(a) + "\" (" + TYPES[a.type] + ") from the map? This can't be undone here.")) return;
+  if (send({ c: "area_remove", id: a.id })) { a.pending = "remove"; edChanged(); } else toast("Not connected", true);
+};
+addEventListener("keydown", (e) => {
+  if (!ed.a || S.tab !== "areas" || e.target.matches("input, select")) return;
+  const a = ed.a, k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === "z") { e.preventDefault(); edUndo(!e.shiftKey); }
+  else if ((e.ctrlKey || e.metaKey) && k === "y") { e.preventDefault(); edUndo(false); }
+  else if ((e.key === "Delete" || e.key === "Backspace") && a.sel.size) { e.preventDefault(); edDelete(); }
+  else if (e.key === "Escape") { a.sel = new Set(); a.anchor = -1; a.range = false; edChanged(); }
+  else if (e.key.startsWith("Arrow") && a.sel.size) {
+    e.preventDefault();
+    const [dx, dy] = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key];
+    edMove(dx * (e.shiftKey ? 0.1 : 0.01), dy * (e.shiftKey ? 0.1 : 0.01));
+  }
+});
+addEventListener("beforeunload", (e) => { if (ed.a && ed.a.dirty) e.preventDefault(); });
 
 // ---- joystick ---------------------------------------------------------------
 const joy = {

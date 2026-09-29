@@ -14,7 +14,8 @@ The page shows the map (areas, dock, robot, trail), battery, GPS, motor and mowe
 - **Mow**: start mowing, go home, stop, skip pass/area, reset mission, clear emergency, motors on/off.
 - **Drive**: a joystick (touch or mouse) and arrow keys / WASD, and the blade on/off switch.
 - **Blade**: PWM and direction (sign) the blade runs at when it's switched on by hand.
-- **Areas**: switch mowing areas on/off, remove areas.
+- **Areas**: switch mowing areas on/off, remove areas, edit an area's outline (see [Map editor](#map-editor)).
+  Tap an area on the map to find it in the list.
 - **Bumps**: what the mower learned by bumping: obstacles it felt its way around (drawn purple on the map, the
   bumper outline at each touch; kept until Reset mission or a new mission from the beginning) and edge corrections (dashed circles, where the outline runs further in
   after perimeter bumps). Forget one (tap it on the map, or the list) or all of them. Many corrections along one
@@ -51,6 +52,7 @@ Everything goes through interfaces that already exist:
 | joystick | `/cmd_vel_joy` (TwistStamped) → twist_mux, priority above navigation |
 | areas on/off | rewrites mower_logic's `disabled_areas_file`, read when a new mission is planned |
 | remove area | `/remove_area` (map_server) |
+| save an edited area | `/save_area` (map_server, same id = update) |
 | recording | `/record_area_boundary`, `/record_docking_station` (actions), `/set_recording_mode`, `/add_boundary_point`, `/finish_area_recording` (map_recorder) |
 
 ## Motors
@@ -80,6 +82,25 @@ The blade can only be switched on while mower_logic's command is `IDLE` and the 
 
 The PWM can change while the blade runs; the direction only while it's off. Blade on/off/PWM results appear in the log.
 
+## Map editor
+
+Small outline fixes without exporting the map (Areas tab → Edit, any area type), made for a computer with a mouse.
+The page loads the area at full resolution (the map it draws is simplified to 2 cm) and edits a copy; nothing
+reaches the robot before Save.
+
+- Drag a point, or a line (both ends move). Click a line to add a point. Click a point to select it; Range (or
+  Shift-click) selects the stretch up to the next point clicked (the shorter way round), Ctrl-click adds a point. A
+  selection moves together: drag, or arrow keys (1 cm, Shift 10 cm).
+- Simplify: Douglas-Peucker like JOSM's Simplify way: drops every point less than the tolerance (default 4 cm) off
+  the line through the points kept around it. On the selected stretch only (its ends stay), or the whole outline.
+- Delete points (at least 3 stay), Undo / Redo (Ctrl+Z / Ctrl+Y, 100 steps), rename, Delete area.
+- Save warns when the outline crosses itself. Saving and removing only work while mower_logic's command is `IDLE`.
+
+map_server stores and publishes the new outline like any other change. The area's recorded stance (where the body
+stood while recording, `grid.stance_*` in map_server) is kept only within 5 cm of the new outline: along a moved line
+the body never stood there, so the grid there comes from the polygon alone. A saved mission notices the change
+(plan fingerprint) and replans that area.
+
 ## Resources
 
 Subscriptions and service/action clients exist only while a page is open. With no page open, the component is a
@@ -98,7 +119,9 @@ JSON text messages over `ws://<host>:<port>/ws`.
   `{"t":"obs","depth","obstacles":[{"id","lines":[[[x,y],…],…]}],"edges":[{"x","y","offset","radius"}]}` (mower_logic's
   `~/obstacles`, on connect and when it changes).
 - Page → robot: `{"c":"logic","name":…}`, `{"c":"motors","on":…}`, `{"c":"joy","v":-1..1,"w":-1..1}`, `{"c":"blade","on":…}`, `{"c":"blade_pwm","pwm":…}`,
-  `{"c":"area","id":…,"enabled":…}`, `{"c":"area_remove","id":…}`, `{"c":"rec_start","name","type","auto"}`,
+  `{"c":"area","id":…,"enabled":…}`, `{"c":"area_remove","id":…}`, `{"c":"area_get","id"}` (answered to that page
+  only with `{"t":"area","id","name","type","pts"}`, mm), `{"c":"area_save","id","name","pts":[[x,y],…]}`
+  (3–10000 points; an empty name keeps the old one), `{"c":"rec_start","name","type","auto"}`,
   `{"c":"rec_auto","auto"}`, `{"c":"rec_point"}`, `{"c":"rec_finish"}`, `{"c":"rec_cancel"}`,
   `{"c":"dock_start","name"}`, `{"c":"dock_cancel"}`, `{"c":"forget","kind","x","y"}` (mower_logic's
   `~/forget_obstacle`: `obstacle` / `edge` nearest to x, y within 0.6 m, `all_obstacles`, `all_edges`).

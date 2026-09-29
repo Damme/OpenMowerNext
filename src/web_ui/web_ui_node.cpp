@@ -5,13 +5,15 @@
 //                  {"t":"obs"} on change: what mower_logic felt by bumping (obstacles, edge corrections)
 //   page -> robot  {"c":"<command>", ...}, see handle()
 // Commands use what already exists: mower_logic's services, worx_hardware's motor enable,
-// map_recorder's actions/services and map_server's remove_area. Manual driving publishes
+// map_recorder's actions/services and map_server's save_area/remove_area. Manual driving publishes
 // /cmd_vel_joy (twist_mux, top priority), only while mower_logic is IDLE, scaled to
 // max_linear/max_angular here and stopped joy_timeout after the last message.
 // Area on/off rewrites mower_logic's disabled_areas_file (read when a mission is planned).
 // The blade is only switched by hand (Drive tab): worx_hardware's /worx/manual_mow, only
 // while mower_logic is IDLE, at its runtime parameter manual_mow_pwm (Blade tab, sign =
 // direction). It goes off again when a mission starts or the page that switched it on closes.
+// Map editor: area_get sends one area at full resolution to the asking page, area_save
+// writes the edited outline back through map_server's save_area (only while IDLE).
 //
 // All ROS callbacks run on this component's own executor thread; the web thread only
 // fills inbox_, which tick() empties.
@@ -35,6 +37,7 @@
 #include "open_mower_next/msg/worx_status.hpp"
 #include "open_mower_next/srv/forget_obstacle.hpp"
 #include "open_mower_next/srv/remove_area.hpp"
+#include "open_mower_next/srv/save_area.hpp"
 
 #include <algorithm>
 #include <array>
@@ -43,6 +46,7 @@
 #include <ctime>
 #include <deque>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
@@ -98,6 +102,19 @@ Json points(const geometry_msgs::msg::Polygon & poly, double eps)
     if (keep[i]) out.push_back({std::round(p[i].first * 100) / 100, std::round(p[i].second * 100) / 100});
   }
   return out;
+}
+
+// Distance from (x, y) to the closed outline pts.
+double distanceToOutline(double x, double y, const std::vector<geometry_msgs::msg::Point32> & pts)
+{
+  double best = std::numeric_limits<double>::infinity();
+  for (size_t i = 0, j = pts.size() - 1; i < pts.size(); j = i++) {
+    const double ax = pts[j].x, ay = pts[j].y, dx = pts[i].x - ax, dy = pts[i].y - ay;
+    const double l2 = dx * dx + dy * dy;
+    const double t = l2 > 1e-12 ? std::clamp(((x - ax) * dx + (y - ay) * dy) / l2, 0.0, 1.0) : 0.0;
+    best = std::min(best, std::hypot(x - ax - t * dx, y - ay - t * dy));
+  }
+  return best;
 }
 
 double yawOf(const geometry_msgs::msg::Quaternion & q)
@@ -265,6 +282,7 @@ private:
     rec_point_client_ = create_client<std_srvs::srv::Trigger>("/add_boundary_point");
     rec_finish_client_ = create_client<std_srvs::srv::Trigger>("/finish_area_recording");
     remove_area_client_ = create_client<srv::RemoveArea>("/remove_area");
+    save_area_client_ = create_client<srv::SaveArea>("/save_area");
     if (!rec_area_client_) rec_area_client_ = rclcpp_action::create_client<RecordArea>(this, "/record_area_boundary");
     if (!rec_dock_client_) rec_dock_client_ = rclcpp_action::create_client<RecordDock>(this, "/record_docking_station");
   }
@@ -287,6 +305,7 @@ private:
     rec_point_client_.reset();
     rec_finish_client_.reset();
     remove_area_client_.reset();
+    save_area_client_.reset();
     logic_ = worx_ = Json();
     map_.reset();
     have_pose_ = false;
@@ -397,6 +416,10 @@ private:
       setAreaEnabled(m.at("id").get<std::string>(), m.at("enabled").get<bool>());
     } else if (c == "area_remove") {
       removeArea(m.at("id").get<std::string>());
+    } else if (c == "area_get") {
+      sendArea(client, m.at("id").get<std::string>());
+    } else if (c == "area_save") {
+      saveArea(m.at("id").get<std::string>(), m.value("name", std::string()), m.at("pts"));
     } else if (c == "rec_start") {
       recordArea(m.at("name").get<std::string>(), m.at("type").get<int>(), m.at("auto").get<bool>());
     } else if (c == "rec_auto") {
@@ -671,8 +694,12 @@ private:
 
   void removeArea(const std::string & id)
   {
+    if (!logicIdle()) {
+      event(false, "Remove area " + id + ": only while mower_logic is idle (Stop first)");
+      return;
+    }
     if (!remove_area_client_->service_is_ready()) {
-      event(false, "remove_area: service not available");
+      event(false, "Remove area " + id + ": map_server's remove_area not available");
       return;
     }
     auto req = std::make_shared<srv::RemoveArea::Request>();
@@ -680,6 +707,90 @@ private:
     remove_area_client_->async_send_request(req, [this, id](rclcpp::Client<srv::RemoveArea>::SharedFuture f) {
       const auto r = f.get();
       event(r->code == srv::RemoveArea::Response::CODE_SUCCESS, "Remove area " + id + ": " + r->message);
+    });
+  }
+
+  // ---- map editor ------------------------------------------------------------
+
+  bool logicIdle() const { return !logic_.is_object() || logic_.value("command", "IDLE") == "IDLE"; }
+
+  const msg::Area * findArea(const std::string & id) const
+  {
+    if (!map_) return nullptr;
+    for (const auto & a : map_->areas) {
+      if (a.id == id) return &a;
+    }
+    return nullptr;
+  }
+
+  // One area at full resolution (mm) to the editing page; the map message is simplified to 2 cm.
+  void sendArea(uint64_t client, const std::string & id)
+  {
+    const auto * a = findArea(id);
+    if (!a) {
+      send(client, logLine(false, "Edit: area " + id + " not found"));
+      return;
+    }
+    Json pts = Json::array();
+    for (const auto & q : a->area.polygon.points) {
+      pts.push_back({std::round(double{q.x} * 1000) / 1000, std::round(double{q.y} * 1000) / 1000});
+    }
+    send(client, Json{{"t", "area"}, {"id", a->id}, {"name", a->name}, {"type", a->type}, {"pts", pts}}.dump());
+  }
+
+  // The edited outline replaces the area's polygon (map_server's save_area: same id = update).
+  // The recorded stance (where the body stood, map_server grid.stance_*) is kept only where it
+  // still lies on the new outline: along a moved line the body never stood there.
+  void saveArea(const std::string & id, const std::string & name, const Json & pts)
+  {
+    if (!logicIdle()) {
+      event(false, "Save area " + id + ": only while mower_logic is idle (Stop first)");
+      return;
+    }
+    const auto * old = findArea(id);
+    if (!old) {
+      event(false, "Save area " + id + ": not in the map");
+      return;
+    }
+    if (!pts.is_array() || pts.size() < 3 || pts.size() > 10000) {
+      event(false, "Save area " + id + ": needs 3 to 10000 points");
+      return;
+    }
+    if (!save_area_client_->service_is_ready()) {
+      event(false, "Save area " + id + ": map_server's save_area not available");
+      return;
+    }
+    auto req = std::make_shared<srv::SaveArea::Request>();
+    req->area = *old;
+    if (!name.empty()) req->area.name = name.substr(0, 60);
+    auto & poly = req->area.area.polygon.points;
+    poly.clear();
+    for (const auto & p : pts) {
+      geometry_msgs::msg::Point32 q;
+      q.x = p.at(0).get<float>();
+      q.y = p.at(1).get<float>();
+      if (!std::isfinite(q.x) || !std::isfinite(q.y) || std::abs(q.x) > 1e5 || std::abs(q.y) > 1e5) {
+        event(false, "Save area " + id + ": bad point");
+        return;
+      }
+      poly.push_back(q);
+    }
+    auto & st = req->area.stance;
+    const size_t stance_before = st.size();
+    st.erase(std::remove_if(st.begin(), st.end(),
+                            [&](const geometry_msgs::msg::Pose2D & s) {
+                              return distanceToOutline(s.x, s.y, poly) > kStanceKeep;
+                            }),
+             st.end());
+    std::string note =
+      std::to_string(old->area.polygon.points.size()) + " -> " + std::to_string(poly.size()) + " points";
+    if (st.size() != stance_before) {
+      note += ", " + std::to_string(stance_before - st.size()) + " of " + std::to_string(stance_before) +
+              " recorded poses dropped (off the new outline)";
+    }
+    save_area_client_->async_send_request(req, [this, id, note](rclcpp::Client<srv::SaveArea>::SharedFuture f) {
+      const auto r = f.get();
+      event(r->code == srv::SaveArea::Response::CODE_SUCCESS, "Save area " + id + ": " + r->message + " (" + note + ")");
     });
   }
 
@@ -870,6 +981,8 @@ private:
   rclcpp::Time last_blade_off_{0, 0, RCL_ROS_TIME};
   rclcpp::Client<Trigger>::SharedPtr rec_point_client_, rec_finish_client_;
   rclcpp::Client<srv::RemoveArea>::SharedPtr remove_area_client_;
+  rclcpp::Client<srv::SaveArea>::SharedPtr save_area_client_;
+  static constexpr double kStanceKeep = 0.05;  // m: recorded poses further from the edited outline are dropped
   rclcpp_action::Client<RecordArea>::SharedPtr rec_area_client_;
   rclcpp_action::Client<RecordDock>::SharedPtr rec_dock_client_;
   rclcpp_action::ClientGoalHandle<RecordArea>::SharedPtr rec_goal_;
