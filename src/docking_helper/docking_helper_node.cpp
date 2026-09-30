@@ -58,7 +58,8 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
   {
     set_pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
         declare_parameter("set_pose_topic", std::string("/ekf_se_map/set_pose")), 10);
-    docked_pose_period_ = declare_parameter("docked_pose_period", docked_pose_period_);
+    rest_hold_yaw_ = declare_parameter("rest_hold_yaw", rest_hold_yaw_);
+    rest_hold_dist_ = declare_parameter("rest_hold_dist", rest_hold_dist_);
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
         declare_parameter("wheel_odom_topic", std::string("/diff_drive_base_controller/odom")), 10,
         [this](nav_msgs::msg::Odometry::ConstSharedPtr m) {
@@ -67,10 +68,13 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
             last_motion_ns_ = now().nanoseconds();
         });
     set_pose_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
+      if (now().nanoseconds() - last_motion_ns_ < static_cast<int64_t>(1.5e9))
+        rest_valid_ = false;  // moving: a new rest pose at the next rest
       if (set_pose_when_docked_)
         setPoseWhenDocked();
       if (!pose_file_.empty())
         persistPose();
+      holdRestPose();
     });
   }
   if (gps_gate)
@@ -115,8 +119,8 @@ void open_mower_next::docking_helper::DockingHelperNode::setPoseWhenDocked()
   const rclcpp::Time t = now();
   if (t.nanoseconds() - last_motion_ns_ < static_cast<int64_t>(3e9))
     return;  // moving (undocking): the dock pose is no longer where it stands
-  const bool first = docked_anew_.exchange(false) || last_docked_pose_.nanoseconds() == 0;
-  if (!first && (t - last_docked_pose_).seconds() < docked_pose_period_)
+  // Once per stay; after that holdRestPose() keeps localization on it.
+  if (!docked_anew_.exchange(false) && last_docked_pose_.nanoseconds() != 0)
     return;
   std::shared_ptr<open_mower_next::msg::DockingStation> station;
   {
@@ -149,9 +153,9 @@ void open_mower_next::docking_helper::DockingHelperNode::setPoseWhenDocked()
   msg.pose.covariance[14] = msg.pose.covariance[21] = msg.pose.covariance[28] = 1e-6;
   msg.pose.covariance[35] = 0.03 * 0.03;  // yaw (rad)
   set_pose_pub_->publish(msg);
+  last_set_ns_ = t.nanoseconds();
   last_docked_pose_ = t;
-  if (!first)
-    return;
+  setRestPose(pose->pose.position.x, pose->pose.position.y, tf2::getYaw(pose->pose.orientation));
   RCLCPP_INFO(get_logger(), "Docked at '%s': localization set to x=%.3f y=%.3f yaw=%.3f", station->name.c_str(),
               pose->pose.position.x, pose->pose.position.y, tf2::getYaw(pose->pose.orientation));
 }
@@ -205,6 +209,8 @@ void open_mower_next::docking_helper::DockingHelperNode::savePose()
   }
   std::rename(tmp.c_str(), pose_file_.c_str());
   pose_saved_ = true;
+  if (!rest_valid_)
+    setRestPose(x, y, yaw);
   RCLCPP_INFO(get_logger(), "Standing still: pose saved x=%.3f y=%.3f yaw=%.3f", x, y, yaw);
 }
 
@@ -280,9 +286,57 @@ void open_mower_next::docking_helper::DockingHelperNode::restorePose()
   msg.pose.covariance[14] = msg.pose.covariance[21] = msg.pose.covariance[28] = 1e-6;
   msg.pose.covariance[35] = 0.05 * 0.05;  // yaw (rad)
   set_pose_pub_->publish(msg);
+  last_set_ns_ = now().nanoseconds();
   RCLCPP_INFO(get_logger(), "Saved pose restored (%s): x=%.3f y=%.3f yaw=%.3f",
               gps ? "position checked by RTK" : "no RTK fixed, unchecked", x, y, syaw);
+  setRestPose(x, y, syaw);
   finish();
+}
+
+void open_mower_next::docking_helper::DockingHelperNode::setRestPose(double x, double y, double yaw)
+{
+  rest_x_ = x;
+  rest_y_ = y;
+  rest_yaw_ = yaw;
+  rest_valid_ = true;
+}
+
+void open_mower_next::docking_helper::DockingHelperNode::holdRestPose()
+{
+  if (!rest_valid_ || set_pose_pub_->get_subscription_count() == 0 ||
+      now().nanoseconds() - last_set_ns_ < static_cast<int64_t>(2e9))
+    return;  // a set just sent: wait until localization shows it
+  geometry_msgs::msg::TransformStamped tf;
+  try
+  {
+    tf = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+  }
+  catch (const tf2::TransformException&)
+  {
+    return;
+  }
+  const double x = tf.transform.translation.x, y = tf.transform.translation.y;
+  const double dyaw = std::remainder(tf2::getYaw(tf.transform.rotation) - rest_yaw_, 2.0 * M_PI);
+  // On the charger GPS is gated off: the rest position holds too. Off it GPS keeps the position.
+  const bool docked = charger_present_;
+  const double dist = docked ? std::hypot(x - rest_x_, y - rest_y_) : 0.0;
+  if (std::abs(dyaw) <= rest_hold_yaw_ && dist <= rest_hold_dist_)
+    return;
+  geometry_msgs::msg::PoseWithCovarianceStamped msg;
+  msg.header.frame_id = "map";
+  msg.header.stamp = now();
+  msg.pose.pose.position.x = docked ? rest_x_ : x;
+  msg.pose.pose.position.y = docked ? rest_y_ : y;
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, rest_yaw_);
+  msg.pose.pose.orientation = tf2::toMsg(q);
+  msg.pose.covariance[0] = msg.pose.covariance[7] = 0.02 * 0.02;  // x, y
+  msg.pose.covariance[14] = msg.pose.covariance[21] = msg.pose.covariance[28] = 1e-6;
+  msg.pose.covariance[35] = 0.03 * 0.03;  // yaw (rad)
+  set_pose_pub_->publish(msg);
+  last_set_ns_ = now().nanoseconds();
+  RCLCPP_INFO(get_logger(), "Standing still: localization drifted %.1f deg / %.3f m, back to the rest pose",
+              dyaw * 180.0 / M_PI, dist);
 }
 
 open_mower_next::docking_helper::DockingHelperNode::~DockingHelperNode()
