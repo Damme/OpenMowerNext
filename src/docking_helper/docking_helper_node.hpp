@@ -9,6 +9,7 @@
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_srvs/srv/set_bool.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <nav2_msgs/action/dock_robot.hpp>
 #include "open_mower_next/msg/map.hpp"
@@ -73,13 +74,22 @@ private:
   std::shared_ptr<open_mower_next::msg::DockingStation> findDockingStationById(const std::string& id);
 
   // On the charger the robot stands at its docking station's recorded pose:
-  // localization (ekf_se_map) is set to it, heading included, once per docking.
+  // localization (ekf_se_map) is set to it, heading included, and set again every
+  // docked_pose_period while it stands still there. Set only once, the gyro bias
+  // turned the heading ~45 deg in a 14 h night on the dock (2026-09-30) and the
+  // undock reversed off the approach line.
   void setPoseWhenDocked();
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr charger_sub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr set_pose_pub_;
   rclcpp::TimerBase::SharedPtr set_pose_timer_;
   std::atomic<bool> charger_present_{false};
-  std::atomic<bool> docked_pose_set_{false};
+  std::atomic<bool> docked_anew_{false};  // charger came back: log the next set
+  rclcpp::Time last_docked_pose_{0, 0, RCL_ROS_TIME};  // timer only
+  double docked_pose_period_ = 5.0;
+  // Wheel odometry: no pose reset while the wheels turn or just did (the charge
+  // current outlasts the start of an undock by ~2 s).
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  std::atomic<int64_t> last_motion_ns_{0};
 
   // GPS gate for localization: fixes pass only off the charger (and RTK fixed).
   void gateGps(sensor_msgs::msg::NavSatFix::ConstSharedPtr m);

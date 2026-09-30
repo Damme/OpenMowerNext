@@ -1,5 +1,6 @@
 #include "docking_helper/docking_helper_node.hpp"
 #include "docking_helper_node.hpp"
+#include <cmath>
 #include <functional>
 #include <future>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -41,14 +42,22 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
   {
     charger_sub_ = create_subscription<std_msgs::msg::Bool>(
         "/power/charger_present", 10, [this](std_msgs::msg::Bool::ConstSharedPtr m) {
+          if (m->data && !charger_present_) docked_anew_ = true;
           charger_present_ = m->data;
-          if (!m->data) docked_pose_set_ = false;
         });
   }
   if (set_pose)
   {
     set_pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
         declare_parameter("set_pose_topic", std::string("/ekf_se_map/set_pose")), 10);
+    docked_pose_period_ = declare_parameter("docked_pose_period", docked_pose_period_);
+    odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+        declare_parameter("wheel_odom_topic", std::string("/diff_drive_base_controller/odom")), 10,
+        [this](nav_msgs::msg::Odometry::ConstSharedPtr m) {
+          const auto& t = m->twist.twist;
+          if (std::abs(t.linear.x) > 0.005 || std::abs(t.angular.z) > 0.02)
+            last_motion_ns_ = now().nanoseconds();
+        });
     set_pose_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { setPoseWhenDocked(); });
   }
   if (gps_gate)
@@ -85,7 +94,13 @@ void open_mower_next::docking_helper::DockingHelperNode::gateGps(sensor_msgs::ms
 
 void open_mower_next::docking_helper::DockingHelperNode::setPoseWhenDocked()
 {
-  if (!charger_present_ || docked_pose_set_ || set_pose_pub_->get_subscription_count() == 0)
+  if (!charger_present_ || set_pose_pub_->get_subscription_count() == 0)
+    return;
+  const rclcpp::Time t = now();
+  if (t.nanoseconds() - last_motion_ns_ < static_cast<int64_t>(3e9))
+    return;  // moving (undocking): the dock pose is no longer where it stands
+  const bool first = docked_anew_.exchange(false) || last_docked_pose_.nanoseconds() == 0;
+  if (!first && (t - last_docked_pose_).seconds() < docked_pose_period_)
     return;
   std::shared_ptr<open_mower_next::msg::DockingStation> station;
   {
@@ -118,7 +133,9 @@ void open_mower_next::docking_helper::DockingHelperNode::setPoseWhenDocked()
   msg.pose.covariance[14] = msg.pose.covariance[21] = msg.pose.covariance[28] = 1e-6;
   msg.pose.covariance[35] = 0.03 * 0.03;  // yaw (rad)
   set_pose_pub_->publish(msg);
-  docked_pose_set_ = true;
+  last_docked_pose_ = t;
+  if (!first)
+    return;
   RCLCPP_INFO(get_logger(), "Docked at '%s': localization set to x=%.3f y=%.3f yaw=%.3f", station->name.c_str(),
               pose->pose.position.x, pose->pose.position.y, tf2::getYaw(pose->pose.orientation));
 }
