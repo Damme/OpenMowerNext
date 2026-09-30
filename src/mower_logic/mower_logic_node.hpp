@@ -8,6 +8,8 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -29,6 +31,7 @@ public:
 
 private:
   void run(const std::string & tree_file, double rate, bool log_tree);
+  void saveMowed();  // params.mowed_file, only if changed
 
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<Context> ctx_;
@@ -36,6 +39,10 @@ private:
   rclcpp::TimerBase::SharedPtr state_timer_;
   rclcpp::TimerBase::SharedPtr save_timer_;
   std::string saved_mission_;
+  rclcpp::TimerBase::SharedPtr mowed_timer_;
+  std::string saved_mowed_;
+  uint64_t saved_rolls_ = 0;
+  std::chrono::steady_clock::time_point mowed_saved_at_{};
   std::atomic<bool> stop_{false};
   std::thread tick_thread_;
 };

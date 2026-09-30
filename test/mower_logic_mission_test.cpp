@@ -1,14 +1,17 @@
 #include "mower_logic/felt_obstacles.hpp"
 #include "mower_logic/mission.hpp"
+#include "mower_logic/mowed_area.hpp"
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <deque>
 
 using open_mower_next::mower_logic::Contact;
 using open_mower_next::mower_logic::FeltObstacle;
 using open_mower_next::mower_logic::MarkShape;
 using open_mower_next::mower_logic::Mission;
+using open_mower_next::mower_logic::MowedArea;
 using open_mower_next::msg::CoveragePath;
 
 namespace
@@ -60,6 +63,43 @@ TEST(Mission, ResumesWithBacktrack)
   EXPECT_EQ(p->start_index, 45u);
   EXPECT_EQ(p->path.poses.size(), 55u);
   EXPECT_NEAR(p->path.poses.front().pose.position.x, 4.5, 1e-9);
+}
+
+TEST(Mission, ReportsMetresCovered)
+{
+  Mission m;
+  m.begin({"a"});
+  m.setPlan({straight(100, 0.1)});
+  EXPECT_NEAR(m.setPoseIndex(20), 2.0, 1e-9);
+  EXPECT_NEAR(m.setPoseIndex(15), 0.0, 1e-9);  // backtrack: already counted
+  EXPECT_NEAR(m.setPoseIndex(25), 0.5, 1e-9);
+  m.continueAt(60);  // skipped past an obstacle: not mowed
+  EXPECT_NEAR(m.setPoseIndex(61), 0.1, 1e-9);
+  EXPECT_NEAR(m.setPoseIndex(500), 3.8, 1e-9);  // clamped to the pass end
+}
+
+TEST(MowedArea, RollsChargesAndPersists)
+{
+  MowedArea a;
+  a.docked();  // nothing mowed: no roll
+  EXPECT_EQ(a.rolls(), 0u);
+  EXPECT_TRUE(a.history().empty());
+  for (double m2 : {10.0, 20.0, 30.0, 40.0}) {
+    a.add(m2);
+    a.docked();
+  }
+  a.add(5.0);
+  a.add(-1.0);  // ignored
+  EXPECT_DOUBLE_EQ(a.charge(), 5.0);
+  EXPECT_DOUBLE_EQ(a.total(), 105.0);
+  EXPECT_EQ(a.history(), (std::deque<double>{40.0, 30.0, 20.0}));  // newest first, 3 kept
+  EXPECT_EQ(a.json(), "{\"charge\":5,\"last\":[40,30,20],\"total\":105}");
+
+  MowedArea b;
+  ASSERT_TRUE(b.restore(a.serialize()));
+  EXPECT_EQ(b.json(), a.json());
+  EXPECT_FALSE(b.restore("garbage"));
+  EXPECT_EQ(b.json(), a.json());
 }
 
 TEST(Mission, SkipsPassAfterRepeatedFailures)

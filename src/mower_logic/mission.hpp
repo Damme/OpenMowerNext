@@ -49,8 +49,9 @@ public:
   // resume_backtrack_m re-mows a little before the stop point.
   std::optional<Pass> currentPass(double resume_backtrack_m = 0.5) const;
 
-  // Progress reports while following the current pass.
-  void setPoseIndex(size_t absolute_index);
+  // Progress reports while following the current pass. Returns the metres of
+  // pass newly covered (0 when going back over the resume backtrack).
+  double setPoseIndex(size_t absolute_index);
   // Continue the current pass at this pose (after a segment cut before a
   // corner the body can't drive), without the resume backtrack.
   void continueAt(size_t absolute_index);

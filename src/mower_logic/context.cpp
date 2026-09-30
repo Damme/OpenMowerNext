@@ -56,8 +56,14 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
     });
   charger_sub_ = node->create_subscription<std_msgs::msg::Bool>(
     "/power/charger_present", 10, [this](std_msgs::msg::Bool::ConstSharedPtr m) {
-      std::lock_guard<std::mutex> l(mutex_);
-      charger_ = m->data;
+      bool arrived = false;
+      {
+        std::lock_guard<std::mutex> l(mutex_);
+        arrived = charger_seen_ && !charger_ && m->data;
+        charger_ = m->data;
+        charger_seen_ = true;
+      }
+      if (arrived) mowed.docked();
     });
   worx_sub_ = node->create_subscription<open_mower_next::msg::WorxStatus>(
     "/worx/status", 10, [this](open_mower_next::msg::WorxStatus::ConstSharedPtr m) {

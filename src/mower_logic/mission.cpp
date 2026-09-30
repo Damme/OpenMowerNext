@@ -139,13 +139,23 @@ std::optional<Mission::Pass> Mission::currentPass(double resume_backtrack_m) con
   return p;
 }
 
-void Mission::setPoseIndex(size_t absolute_index)
+double Mission::setPoseIndex(size_t absolute_index)
 {
   std::lock_guard<std::mutex> l(mutex_);
+  double metres = 0.0;
   if (absolute_index > pose_) {
+    if (planned_ && pass_ < passes_.size()) {
+      const auto & poses = passes_[pass_].path.poses;
+      for (size_t i = pose_ + 1; i <= absolute_index && i < poses.size(); ++i) {
+        const auto & a = poses[i - 1].pose.position;
+        const auto & b = poses[i].pose.position;
+        metres += std::hypot(b.x - a.x, b.y - a.y);
+      }
+    }
     pose_ = absolute_index;
     no_backtrack_ = false;
   }
+  return metres;
 }
 
 void Mission::continueAt(size_t absolute_index)

@@ -46,6 +46,8 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   p.blade_spinup = node->declare_parameter("blade_spinup", p.blade_spinup);
   p.auto_resume = node->declare_parameter("auto_resume", p.auto_resume);
   p.mission_file = node->declare_parameter("mission_file", p.mission_file);
+  p.mowed_file = node->declare_parameter("mowed_file", p.mowed_file);
+  p.mowed_swath = node->declare_parameter("mowed_swath", p.mowed_swath);
   p.resume_backtrack = node->declare_parameter("resume_backtrack", p.resume_backtrack);
   p.resume_direct_distance = node->declare_parameter("resume_direct_distance", p.resume_direct_distance);
   p.bump_mark_gap = node->declare_parameter("bump_mark_gap", p.bump_mark_gap);
@@ -170,7 +172,7 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
     s << "{\"state\":\"" << ctx->lastBranch() << "\",\"command\":\"" << toString(ctx->command.load())
       << "\",\"mission\":\"" << ctx->mission.summary() << "\",\"battery\":" << (std::isnan(b) ? -1.0 : b)
       << ",\"docked\":" << (ctx->charging() ? "true" : "false") << ",\"gps_ok\":" << (ctx->gpsOk() ? "true" : "false")
-      << ",\"emergency\":" << (ctx->emergency() ? "true" : "false") << "}";
+      << ",\"emergency\":" << (ctx->emergency() ? "true" : "false") << ",\"mowed\":" << ctx->mowed.json() << "}";
     std_msgs::msg::String m;
     m.data = s.str();
     state_pub->publish(m);
@@ -205,13 +207,47 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
     });
   }
 
+  // Mowed area statistics: saved right after a charge ended, else at most once a
+  // minute while mowing (one small SD write), and on shutdown.
+  if (!p.mowed_file.empty()) {
+    std::ifstream in(p.mowed_file);
+    std::stringstream text;
+    text << in.rdbuf();
+    if (in && !ctx->mowed.restore(text.str())) {
+      RCLCPP_WARN(node_->get_logger(), "Ignoring unreadable %s", p.mowed_file.c_str());
+    }
+    saved_mowed_ = ctx->mowed.serialize();
+    saved_rolls_ = ctx->mowed.rolls();
+    mowed_timer_ = node_->create_wall_timer(std::chrono::seconds(5), [this, ctx]() {
+      const bool rolled = ctx->mowed.rolls() != saved_rolls_;
+      const auto now = std::chrono::steady_clock::now();
+      if (!rolled && now - mowed_saved_at_ < std::chrono::seconds(60)) return;
+      saveMowed();
+    });
+  }
+
   tick_thread_ = std::thread([this, tree_file, rate, log_tree]() { run(tree_file, rate, log_tree); });
+}
+
+void MowerLogicNode::saveMowed()
+{
+  const auto & file = ctx_->params.mowed_file;
+  if (file.empty()) return;
+  saved_rolls_ = ctx_->mowed.rolls();
+  mowed_saved_at_ = std::chrono::steady_clock::now();
+  const auto text = ctx_->mowed.serialize();
+  if (text == saved_mowed_) return;
+  const auto tmp = file + ".tmp";
+  std::ofstream(tmp) << text;
+  std::rename(tmp.c_str(), file.c_str());
+  saved_mowed_ = text;
 }
 
 MowerLogicNode::~MowerLogicNode()
 {
   stop_ = true;
   if (tick_thread_.joinable()) tick_thread_.join();
+  saveMowed();
 }
 
 void MowerLogicNode::run(const std::string & tree_file, double rate, bool log_tree)

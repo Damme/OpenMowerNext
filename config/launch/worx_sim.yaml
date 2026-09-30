@@ -103,6 +103,8 @@ processes:
             progress_checker_id: ftc_progress_checker
             areas: $(env OM_MOWING_AREAS "")
             edge_corrections_file: $(env OM_EDGE_CORRECTIONS_PATH "")
+            mowed_file: $(env OM_MOWED_PATH "")
+            mowed_swath: 0.143
 
   - name: twist_mux
     cmd: [/opt/ros/jazzy/lib/twist_mux/twist_mux, --ros-args,

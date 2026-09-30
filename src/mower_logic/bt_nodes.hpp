@@ -285,7 +285,7 @@ protected:
       }
       if (best < 1.0) {
         search_from_ = best_i;
-        ctx_->mission.setPoseIndex(start_index_ + best_i);
+        ctx_->mowed.add(ctx_->mission.setPoseIndex(start_index_ + best_i) * ctx_->params.mowed_swath);
       }
       // Past the obstacle being sidestepped: it counts as known again.
       if (ctx_->probe && ctx_->probing_obstacle == ctx_->probe->obstacle &&

@@ -5,6 +5,7 @@
 
 #include "mower_logic/felt_obstacles.hpp"
 #include "mower_logic/mission.hpp"
+#include "mower_logic/mowed_area.hpp"
 
 #include "open_mower_next/msg/map.hpp"
 #include "open_mower_next/msg/worx_status.hpp"
@@ -68,6 +69,8 @@ struct Params
   // the command drops to IDLE once docked; only start_mowing continues.
   bool auto_resume = false;
   std::string mission_file;          // mission progress kept across restarts (empty: memory only)
+  std::string mowed_file;            // mowed area statistics (empty: memory only)
+  double mowed_swath = 0.143;        // m counted per m of pass: coverage tool_width * (1 - overlap)
   double resume_backtrack = 0.5;     // m re-mowed before a resume point
   double resume_direct_distance = 0.3;  // m: robot this close to the pass -> no transit (0 = always transit)
   // Bumps (WorxStatus.bumps). The sensor only says THAT the front touched
@@ -180,6 +183,7 @@ public:
   rclcpp::Node::SharedPtr node;
   Params params;
   Mission mission;
+  MowedArea mowed;  // rolled into its history when the charger appears
   std::shared_ptr<tf2_ros::Buffer> tf;
   std::atomic<Command> command{Command::IDLE};
   std::atomic<int> dock_failures{0};
@@ -339,6 +343,7 @@ private:
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   double battery_ = NAN;
   bool charger_ = false;
+  bool charger_seen_ = false;  // a charger message came (a start on the dock is no arrival)
   bool emergency_ = false;
   bool worx_emergency_ = false, board_emergency_ = false, lift_ = false, collision_ = false;
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr emergency_client_, motors_client_;

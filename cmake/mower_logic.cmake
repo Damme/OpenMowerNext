@@ -3,7 +3,8 @@
 ###
 find_package(nav2_msgs REQUIRED)
 
-add_library(mower_logic_core STATIC src/mower_logic/mission.cpp src/mower_logic/felt_obstacles.cpp)
+add_library(mower_logic_core STATIC src/mower_logic/mission.cpp src/mower_logic/felt_obstacles.cpp
+  src/mower_logic/mowed_area.cpp)
 target_compile_features(mower_logic_core PUBLIC cxx_std_17)
 target_include_directories(mower_logic_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
 target_link_libraries(mower_logic_core "${cpp_typesupport_target}")
