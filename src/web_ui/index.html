@@ -143,6 +143,7 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
     </nav>
     <section id="t-mow" class="active">
       <div id="mission" class="muted">–</div>
+      <div id="mowed" class="muted"></div>
       <h2>Mission</h2>
       <div class="row"><button class="primary" data-logic="start_mowing">Start mowing</button>
         <button data-logic="go_home">Go home</button></div>
@@ -287,7 +288,12 @@ function renderState() {
   if (l) {
     setChip("c-state", l.state + (l.command !== "IDLE" ? " · " + l.command : ""), l.command === "IDLE" ? "" : "ok");
     $("mission").textContent = "Mission: " + l.mission;
-  } else { setChip("c-state", "no mower_logic", "warn"); $("mission").textContent = "–"; }
+    const m = l.mowed, m2 = (v) => Math.round(v) + " m²";
+    $("mowed").textContent = m ? "Mowed: " + m2(m.charge) + " this charge · last charges " +
+      (m.last.length ? m.last.map(m2).join(", ") : "–") + " · total " + m2(m.total) : "";
+  } else {
+    setChip("c-state", "no mower_logic", "warn"); $("mission").textContent = "–"; $("mowed").textContent = "";
+  }
   let batt = "–", bc = "";
   if (l && l.battery >= 0) { batt = Math.round(l.battery * 100) + " %"; bc = l.battery < 0.3 ? "warn" : ""; }
   if (w) batt += " " + w.v.toFixed(1) + " V";
