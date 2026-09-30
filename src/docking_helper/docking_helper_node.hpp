@@ -94,10 +94,10 @@ private:
 
   // Pose across restarts (pose_file): ekf_se_map starts at x=y=yaw=0, and off the
   // dock nothing but a drive with RTK gives the heading back. The map pose is saved
-  // once the wheels have stood still for a while (stop, idle, pause, docked), and the
-  // file is removed when they turn again, so it only ever holds a pose the robot
-  // still stands at. At startup it is restored (not on the charger: the dock pose
-  // wins) once RTK fixed confirms the position, or unchecked after pose_restore_gps_wait.
+  // once the wheels have stood still for a while (stop, idle, pause, docked) - the
+  // only write. The file may be stale (stack stopped while driving): at startup it is
+  // restored (not on the charger: the dock pose wins) only if RTK fixed puts the robot
+  // at the saved position, or unchecked after pose_restore_gps_wait without RTK.
   void persistPose();
   void savePose();
   void restorePose();

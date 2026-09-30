@@ -166,10 +166,7 @@ void open_mower_next::docking_helper::DockingHelperNode::persistPose()
   const rclcpp::Time t = now();
   if (t.nanoseconds() - last_motion_ns_ < static_cast<int64_t>(5e9))
   {
-    // Moving, or just stopped: the saved pose is no longer where it stands.
-    if (pose_saved_ && std::remove(pose_file_.c_str()) == 0)
-      RCLCPP_DEBUG(get_logger(), "Moving: saved pose removed");
-    pose_saved_ = false;
+    pose_saved_ = false;  // moving, or just stopped: save at the next rest
     return;
   }
   if (pose_saved_)
@@ -230,7 +227,6 @@ void open_mower_next::docking_helper::DockingHelperNode::restorePose()
   if (last_motion_ns_ > start_time_.nanoseconds())
   {
     RCLCPP_WARN(get_logger(), "Saved pose not restored: the robot moved before it could be");
-    std::remove(pose_file_.c_str());
     finish();
     return;
   }
@@ -265,7 +261,6 @@ void open_mower_next::docking_helper::DockingHelperNode::restorePose()
     if (off > pose_restore_max_offset_)
     {
       RCLCPP_WARN(get_logger(), "Saved pose not restored: %.2f m from the GPS position (robot moved?)", off);
-      std::remove(pose_file_.c_str());
       finish();
       return;
     }
