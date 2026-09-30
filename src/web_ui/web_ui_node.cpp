@@ -11,7 +11,7 @@
 // Area on/off rewrites mower_logic's disabled_areas_file (read when a mission is planned).
 // The blade is only switched by hand (Drive tab): worx_hardware's /worx/manual_mow, only
 // while mower_logic is IDLE, at its runtime parameter manual_mow_pwm (Blade tab, sign =
-// direction). It goes off again when a mission starts or the page that switched it on closes.
+// direction, missions too). It goes off again when a mission starts or the page that switched it on closes.
 // Map editor: area_get sends one area at full resolution to the asking page, area_save
 // writes the edited outline back through map_server's save_area (only while IDLE).
 //

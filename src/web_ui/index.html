@@ -161,8 +161,9 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
         0.3 s after the last command.</p>
     </section>
     <section id="t-blade">
-      <p class="muted">PWM and direction of the blade when it's switched on by hand (Drive tab). Missions use their own
-        setting. The direction can only change while the blade is off.</p>
+      <p class="muted">PWM and direction of the blade when it's switched on by hand (Drive tab). Missions cut at their
+        own PWM but in this direction, from the next time their blade starts (next pass, or stop + resume). The
+        direction can only change while the hand-switched blade is off.</p>
       <h2>Direction</h2>
       <div class="seg">
         <label><input type="radio" name="bdir" id="bdir-fwd" value="1" checked> Forward (+)</label>

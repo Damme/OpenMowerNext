@@ -266,7 +266,8 @@ void WorxSystem::startNode()
   node_->declare_parameter("speed_ff", gains_.ff);
   node_->declare_parameter("speed_ff_static", gains_.ff_static);
   node_->declare_parameter("speed_pos_max", gains_.pos_max);
-  // Manual blade PWM, sign = direction: ros2 param set /worx_hardware manual_mow_pwm -1500
+  // Manual blade PWM, sign = direction (of the commanded blade too):
+  // ros2 param set /worx_hardware manual_mow_pwm -1500
   node_->declare_parameter("manual_mow_pwm", manual_mow_pwm_.load());
   gains_cb_ = node_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
     rcl_interfaces::msg::SetParametersResult r;
@@ -552,7 +553,15 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration & per
       pi_right_.reset();
     }
   }
-  int pm = blade_lockout_ || !cfg_.blade_enabled ? 0 : static_cast<int>(std::clamp(blade, 0.0, 1.0) * cfg_.mow_pwm);
+  // The commanded (mission) blade turns the way manual_mow_pwm's sign says. The direction
+  // is taken while the blade isn't driven, so a change only applies on its next start.
+  if (last_pwm_mow_ == 0) {
+    const int dir = manual_mow_pwm_ < 0 ? -1 : 1;
+    if (dir != mow_dir_) RCLCPP_INFO(get_logger(), "Blade direction %s", dir < 0 ? "reverse" : "forward");
+    mow_dir_ = dir;
+  }
+  int pm = blade_lockout_ || !cfg_.blade_enabled
+    ? 0 : mow_dir_ * static_cast<int>(std::clamp(blade, 0.0, 1.0) * cfg_.mow_pwm);
   if (manual) {
     if (blade_lockout_) {
       // Emergency, motors off, link loss, bump or idle: stays off until switched on again.

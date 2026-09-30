@@ -46,7 +46,7 @@ which the firmware refuses while the STOP key or the lift sensor is still active
 | Joint | Command | State |
 |---|---|---|
 | `left_wheel_joint`, `right_wheel_joint` | velocity (rad/s) → PWM = v·`pwm_per_mps`, open loop | position, velocity from `MotorPulse` (`wheel.ticks_per_m`) |
-| `mower_joint` | effort 0..1 → `mow_pwm` | velocity = blade pulses |
+| `mower_joint` | effort 0..1 → `mow_pwm`, direction = sign of `manual_mow_pwm` | velocity = blade pulses |
 
 | Topic / service | Type | |
 |---|---|---|
@@ -59,7 +59,9 @@ which the firmware refuses while the STOP key or the lift sensor is still active
 
 The runtime parameter `manual_mow_pwm` (`ros2 param set /worx_hardware manual_mow_pwm -1500`) is the blade PWM for
 `/worx/manual_mow`; the sign is the direction. It's limited to ±`manual_mow_max_pwm`, and its sign can't change while
-the manual blade runs. Both start from `config/hardware/worx.yaml`.
+the manual blade runs. Both start from `config/hardware/worx.yaml`. Its sign is also the direction of the commanded
+(`mower_joint`) blade, taken whenever that blade starts from 0: a change made while a mission cuts applies at the
+next blade start (next pass, or stop + resume).
 
 `Digital` inputs are published raw and as "active". Inputs listed in `digital_inverted`
 (default `Door,Door2,Lift,Collision`) read 1 in their normal state.

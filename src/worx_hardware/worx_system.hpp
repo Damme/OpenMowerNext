@@ -11,7 +11,7 @@
 // /power/charger_present (Bool, used by the docking plugin), /worx/status and
 // offers /worx/emergency (SetBool, latched), /worx/motors_enabled (SetBool) and
 // /worx/manual_mow (SetBool: blade on by hand at the runtime parameter manual_mow_pwm,
-// whose sign is the blade direction).
+// whose sign is the blade direction, also for the commanded mower joint).
 
 #include "worx_hardware/speed_controller.hpp"
 #include "worx_hardware/wheel_odometer.hpp"
@@ -68,7 +68,7 @@ private:
     int tick_counter_bits = 32;
     double pwm_per_mps = 1230.0;       // ROS1 MAXSPEED
     int max_pwm = 1230;
-    int mow_pwm = 1850;                // blade PWM at effort 1.0
+    int mow_pwm = 1850;                // |blade PWM| at effort 1.0, direction from manual_mow_pwm
     bool blade_enabled = true;         // false: blade PWM always 0 (tests near the dock)
     int manual_mow_pwm = 1850;         // blade PWM for /worx/manual_mow, sign = direction
     int manual_mow_max_pwm = 1850;     // |manual_mow_pwm| limit
@@ -161,6 +161,7 @@ private:
   // with manual_mow_pwm_. Anything that locks the blade out also switches it off.
   std::atomic<bool> manual_mow_{false};
   std::atomic<int> manual_mow_pwm_{0};
+  int mow_dir_ = 1;  // commanded blade direction (write() only): manual_mow_pwm_'s sign at blade start
 
   // Internal node.
   rclcpp::Node::SharedPtr node_;

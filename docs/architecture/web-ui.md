@@ -81,6 +81,7 @@ The blade can only be switched on while mower_logic's command is `IDLE` and the 
   drive commands. It then stays off until it's switched on again.
 
 The PWM can change while the blade runs; the direction only while it's off. Blade on/off/PWM results appear in the log.
+Missions cut at `mow_pwm` but in the Blade tab's direction, taken each time the mission blade starts.
 
 ## Map editor
 
