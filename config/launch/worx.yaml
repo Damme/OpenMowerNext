@@ -89,6 +89,11 @@ processes:
         name: lsm6dsv_imu
         params:
           - i2c_device: $(env OM_IMU_I2C_DEVICE /dev/i2c-1)
+      # Battery current/voltage from the INA226 on I2C0 (0x45, 20 mOhm shunt): /power/ina226.
+      - plugin: open_mower_next::ina226::Ina226Node
+        name: ina226
+        params:
+          - i2c_device: $(env OM_INA226_I2C_DEVICE /dev/i2c-0)
       - plugin: open_mower_next::localization_components::Ekf
         name: ekf_se_odom
         # 25 Hz (robot_localization.yaml: 50): 50 Hz missed its rate on the Pi Zero 2.
