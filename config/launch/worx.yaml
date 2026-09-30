@@ -154,6 +154,8 @@ processes:
         params:
           - set_pose_when_docked: true   # on the charger: heading and position from the recorded dock
             gps_gate: true               # /gps/fix -> /gps/fix_filtered (navsat) off the charger, RTK fixed only
+            # Pose while standing still (stop/idle/pause), restored after a restart off the dock
+            pose_file: $(env OM_POSE_PATH /data/last_pose.txt)
       - plugin: open_mower_next::coverage_server::CoverageServerNode
         name: coverage_server
       - plugin: open_mower_next::mower_logic::MowerLogicNode

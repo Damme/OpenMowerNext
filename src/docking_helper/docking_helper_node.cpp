@@ -1,6 +1,9 @@
 #include "docking_helper/docking_helper_node.hpp"
 #include "docking_helper_node.hpp"
 #include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <iomanip>
 #include <functional>
 #include <future>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -36,17 +39,22 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
       std::bind(&DockingHelperNode::handleDockRobotToCancel, this, _1),
       std::bind(&DockingHelperNode::handleDockRobotToAccepted, this, _1));
 
-  const bool set_pose = declare_parameter("set_pose_when_docked", false);
+  const bool set_pose = set_pose_when_docked_ = declare_parameter("set_pose_when_docked", false);
   const bool gps_gate = declare_parameter("gps_gate", false);
-  if (set_pose || gps_gate)
+  pose_file_ = declare_parameter("pose_file", std::string(""));
+  pose_restore_gps_wait_ = declare_parameter("pose_restore_gps_wait", pose_restore_gps_wait_);
+  pose_restore_max_offset_ = declare_parameter("pose_restore_max_offset", pose_restore_max_offset_);
+  start_time_ = now();
+  if (set_pose || gps_gate || !pose_file_.empty())
   {
     charger_sub_ = create_subscription<std_msgs::msg::Bool>(
         "/power/charger_present", 10, [this](std_msgs::msg::Bool::ConstSharedPtr m) {
           if (m->data && !charger_present_) docked_anew_ = true;
           charger_present_ = m->data;
+          charger_known_ = true;
         });
   }
-  if (set_pose)
+  if (set_pose || !pose_file_.empty())
   {
     set_pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
         declare_parameter("set_pose_topic", std::string("/ekf_se_map/set_pose")), 10);
@@ -58,7 +66,12 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
           if (std::abs(t.linear.x) > 0.005 || std::abs(t.angular.z) > 0.02)
             last_motion_ns_ = now().nanoseconds();
         });
-    set_pose_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { setPoseWhenDocked(); });
+    set_pose_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
+      if (set_pose_when_docked_)
+        setPoseWhenDocked();
+      if (!pose_file_.empty())
+        persistPose();
+    });
   }
   if (gps_gate)
   {
@@ -88,8 +101,11 @@ void open_mower_next::docking_helper::DockingHelperNode::gateGps(sensor_msgs::ms
     RCLCPP_INFO(get_logger(), "GPS to localization: %s", why.empty() ? "on" : ("off (" + why + ")").c_str());
     gps_gate_reason_ = why;
   }
-  if (why.empty())
-    gps_pub_->publish(*m);
+  if (!why.empty())
+    return;
+  if (first_gps_ns_ == 0)
+    first_gps_ns_ = now().nanoseconds();
+  gps_pub_->publish(*m);
 }
 
 void open_mower_next::docking_helper::DockingHelperNode::setPoseWhenDocked()
@@ -138,6 +154,140 @@ void open_mower_next::docking_helper::DockingHelperNode::setPoseWhenDocked()
     return;
   RCLCPP_INFO(get_logger(), "Docked at '%s': localization set to x=%.3f y=%.3f yaw=%.3f", station->name.c_str(),
               pose->pose.position.x, pose->pose.position.y, tf2::getYaw(pose->pose.orientation));
+}
+
+void open_mower_next::docking_helper::DockingHelperNode::persistPose()
+{
+  if (!pose_restore_done_)
+  {
+    restorePose();
+    return;
+  }
+  const rclcpp::Time t = now();
+  if (t.nanoseconds() - last_motion_ns_ < static_cast<int64_t>(5e9))
+  {
+    // Moving, or just stopped: the saved pose is no longer where it stands.
+    if (pose_saved_ && std::remove(pose_file_.c_str()) == 0)
+      RCLCPP_DEBUG(get_logger(), "Moving: saved pose removed");
+    pose_saved_ = false;
+    return;
+  }
+  if (pose_saved_)
+    return;
+  // On the charger save only after the dock pose is in localization (set in this same tick).
+  if (charger_present_ && set_pose_when_docked_ &&
+      (last_docked_pose_.nanoseconds() == 0 || (t - last_docked_pose_).seconds() < 0.5))
+    return;
+  savePose();
+}
+
+void open_mower_next::docking_helper::DockingHelperNode::savePose()
+{
+  geometry_msgs::msg::TransformStamped tf;
+  try
+  {
+    tf = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+  }
+  catch (const tf2::TransformException& ex)
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 60000, "Pose not saved: %s", ex.what());
+    return;
+  }
+  const double x = tf.transform.translation.x, y = tf.transform.translation.y;
+  const double yaw = tf2::getYaw(tf.transform.rotation);
+  // Temp file + rename: a crash never leaves half a file.
+  const std::string tmp = pose_file_ + ".tmp";
+  {
+    std::ofstream f(tmp);
+    f << std::fixed << std::setprecision(4) << x << " " << y << " " << yaw << "\n";
+    if (!f)
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 60000, "Pose not saved: cannot write %s", tmp.c_str());
+      return;
+    }
+  }
+  std::rename(tmp.c_str(), pose_file_.c_str());
+  pose_saved_ = true;
+  RCLCPP_INFO(get_logger(), "Standing still: pose saved x=%.3f y=%.3f yaw=%.3f", x, y, yaw);
+}
+
+void open_mower_next::docking_helper::DockingHelperNode::restorePose()
+{
+  const double elapsed = (now() - start_time_).seconds();
+  // charger_present comes with the battery frame every 1.25 s
+  if (!charger_known_ && elapsed < 10.0)
+    return;
+  // Done: pose_saved_ true = nothing to save until the robot has driven and stopped
+  // (the file holds this pose already, or the heading is unknown and must not be saved).
+  auto finish = [this]() { pose_restore_done_ = pose_saved_ = true; };
+  if (charger_present_)
+  {
+    RCLCPP_INFO(get_logger(), "Saved pose not restored: on the charger, the dock pose is used");
+    pose_restore_done_ = true;
+    pose_saved_ = !set_pose_when_docked_;  // save the dock pose once it is set
+    return;
+  }
+  if (last_motion_ns_ > start_time_.nanoseconds())
+  {
+    RCLCPP_WARN(get_logger(), "Saved pose not restored: the robot moved before it could be");
+    std::remove(pose_file_.c_str());
+    finish();
+    return;
+  }
+  double sx, sy, syaw;
+  if (std::ifstream f(pose_file_); !(f >> sx >> sy >> syaw))
+  {
+    RCLCPP_INFO(get_logger(), "No saved pose in %s (heading unknown until docked or driven)", pose_file_.c_str());
+    finish();
+    return;
+  }
+  if (set_pose_pub_->get_subscription_count() == 0)
+    return;  // localization not up yet
+  geometry_msgs::msg::TransformStamped tf;
+  try
+  {
+    tf = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+  }
+  catch (const tf2::TransformException&)
+  {
+    return;
+  }
+  // navsat_transform starts 3 s after its first fix; give localization a few
+  // seconds of RTK before comparing.
+  const int64_t first_gps = first_gps_ns_;
+  const bool gps = first_gps != 0 && now().nanoseconds() - first_gps > static_cast<int64_t>(8e9);
+  if (!gps && elapsed < pose_restore_gps_wait_)
+    return;
+  double x = sx, y = sy;
+  if (gps)
+  {
+    const double off = std::hypot(tf.transform.translation.x - sx, tf.transform.translation.y - sy);
+    if (off > pose_restore_max_offset_)
+    {
+      RCLCPP_WARN(get_logger(), "Saved pose not restored: %.2f m from the GPS position (robot moved?)", off);
+      std::remove(pose_file_.c_str());
+      finish();
+      return;
+    }
+    x = tf.transform.translation.x;  // GPS is the better position; the file has the heading
+    y = tf.transform.translation.y;
+  }
+
+  geometry_msgs::msg::PoseWithCovarianceStamped msg;
+  msg.header.frame_id = "map";
+  msg.header.stamp = now();
+  msg.pose.pose.position.x = x;
+  msg.pose.pose.position.y = y;
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, syaw);
+  msg.pose.pose.orientation = tf2::toMsg(q);
+  msg.pose.covariance[0] = msg.pose.covariance[7] = gps ? 0.02 * 0.02 : 0.1 * 0.1;  // x, y
+  msg.pose.covariance[14] = msg.pose.covariance[21] = msg.pose.covariance[28] = 1e-6;
+  msg.pose.covariance[35] = 0.05 * 0.05;  // yaw (rad)
+  set_pose_pub_->publish(msg);
+  RCLCPP_INFO(get_logger(), "Saved pose restored (%s): x=%.3f y=%.3f yaw=%.3f",
+              gps ? "position checked by RTK" : "no RTK fixed, unchecked", x, y, syaw);
+  finish();
 }
 
 open_mower_next::docking_helper::DockingHelperNode::~DockingHelperNode()

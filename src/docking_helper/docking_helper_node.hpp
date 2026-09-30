@@ -90,6 +90,25 @@ private:
   // current outlasts the start of an undock by ~2 s).
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   std::atomic<int64_t> last_motion_ns_{0};
+  std::atomic<bool> charger_known_{false};  // a /power/charger_present message arrived
+
+  // Pose across restarts (pose_file): ekf_se_map starts at x=y=yaw=0, and off the
+  // dock nothing but a drive with RTK gives the heading back. The map pose is saved
+  // once the wheels have stood still for a while (stop, idle, pause, docked), and the
+  // file is removed when they turn again, so it only ever holds a pose the robot
+  // still stands at. At startup it is restored (not on the charger: the dock pose
+  // wins) once RTK fixed confirms the position, or unchecked after pose_restore_gps_wait.
+  void persistPose();
+  void savePose();
+  void restorePose();
+  std::string pose_file_;
+  double pose_restore_gps_wait_ = 60.0;  // s
+  double pose_restore_max_offset_ = 0.5;  // m, saved position vs GPS
+  bool pose_saved_ = false;               // timer only: the file holds the current rest pose
+  bool pose_restore_done_ = false;        // timer only
+  rclcpp::Time start_time_;
+  std::atomic<int64_t> first_gps_ns_{0};  // first fix the GPS gate let through
+  bool set_pose_when_docked_ = false;
 
   // GPS gate for localization: fixes pass only off the charger (and RTK fixed).
   void gateGps(sensor_msgs::msg::NavSatFix::ConstSharedPtr m);
