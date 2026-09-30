@@ -85,7 +85,7 @@ private:
     int dock_wiggle_pwm = 150;         // one wheel back this much for 60 ms to clear BlockForward at the dock
     double bump_min_speed = 0.05;      // m/s before BlockForward counts as a bump
     double collision_hold = 1.0;       // s the bump latch holds after the last evidence
-    bool lift_emergency = true;        // Lift latches an emergency (cleared via /worx/emergency)
+    bool lift_emergency = false;       // Lift latches an emergency; false: Lift = bump + blade off
     double resend_period = 0.2;        // s: repeat an unchanged SETSPEED
     // The firmware's InCharger never clears after leaving the dock: the charge
     // current tells instead (as ROS1 worx_comms). A full battery on the dock reads 0 mA.

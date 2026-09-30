@@ -35,7 +35,8 @@ Added by the 2026-09 firmware:
 
 | Field | Meaning |
 |---|---|
-| `MotorPulse.EmgReason` | bits of the latched emergency: 1 tilt, 2 STOP key, 4 lift (motors on, 100 ms) |
+| `MotorPulse.EmgReason` | bits of the latched emergency: 1 tilt, 2 STOP key (4 lift: no longer raised) |
+| `MotorPulse.BladeLock` | Lift input cut the blade; it stays off until a `SETSPEED` with `mow` 0 |
 | `MotorPulse.Motors` | real motor enable state |
 | `MotorPulse.Bumps` | debounced bumper presses since boot (Stuck/Stuck2/Collision low for 5 ms) |
 | `MotorPulse.ms` | board time of the sample; the plugin computes wheel speed over it |
@@ -44,7 +45,11 @@ Added by the 2026-09 firmware:
 | `motorState` | the real state (`MOTORREQ_ENABLE`/`_DISABLE`/`_IDLE`/`_EMGSTOP`), not the last request |
 
 A firmware emergency stays latched: `MOTORREQ_ENABLE` is refused and `SETSPEED` ignored until `MOTORREQ_RESETEMG`,
-which the firmware refuses while the STOP key or the lift sensor is still active.
+which the firmware refuses while the STOP key is still pressed.
+
+The Lift input is the shell moving up against the chassis (a bump, the charging contacts, someone lifting the
+shell), not the robot leaving the ground. The firmware stops the blade on it and blocks forward motion, but
+doesn't latch an emergency; tilt (accelerometer) is the real emergency.
 
 ## Interfaces
 
@@ -77,6 +82,8 @@ next blade start (next pass, or stop + resume).
   the reason in the log. Clearing it sends `MOTORREQ_RESETEMG`; if the board still reports the emergency 1.5 s
   later (cause still present), it latches again.
 - A `Collision` in `Digital` or a new `Bumps` count while driving forward is a bump: forward motion blocked, blade off.
+  Lift is a bump too (any direction), except in docking mode or while charging. `lift_emergency: true` makes it a
+  latched emergency again.
 - The blade stays off after an emergency, link loss or motor disable until its command has been 0 once, so a held
   command can't restart it.
 - The blade stops after `blade_idle_timeout` (25 s) without drive commands.

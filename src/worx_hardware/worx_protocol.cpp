@@ -204,6 +204,7 @@ BoardMessage parseMessage(const std::string & msg)
     if (auto v = intField(*it, "Motors")) p.motors = static_cast<int>(*v);
     if (auto v = intField(*it, "Bumps")) p.bumps = static_cast<uint32_t>(*v);
     if (auto v = intField(*it, "ms")) p.ms = static_cast<uint32_t>(*v);
+    if (auto v = intField(*it, "BladeLock")) p.blade_lock = static_cast<int>(*v);
     m.motor_pulse = p;
   }
   if (auto it = j.find("MotorCurrent"); it != j.end() && it->is_object()) {

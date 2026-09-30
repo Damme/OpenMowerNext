@@ -357,11 +357,9 @@ bool Context::clearEmergency(std::string & message)
   {
     std::lock_guard<std::mutex> l(mutex_);
     board_emergency = board_emergency_;
-    if (lift_) {
-      message = "refused: the robot is lifted (Lift input active)";
-      return false;
-    }
-    if (collision_) {
+    // Lift (shell vs chassis) is a bump now, not an emergency cause; on the dock the
+    // contacts press the bumper and lift the shell, which must not block a clear.
+    if (collision_ && !charger_) {
       message = "refused: bumper still pressed";
       return false;
     }

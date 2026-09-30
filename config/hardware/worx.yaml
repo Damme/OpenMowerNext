@@ -64,5 +64,5 @@ worx:
   bump_detection: true
   bump_min_speed: 0.05         # m/s wheel speed before BlockForward counts as a bump
   collision_hold: 1.0          # s the bump latch holds after the last evidence
-  lift_emergency: true
+  lift_emergency: false        # Lift = shell vs chassis: bump + blade off; tilt stays the real emergency
   resend_period: 0.2           # s: repeat an unchanged SETSPEED (the firmware drops one to clear its latch)

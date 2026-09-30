@@ -91,6 +91,7 @@ struct MotorPulse
   std::optional<int> motors;            // real motor enable state
   std::optional<uint32_t> bumps;        // debounced bumper presses since boot
   std::optional<uint32_t> ms;           // board time of the sample [ms]
+  std::optional<int> blade_lock;        // firmware cut the blade on Lift, until mow 0 is sent
 };
 
 struct Triple

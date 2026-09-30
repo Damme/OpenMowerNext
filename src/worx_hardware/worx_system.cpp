@@ -684,13 +684,21 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     if (cfg_.bump_detection && !docking_mode_ && active("Collision") && (collision_ || (last_pwm_l_ > 0 && last_pwm_r_ > 0))) {
       registerBump("Collision");
     }
-    // Docking mode: the robot is pushed onto the contacts; a lift there is
-    // only ever the charger contact disturbing the board.
-    const bool lift = active("Lift") && !docking_mode_;
-    if (lift && !lift_ && cfg_.lift_emergency && !emergency_) {
-      RCLCPP_ERROR(get_logger(), "Lift detected: emergency latched (clear with /worx/emergency false)");
-      emergency_ = true;
+    // The Lift input is the shell moving up against the chassis (bump, charging
+    // contacts, someone lifting the shell), not the robot leaving the ground: a
+    // bump, blade off (the firmware also cuts the blade itself). Not while docking
+    // or charging, where the contacts push the shell up. lift_emergency: true
+    // restores the old latched emergency; tilt is the firmware's real emergency.
+    const bool charging = battery_ && battery_->ma >= cfg_.charger_min_ma;
+    const bool lift = active("Lift") && !docking_mode_ && !charging;
+    if (lift && !lift_) {
       blade_lockout_ = true;
+      if (cfg_.lift_emergency && !emergency_) {
+        RCLCPP_ERROR(get_logger(), "Lift detected: emergency latched (clear with /worx/emergency false)");
+        emergency_ = true;
+      } else if (cfg_.bump_detection) {
+        registerBump("Lift");
+      }
     }
     lift_ = lift;
   }
@@ -793,6 +801,10 @@ void WorxSystem::publishStatus()
     st.analog_values.push_back(static_cast<int>(link_->crcErrors()));
     st.analog_names.push_back("Link.PiNoCrc");
     st.analog_values.push_back(static_cast<int>(link_->rxWithoutCrc()));
+    if (last_.motor_pulse && last_.motor_pulse->blade_lock) {
+      st.analog_names.push_back("BladeLock");
+      st.analog_values.push_back(*last_.motor_pulse->blade_lock);
+    }
     if (last_.motor_pulse && last_.motor_pulse->emergency_reason) {
       st.analog_names.push_back("EmgReason");
       st.analog_values.push_back(*last_.motor_pulse->emergency_reason);
