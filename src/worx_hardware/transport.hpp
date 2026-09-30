@@ -96,6 +96,7 @@ private:
   int status_slot_ = 0;
   bool collision_ = false, lift_ = false, block_forward_ = false;
   uint32_t bumps_ = 0;
+  bool peer_crc_ = false;  // host sent a CRC'd command: answer with CRCs too
   double speed_factor_ = 1.0;
 };
 

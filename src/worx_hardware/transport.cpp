@@ -93,8 +93,9 @@ void FakeBoardTransport::handleCommand(const std::string & msg)
     return;
   }
   auto queue = [this](const std::string & s) {
+    const std::string framed = peer_crc_ ? withCrc(s) : s;
     out_.push_back(kSof);
-    out_.insert(out_.end(), s.begin(), s.end());
+    out_.insert(out_.end(), framed.begin(), framed.end());
     out_.push_back(kEof);
   };
   if (j.contains("MOTORREQ_SETSPEED")) {
@@ -144,8 +145,9 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
     ticks_r_ += speed_factor_ * std::abs(pwm_r_) / opt_.pwm_per_mps * opt_.ticks_per_m * dt;
   }
   auto queue = [this](const std::string & s) {
+    const std::string framed = peer_crc_ ? withCrc(s) : s;
     out_.push_back(kSof);
-    out_.insert(out_.end(), s.begin(), s.end());
+    out_.insert(out_.end(), framed.begin(), framed.end());
     out_.push_back(kEof);
   };
   if (std::chrono::duration<double>(now - last_pulse_).count() >= opt_.pulse_period_s) {
@@ -220,7 +222,8 @@ bool FakeBoardTransport::transfer(const Frame & tx, Frame & rx)
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<std::string> msgs;
   decoder_.feed(tx.data(), tx.size(), msgs);
-  for (const auto & m : msgs) {
+  for (auto & m : msgs) {
+    if (checkAndStripCrc(m) == CrcCheck::kOk) peer_crc_ = true;  // like the firmware
     handleCommand(m);
   }
   step(std::chrono::steady_clock::now());

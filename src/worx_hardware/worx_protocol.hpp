@@ -22,8 +22,19 @@ constexpr uint8_t kNop = 0x00;
 constexpr uint8_t kSof = 0x01;
 constexpr uint8_t kEof = 0xFF;
 constexpr size_t kFrameLen = 250;
+// Longest message the decoder keeps (firmware: 250 bytes of JSON + "#hhhh").
+constexpr size_t kMaxMessage = 512;
 
 using Frame = std::array<uint8_t, kFrameLen>;
+
+// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) - same as the firmware.
+uint16_t crc16(const std::string & data);
+// payload + "#hhhh" (uppercase hex CRC of payload). Firmware 2026-09-30+ checks it;
+// older firmware parses the JSON and ignores the suffix.
+std::string withCrc(const std::string & payload);
+// Checks a received message for a "#hhhh" suffix and strips it.
+enum class CrcCheck { kNone, kOk, kBad };
+CrcCheck checkAndStripCrc(std::string & msg);
 
 // SOF + payload + EOF, NOP padded. Returns false if the payload had to be
 // truncated to fit (kFrameLen - 2 bytes).
@@ -104,6 +115,8 @@ struct BoardMessage
   std::optional<std::string> digital_corrupt;
   std::optional<std::map<std::string, int>> analog;    // {"Rain":..,"boardTemp":..}
   std::optional<std::map<std::string, int>> boundary;  // perimeter wire signal
+  // Firmware 2026-09-30+, every 5 s: RxFrames, RxCrcErr, RxNoCrc, RxOverflow, TxFrames, TxDropped, DmaErr
+  std::optional<std::map<std::string, int>> link;
   // Old firmware: last request (mostly _SETSPEED). 2026-09+: real state, one of
   // MOTORREQ_ENABLE / _DISABLE / _IDLE / _EMGSTOP.
   std::optional<std::string> motor_state;

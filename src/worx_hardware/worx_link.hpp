@@ -26,6 +26,9 @@ public:
     std::chrono::microseconds period{1000};
     std::chrono::milliseconds ping_period{2000};
     size_t max_queue = 64;  // oldest commands are dropped beyond this
+    // Drop board messages without a "#hhhh" CRC (only once the firmware sends it:
+    // firmware 2026-09-30+ starts after our first CRC'd command).
+    bool require_crc = false;
   };
   using MessageCallback = std::function<void(const std::string &)>;
 
@@ -41,7 +44,10 @@ public:
   // Seconds since the last received message (infinity before the first).
   double secondsSinceRx() const;
   uint64_t rxMessages() const { return rx_count_; }
-  uint64_t rxDropped() const { return rx_dropped_; }
+  // Decoder drops (lost EOF, too long) plus CRC failures.
+  uint64_t rxDropped() const { return rx_dropped_ + crc_errors_; }
+  uint64_t crcErrors() const { return crc_errors_; }
+  uint64_t rxWithoutCrc() const { return rx_no_crc_; }
   uint64_t txTruncated() const { return tx_truncated_; }
   uint64_t transferErrors() const { return transfer_errors_; }
 
@@ -59,6 +65,7 @@ private:
 
   std::atomic<int64_t> last_rx_ns_{0};
   std::atomic<uint64_t> rx_count_{0}, rx_dropped_{0}, tx_truncated_{0}, transfer_errors_{0};
+  std::atomic<uint64_t> crc_errors_{0}, rx_no_crc_{0};
 };
 
 }  // namespace open_mower_next::worx_hardware

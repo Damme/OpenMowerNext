@@ -57,6 +57,7 @@ worx:
   battery_full_voltage: 28.5
   blade_idle_timeout: 25.0     # s without drive commands -> blade off
   log_packets: true
+  require_crc: false           # drop board messages without CRC; true once the 2026-09-30 firmware runs
   # Bumps: the firmware latches BlockForward (MotorPulse, 20 Hz) on Collision/Lift/Stuck
   # and clamps forward PWM. BlockForward rising while driving forward = bump; Digital
   # Collision (only every 1.25 s) is the slow path. Lift latches an emergency.

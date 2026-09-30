@@ -80,6 +80,7 @@ private:
     double battery_full_voltage = 28.5;
     std::set<std::string> digital_inverted{"Door", "Door2", "Lift", "Collision"};
     bool log_packets = true;           // throttled INFO dump of board traffic (bug hunting)
+    bool require_crc = false;          // drop board messages without "#hhhh" CRC
     bool bump_detection = true;
     int dock_wiggle_pwm = 150;         // one wheel back this much for 60 ms to clear BlockForward at the dock
     double bump_min_speed = 0.05;      // m/s before BlockForward counts as a bump

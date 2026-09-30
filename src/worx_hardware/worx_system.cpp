@@ -103,6 +103,7 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.battery_full_voltage = paramD(info, "battery_full_voltage", cfg_.battery_full_voltage);
     cfg_.digital_inverted = paramSet(info, "digital_inverted", cfg_.digital_inverted);
     cfg_.log_packets = paramB(info, "log_packets", cfg_.log_packets);
+    cfg_.require_crc = paramB(info, "require_crc", cfg_.require_crc);
     cfg_.bump_detection = paramB(info, "bump_detection", cfg_.bump_detection);
     cfg_.dock_wiggle_pwm = static_cast<int>(paramD(info, "dock_wiggle_pwm", cfg_.dock_wiggle_pwm));
     cfg_.bump_min_speed = paramD(info, "bump_min_speed", cfg_.bump_min_speed);
@@ -353,7 +354,9 @@ CallbackReturn WorxSystem::on_configure(const rclcpp_lifecycle::State &)
     RCLCPP_ERROR(get_logger(), "Unknown transport '%s' (spidev|fake)", cfg_.transport.c_str());
     return CallbackReturn::ERROR;
   }
-  link_ = std::make_unique<WorxLink>(std::move(transport), WorxLink::Options{});
+  WorxLink::Options link_opts;
+  link_opts.require_crc = cfg_.require_crc;
+  link_ = std::make_unique<WorxLink>(std::move(transport), link_opts);
   std::string error;
   if (!link_->start([this](const std::string & m) { onBoardMessage(m); }, error)) {
     RCLCPP_ERROR(get_logger(), "Worx link: %s", error.c_str());
@@ -692,6 +695,7 @@ void WorxSystem::onBoardMessage(const std::string & msg)
     lift_ = lift;
   }
   if (m.analog) last_.analog = m.analog;
+  if (m.link) last_.link = m.link;
   if (m.boundary) last_.boundary = m.boundary;
   if (m.motor_state) last_.motor_state = m.motor_state;
   if (m.power_state) last_.power_state = m.power_state;
@@ -779,6 +783,16 @@ void WorxSystem::publishStatus()
       st.analog_names.push_back("ChargerEnable");
       st.analog_values.push_back(*battery_->charge_enable);
     }
+    if (last_.link) {  // board's view of the SPI link (firmware 2026-09-30+)
+      for (const auto & [name, v] : *last_.link) {
+        st.analog_names.push_back("Link." + name);
+        st.analog_values.push_back(v);
+      }
+    }
+    st.analog_names.push_back("Link.PiCrcErr");
+    st.analog_values.push_back(static_cast<int>(link_->crcErrors()));
+    st.analog_names.push_back("Link.PiNoCrc");
+    st.analog_values.push_back(static_cast<int>(link_->rxWithoutCrc()));
     if (last_.motor_pulse && last_.motor_pulse->emergency_reason) {
       st.analog_names.push_back("EmgReason");
       st.analog_values.push_back(*last_.motor_pulse->emergency_reason);

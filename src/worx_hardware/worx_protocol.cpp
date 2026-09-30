@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 
@@ -11,6 +12,41 @@ namespace open_mower_next::worx_hardware
 
 // ordered_json keeps the key order of the ROS1 node (the firmware parser may care).
 using ojson = nlohmann::ordered_json;
+
+uint16_t crc16(const std::string & data)
+{
+  uint16_t crc = 0xFFFF;
+  for (unsigned char b : data) {
+    crc ^= static_cast<uint16_t>(b) << 8;
+    for (int i = 0; i < 8; ++i) crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021) : static_cast<uint16_t>(crc << 1);
+  }
+  return crc;
+}
+
+std::string withCrc(const std::string & payload)
+{
+  char suffix[6];
+  std::snprintf(suffix, sizeof(suffix), "#%04X", crc16(payload));
+  return payload + suffix;
+}
+
+CrcCheck checkAndStripCrc(std::string & msg)
+{
+  constexpr size_t kSuffix = 5;
+  if (msg.size() < kSuffix || msg[msg.size() - kSuffix] != '#') return CrcCheck::kNone;
+  uint16_t want = 0;
+  for (size_t i = msg.size() - kSuffix + 1; i < msg.size(); ++i) {
+    const char ch = msg[i];
+    int v = -1;
+    if (ch >= '0' && ch <= '9') v = ch - '0';
+    if (ch >= 'A' && ch <= 'F') v = ch - 'A' + 10;
+    if (ch >= 'a' && ch <= 'f') v = ch - 'a' + 10;
+    if (v < 0) return CrcCheck::kNone;
+    want = static_cast<uint16_t>((want << 4) | v);
+  }
+  msg.resize(msg.size() - kSuffix);
+  return crc16(msg) == want ? CrcCheck::kOk : CrcCheck::kBad;
+}
 
 bool encodeFrame(const std::string & payload, Frame & out)
 {
@@ -45,7 +81,7 @@ void FrameDecoder::feed(const uint8_t * data, size_t len, std::vector<std::strin
       receiving_ = false;
       buf_.clear();
     } else if (b != kNop) {
-      if (buf_.size() >= kFrameLen - 1) {
+      if (buf_.size() >= kMaxMessage) {
         ++dropped_;  // no EOF within a frame's worth of bytes
         receiving_ = false;
         buf_.clear();
@@ -195,6 +231,9 @@ BoardMessage parseMessage(const std::string & msg)
   }
   if (auto it = j.find("Analog"); it != j.end() && it->is_object()) {
     m.analog = intMap(*it);
+  }
+  if (auto it = j.find("Link"); it != j.end() && it->is_object()) {
+    m.link = intMap(*it);
   }
   if (auto it = j.find("Boundary"); it != j.end() && it->is_object()) {
     m.boundary = intMap(*it);

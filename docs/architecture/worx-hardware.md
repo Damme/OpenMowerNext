@@ -18,6 +18,11 @@ LSM6DSV IMU node. The micro-ROS agent isn't started.
 
 - Full-duplex SPI (`/dev/spidev0.0`, mode 0, 1.5 MHz), fixed 250-byte transfers every 1 ms.
 - A message is `0x01` + JSON + `0xFF`; unused bytes are `0x00`. Received messages may span transfers.
+- CRC: the plugin appends `#hhhh` (CRC-16/CCITT-FALSE of the JSON, uppercase hex) before `0xFF`. Firmware from
+  2026-09-30 checks it, drops damaged commands, and appends its own CRC once it has seen a valid one from the Pi;
+  older firmware ignores the suffix. The plugin drops board messages with a wrong CRC (`rx_dropped`), and with
+  `require_crc: true` also those without one. The firmware reports its side in `Link` every 5 s (`RxCrcErr`,
+  `RxOverflow`, `TxDropped`, `DmaErr`, ...), shown in `/worx/status` as `Link.*` next to `Link.PiCrcErr`.
 - Host → board: `MOTORREQ_SETSPEED {left, right, mow}` (PWM; a negative `mow` runs the blade in reverse),
   `MOTORREQ_ENABLE`, `MOTORREQ_DISABLE`, `MOTORREQ_RESETEMG`, and `ping {count}` every 2 s. Any valid command resets
   the firmware's SPI watchdog (older firmware: only `ping`).

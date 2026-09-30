@@ -84,7 +84,7 @@ void WorxLink::run()
     }
     if (msg.empty()) {
       tx.fill(kNop);
-    } else if (!encodeFrame(msg, tx)) {
+    } else if (!encodeFrame(withCrc(msg), tx)) {
       ++tx_truncated_;
     }
 
@@ -95,7 +95,19 @@ void WorxLink::run()
       msgs.clear();
       decoder.feed(rx.data(), rx.size(), msgs);
       rx_dropped_ = decoder.dropped();
-      for (const auto & m : msgs) {
+      for (auto & m : msgs) {
+        const auto crc = checkAndStripCrc(m);
+        if (crc == CrcCheck::kBad) {
+          ++crc_errors_;  // damaged on the wire: drop the whole message
+          continue;
+        }
+        if (crc == CrcCheck::kNone) {
+          ++rx_no_crc_;
+          if (opt_.require_crc) {
+            ++crc_errors_;
+            continue;
+          }
+        }
         ++rx_count_;
         last_rx_ns_ = std::chrono::steady_clock::now().time_since_epoch().count();
         if (on_message_) {

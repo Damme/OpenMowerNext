@@ -66,7 +66,7 @@ TEST(WorxProtocol, DecoderDropsMessageWithLostEof)
   EXPECT_EQ(out[0], "{\"ok\":1}");
   EXPECT_EQ(d.dropped(), 1u);
 
-  std::string longmsg = "\x01" + std::string(300, 'a');
+  std::string longmsg = "\x01" + std::string(kMaxMessage + 50, 'a');
   d.feed(reinterpret_cast<const uint8_t *>(longmsg.data()), longmsg.size(), out);
   EXPECT_EQ(d.dropped(), 2u);
 }
@@ -157,6 +157,43 @@ TEST(WorxProtocol, ParsesFirmware2026Fields)
   EXPECT_EQ(emergencyReasonText(8), "unknown");
 }
 
+TEST(WorxProtocol, Crc16)
+{
+  EXPECT_EQ(crc16("123456789"), 0x29B1);  // CRC-16/CCITT-FALSE check value
+  EXPECT_EQ(withCrc("123456789"), "123456789#29B1");
+
+  std::string m = withCrc(R"({"ping":{"count":7}})");
+  EXPECT_EQ(checkAndStripCrc(m), CrcCheck::kOk);
+  EXPECT_EQ(m, R"({"ping":{"count":7}})");
+
+  m = withCrc(R"({"MOTORREQ_SETSPEED":{"left":615,"right":615,"mow":0}})");
+  m[m.find("615")] = '8';  // one flipped digit: still valid JSON
+  EXPECT_EQ(checkAndStripCrc(m), CrcCheck::kBad);
+
+  m = R"({"Battery":{"mV":1}})";
+  EXPECT_EQ(checkAndStripCrc(m), CrcCheck::kNone);
+  EXPECT_EQ(m, R"({"Battery":{"mV":1}})");
+  m = "DEBUG: x #zz12";  // '#' but no hex: not a CRC
+  EXPECT_EQ(checkAndStripCrc(m), CrcCheck::kNone);
+  m = "abc#29b1";  // lower case hex accepted
+  EXPECT_EQ(checkAndStripCrc(m), crc16("abc") == 0x29B1 ? CrcCheck::kOk : CrcCheck::kBad);
+}
+
+TEST(WorxProtocol, DecoderKeepsFullSizeFirmwareMessage)
+{
+  // 250 bytes of JSON + "#hhhh" is longer than one transfer and must survive.
+  const std::string payload = withCrc(std::string(248, 'x'));
+  std::vector<uint8_t> bytes{kSof};
+  bytes.insert(bytes.end(), payload.begin(), payload.end());
+  bytes.push_back(kEof);
+  FrameDecoder d;
+  std::vector<std::string> out;
+  d.feed(bytes.data(), bytes.size(), out);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0], payload);
+  EXPECT_EQ(d.dropped(), 0u);
+}
+
 TEST(WheelOdometer, MagnitudeCounterWithDirectionBit)
 {
   WheelOdometer o(414.0);
@@ -199,6 +236,13 @@ TEST(WorxLink, TalksToFakeBoard)
   EXPECT_EQ(board->mowPwm(), 1850);
   EXPECT_GE(board->pings(), 5);
   EXPECT_LT(link.secondsSinceRx(), 0.2);
+  // Commands carry a CRC, the board answers with one (after the first command).
+  EXPECT_EQ(link.crcErrors(), 0u);
+  {
+    std::lock_guard<std::mutex> l(m);
+    ASSERT_FALSE(rx.empty());
+    EXPECT_EQ(rx.back().find('#'), std::string::npos) << "CRC suffix not stripped: " << rx.back();
+  }
 
   // Integrate the reported ticks like the hardware interface does.
   WheelOdometer odo(fo.ticks_per_m);
@@ -228,6 +272,21 @@ TEST(WorxLink, TalksToFakeBoard)
     EXPECT_LT(before, odo.distance());  // reversed
   }
   link.stop();
+}
+
+TEST(WorxLink, RequireCrcDropsMessagesWithout)
+{
+  auto fake = std::make_unique<FakeBoardTransport>(FakeBoardTransport::Options{});
+  WorxLink::Options lo;
+  lo.require_crc = true;
+  WorxLink link(std::move(fake), lo);
+  std::atomic<int> count{0};
+  std::string error;
+  ASSERT_TRUE(link.start([&](const std::string &) { ++count; }, error)) << error;
+  // The first ping (sent at start) switches the fake board to CRC'd answers.
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  EXPECT_GT(count.load(), 0);
+  EXPECT_EQ(link.rxWithoutCrc(), link.crcErrors());  // only CRC-less ones were dropped
 }
 
 TEST(WorxLink, FakeBoardBlocksForwardOnCollision)
