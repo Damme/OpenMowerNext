@@ -353,8 +353,10 @@ bool Context::emergency() const
 
 bool Context::clearEmergency(std::string & message)
 {
+  bool board_emergency = false;
   {
     std::lock_guard<std::mutex> l(mutex_);
+    board_emergency = board_emergency_;
     if (lift_) {
       message = "refused: the robot is lifted (Lift input active)";
       return false;
@@ -363,13 +365,10 @@ bool Context::clearEmergency(std::string & message)
       message = "refused: bumper still pressed";
       return false;
     }
-    if (board_emergency_) {
-      // Tilt with the blade on: the firmware cut the motor MOSFET (MOTORREQ_EMGSTOP) and
-      // only accepts ping/ENABLE/DISABLE/SETSPEED over SPI, so it can't be reset from here.
-      message = "refused: firmware emergency (tilt) - needs MOTORREQ_RESETEMG support in the firmware or a board reset";
-      return false;
-    }
-    if (!worx_emergency_) {
+    // A firmware emergency (tilt, STOP key, lift) is cleared by the same call:
+    // worx_hardware sends MOTORREQ_RESETEMG, the firmware refuses it while the
+    // cause is still there and worx_hardware then latches the emergency again.
+    if (!worx_emergency_ && !board_emergency_) {
       message = "no emergency latched";
       return true;
     }
@@ -381,7 +380,8 @@ bool Context::clearEmergency(std::string & message)
   auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
   req->data = false;
   emergency_client_->async_send_request(req);
-  message = "emergency cleared";
+  message = board_emergency ? "emergency cleared, board reset sent (re-latches if the cause is still there)"
+                            : "emergency cleared";
   return true;
 }
 
