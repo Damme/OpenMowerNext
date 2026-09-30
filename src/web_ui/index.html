@@ -280,7 +280,7 @@ function cmd(obj) { if (!send(obj)) toast("Not connected", true); }
 // ---- status -----------------------------------------------------------------
 function setChip(id, text, cls) { const e = $(id); e.textContent = text; e.className = "chip" + (cls ? " " + cls : ""); }
 function renderState() {
-  const s = S.state || {}, l = s.logic, w = s.worx, g = s.gps;
+  const s = S.state || {}, l = s.logic, w = s.worx, g = s.gps, ina = s.ina;
   const online = !!S.state;
   document.querySelectorAll("section button, #emergency button").forEach((b) => b.disabled = !online);
   if (l) {
@@ -307,8 +307,11 @@ function renderState() {
   if (w) {
     if (w.power) d.push("Power: " + w.power);
     d.push("Charge current " + w.a.toFixed(2) + " A", "PWM L/R/blade " + w.pwm.join(" / "),
+           "Motor current L/R/blade " + (w.cur || []).join(" / ") + " (raw ADC)",
            "Bumps " + w.bumps + (w.rain ? " · rain" : ""));
+    if (w.temp != null) d.push("Battery temperature " + w.temp.toFixed(1) + " °C");
   }
+  if (ina) d.push("INA226 " + ina.v.toFixed(2) + " V · " + ina.a.toFixed(3) + " A · " + (ina.v * ina.a).toFixed(1) + " W");
   if (g) d.push("GPS accuracy " + (g.acc * 100).toFixed(1) + " cm (receiver estimate)");
   if (s.clients > 1) d.push(s.clients + " pages open");
   $("details").innerHTML = ""; d.forEach((t) => { const e = document.createElement("div"); e.textContent = t; $("details").append(e); });

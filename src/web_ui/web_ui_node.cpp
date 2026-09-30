@@ -26,6 +26,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <sensor_msgs/msg/battery_state.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
@@ -236,6 +237,8 @@ private:
                  {"collision", m->collision}, {"bumps", m->bumps},         {"motors", m->motors_enabled},
                  {"power", m->power_state},   {"v", r3(m->battery_voltage)},
                  {"a", r3(m->battery_current)},  {"in_charger", m->in_charger},
+                 {"temp", r3(m->battery_temperature)},
+                 {"cur", {m->motor_current[0], m->motor_current[1], m->motor_current[2]}},  // raw ADC
                  {"pwm", {m->motor_pwm[0], m->motor_pwm[1], m->motor_pwm[2]}},
                  {"blade", {{"manual", m->manual_mow},        {"pwm", m->manual_mow_pwm},
                             {"max", m->manual_mow_max_pwm},   {"cmd", m->mow_pwm_cmd},
@@ -250,6 +253,11 @@ private:
         gps_status_ = m->status.status;
         gps_acc_ = std::sqrt(std::max(0.0, m->position_covariance[0]));
         gps_time_ = now();
+      });
+    ina_sub_ = create_subscription<sensor_msgs::msg::BatteryState>(
+      "/power/ina226", rclcpp::SensorDataQoS(), [this](sensor_msgs::msg::BatteryState::ConstSharedPtr m) {
+        ina_ = {{"v", r3(m->voltage)}, {"a", r3(m->current)}};
+        ina_time_ = now();
       });
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       pose_topic_, rclcpp::SensorDataQoS(), [this](nav_msgs::msg::Odometry::ConstSharedPtr m) {
@@ -293,6 +301,7 @@ private:
     logic_sub_.reset();
     worx_sub_.reset();
     gps_sub_.reset();
+    ina_sub_.reset();
     odom_sub_.reset();
     map_sub_.reset();
     obstacles_sub_.reset();
@@ -306,7 +315,7 @@ private:
     rec_finish_client_.reset();
     remove_area_client_.reset();
     save_area_client_.reset();
-    logic_ = worx_ = Json();
+    logic_ = worx_ = ina_ = Json();
     map_.reset();
     have_pose_ = false;
     // Action clients stay while a recording runs (a page opened later can finish it); tick() drops them after.
@@ -913,6 +922,7 @@ private:
               {"worx", (t - worx_time_).seconds() < 3.0 ? worx_ : Json()},
               {"gps",
                (t - gps_time_).seconds() < 3.0 ? Json{{"status", gps_status_}, {"acc", r3(gps_acc_)}} : Json()},
+              {"ina", (t - ina_time_).seconds() < 3.0 ? ina_ : Json()},
               {"drive", {{"ok", can_drive}, {"why", why}, {"max_linear", max_linear_}, {"max_angular", max_angular_}}},
               {"rec", {{"active", static_cast<bool>(rec_goal_)}, {"count", rec_count_}, {"msg", rec_status_}}},
               {"dock_rec", {{"active", static_cast<bool>(dock_goal_)}, {"msg", dock_status_}}},
@@ -959,13 +969,15 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr logic_sub_;
   rclcpp::Subscription<msg::WorxStatus>::SharedPtr worx_sub_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr ina_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<msg::Map>::SharedPtr map_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr obstacles_sub_;
   std::string obstacles_;  // last {"t":"obs"} message
   rclcpp::Client<srv::ForgetObstacle>::SharedPtr forget_client_;
-  Json logic_, worx_;
+  Json logic_, worx_, ina_;  // ina_: INA226 battery monitor {"v", "a"}
   rclcpp::Time logic_time_{0, 0, RCL_ROS_TIME}, worx_time_{0, 0, RCL_ROS_TIME}, gps_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time ina_time_{0, 0, RCL_ROS_TIME};
   int gps_status_ = -1;
   double gps_acc_ = 0;
   std::array<double, 3> pose_{};
