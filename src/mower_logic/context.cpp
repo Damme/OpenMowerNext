@@ -500,10 +500,28 @@ bool Context::setMotors(bool on)
     return false;
   }
   RCLCPP_INFO(node->get_logger(), "Motors %s", on ? "on" : "off");
+  unsigned id;
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    motors_on_at_.reset();
+    id = ++motors_request_;
+  }
   auto req = std::make_shared<std_srvs::srv::SetBool::Request>();
   req->data = on;
-  motors_client_->async_send_request(req);
+  motors_client_->async_send_request(
+    req, [this, on, id](rclcpp::Client<std_srvs::srv::SetBool>::SharedFuture) {
+      std::lock_guard<std::mutex> l(mutex_);
+      if (on && id == motors_request_) motors_on_at_ = Clock::now();
+    });
   return true;
+}
+
+bool Context::motorsReady() const
+{
+  if (!params.auto_motors) return true;
+  std::lock_guard<std::mutex> l(mutex_);
+  // Some ticks with blade 0 after the motors went on release worx_hardware's lockout.
+  return motors_on_at_ && Clock::now() - *motors_on_at_ >= std::chrono::milliseconds(300);
 }
 
 std::string Context::lastBranch() const

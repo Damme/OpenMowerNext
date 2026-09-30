@@ -247,6 +247,7 @@ protected:
   {
     // Blade on first, drive after the spin-up time.
     if (!blade_since_) {
+      if (!ctx_->motorsReady()) return BT::NodeStatus::RUNNING;
       ctx_->blade_in_use = true;
       ctx_->setBlade(true);
       blade_since_ = std::chrono::steady_clock::now();

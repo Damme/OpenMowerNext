@@ -317,6 +317,11 @@ public:
 
   void setBlade(bool on);
   bool setMotors(bool on);  // /worx/motors_enabled, asynchronous; false: service not available
+  // The blade may go on: without auto_motors always; else once the last motors-on
+  // request was answered a moment ago. worx_hardware locks the blade out when the
+  // motors are switched on until it has seen blade 0 - a blade already requested
+  // then stays off for the whole pass (stop + start mowing mid-pass).
+  bool motorsReady() const;
   // Direct drive command (twist_mux navigation input), for the last-resort reverse.
   void drive(double linear, double angular);
   rclcpp::Client<open_mower_next::srv::AreaCoverage>::SharedPtr coverage_client;
@@ -371,6 +376,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr markers_pub_;
   rclcpp::TimerBase::SharedPtr obstacle_timer_, erase_timer_;
   bool blade_on_ = false;
+  std::optional<Clock::time_point> motors_on_at_;  // motors-on answered (mutex_)
+  unsigned motors_request_ = 0;                     // stale answers are ignored (mutex_)
 
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr charger_sub_;
