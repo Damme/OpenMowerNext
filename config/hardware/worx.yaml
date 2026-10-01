@@ -65,4 +65,7 @@ worx:
   bump_min_speed: 0.05         # m/s wheel speed before BlockForward counts as a bump
   collision_hold: 1.0          # s the bump latch holds after the last evidence
   lift_emergency: false        # Lift = shell vs chassis: bump + blade off; tilt stays the real emergency
+  # Docking mode: no wiggling at the dock (docking_helper's line docking stops on the
+  # bumper and backs off by itself; the wiggle yawed the robot in the slot).
+  dock_wiggles: 0
   resend_period: 0.2           # s: repeat an unchanged SETSPEED (the firmware drops one to clear its latch)

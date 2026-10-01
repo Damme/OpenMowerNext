@@ -91,6 +91,9 @@ processes:
         name: coverage_server
       - plugin: open_mower_next::docking_helper::DockingHelperNode
         name: docking_helper
+        params:
+          - line_dock.enabled: true
+            line_dock.require_gps: false   # no GPS in the sim
       - plugin: open_mower_next::mower_logic::MowerLogicNode
         name: mower_logic
         executor: multi

@@ -106,6 +106,7 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.require_crc = paramB(info, "require_crc", cfg_.require_crc);
     cfg_.bump_detection = paramB(info, "bump_detection", cfg_.bump_detection);
     cfg_.dock_wiggle_pwm = static_cast<int>(paramD(info, "dock_wiggle_pwm", cfg_.dock_wiggle_pwm));
+    cfg_.dock_wiggles = static_cast<int>(paramD(info, "dock_wiggles", cfg_.dock_wiggles));
     cfg_.bump_min_speed = paramD(info, "bump_min_speed", cfg_.bump_min_speed);
     cfg_.collision_hold = paramD(info, "collision_hold", cfg_.collision_hold);
     cfg_.lift_emergency = paramB(info, "lift_emergency", cfg_.lift_emergency);
@@ -541,9 +542,9 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration & per
       fw_blocked = last_.motor_pulse && last_.motor_pulse->block_forward && *last_.motor_pulse->block_forward == 1;
     }
     // The firmware re-arms BlockForward on every sensor tick while the bumper stays
-    // pressed: at most one wiggle per 0.4 s (forward in between) and 15 per docking
-    // mode, so the wiggling can't walk the robot back out of the dock.
-    if (fw_blocked && now >= dock_next_wiggle_ && dock_wiggles_ < 15) {
+    // pressed: at most one wiggle per 0.4 s (forward in between) and dock_wiggles per
+    // docking mode, so the wiggling can't walk the robot back out of the dock.
+    if (fw_blocked && now >= dock_next_wiggle_ && dock_wiggles_ < cfg_.dock_wiggles) {
       dock_clear_until_ = now + std::chrono::milliseconds(60);
       dock_next_wiggle_ = now + std::chrono::milliseconds(400);
       dock_wiggle_left_ = !dock_wiggle_left_;

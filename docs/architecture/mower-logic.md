@@ -78,8 +78,11 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
 - A pass that fails `max_pass_attempts` times is skipped (2 s between attempts). After `max_skipped_passes_in_row`
   (3) skipped passes the mission stops and the mower goes home: something beyond one pass is wrong.
 
-Only `FollowPass` switches the blade on (after `blade_spinup`). It switches it off on success, failure and halt,
-and the executor forces the blade off whenever no pass is running.
+Only `FollowPass` switches the blade on (after `blade_spinup`). It switches it off on failure and halt. After a
+finished pass the blade keeps spinning while only the way to the next pass of the same area runs (`GetPass`,
+`Transit`, `CornerTurn`), and that pass then drives without a new spin-up, as ROS1 did. A new area, docking, a
+bump, any `Hold` (GPS, emergency, pause, idle) or any other node ends that: the executor forces the blade off at
+the end of every tick in which no pass and no part of that pass chain ran.
 
 ## Commands and state
 

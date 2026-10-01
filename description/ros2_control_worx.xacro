@@ -30,6 +30,7 @@
             <param name="collision_hold">${worx['collision_hold']}</param>
             <param name="lift_emergency">${worx['lift_emergency']}</param>
             <param name="resend_period">${worx['resend_period']}</param>
+            <param name="dock_wiggles">${worx['dock_wiggles']}</param>
         </hardware>
         <joint name="left_wheel_joint">
             <command_interface name="velocity">

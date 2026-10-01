@@ -156,6 +156,9 @@ processes:
             gps_gate: true               # /gps/fix -> /gps/fix_filtered (navsat) off the charger, RTK fixed only
             # Pose while standing still (stop/idle/pause), restored after a restart off the dock
             pose_file: $(env OM_POSE_PATH /data/last_pose.txt)
+            # Dock along the dock's line (ROS1 style, LineDocker) instead of Nav2's docking
+            # server: GPS-proven pose at the mow area edge, then straight in to the bumper.
+            line_dock.enabled: true
       - plugin: open_mower_next::coverage_server::CoverageServerNode
         name: coverage_server
       - plugin: open_mower_next::mower_logic::MowerLogicNode

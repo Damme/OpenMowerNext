@@ -67,8 +67,10 @@ def launch_setup(context):
                           'grid.stance_half_width': 0.195, 'grid.stance_front_chamfer': 0.10}],
              remappings=[('map_grid', 'map_grid'), ('map', 'mowing_map')]),
         Node(package='open_mower_next', executable='coverage_server', output='screen'),
-        Node(package='open_mower_next', executable='docking_helper', name='docking_helper', output='screen'),
-        Node(package='open_mower_next', executable='worx_sim_dock.py', output='screen'),
+        Node(package='open_mower_next', executable='docking_helper', name='docking_helper', output='screen',
+             parameters=[{'line_dock.enabled': True, 'line_dock.require_gps': False}]),
+        Node(package='open_mower_next', executable='worx_sim_dock.py', output='screen',
+             parameters=[{'fail_contacts': int(LaunchConfiguration('dock_fail_contacts').perform(context))}]),
         Node(package='open_mower_next', executable='worx_sim_obstacles.py', output='screen',
              parameters=[{'obstacles': LaunchConfiguration('obstacles').perform(context)}]),
         # Needs the rviz2 package and a DISPLAY (e.g. an X server on the Windows host).
@@ -106,5 +108,7 @@ def generate_launch_description():
         DeclareLaunchArgument('obstacles', default_value='',
                               description='virtual obstacles "x,y,r;..." (map frame), found only by bumping'),
         DeclareLaunchArgument('require_gps', default_value='false', description='true: mower_logic needs /gps/fix'),
+        DeclareLaunchArgument('dock_fail_contacts', default_value='0',
+                              description='the simulated dock does not charge on this many first contacts'),
         OpaqueFunction(function=launch_setup),
     ])

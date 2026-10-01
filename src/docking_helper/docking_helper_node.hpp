@@ -17,6 +17,7 @@
 #include "open_mower_next/srv/find_nearest_docking_station.hpp"
 #include "open_mower_next/action/dock_robot_nearest.hpp"
 #include "open_mower_next/action/dock_robot_to.hpp"
+#include "docking_helper/line_docker.hpp"
 
 namespace open_mower_next::docking_helper
 {
@@ -41,6 +42,11 @@ private:
   std::shared_ptr<rclcpp::Subscription<open_mower_next::msg::Map>> map_sub_;
   std::mutex docking_stations_mutex_;
   std::vector<open_mower_next::msg::DockingStation> docking_stations_;  // guarded by docking_stations_mutex_
+  std::vector<open_mower_next::msg::Area> areas_;                       // guarded by docking_stations_mutex_
+
+  // line_dock.enabled: dock along the dock's line (LineDocker) instead of Nav2's
+  // docking server (which still undocks).
+  std::unique_ptr<LineDocker> line_docker_;
 
   std::shared_ptr<open_mower_next::msg::DockingStation> findNearestDockingStation();
   void findNearestDockingStationService(

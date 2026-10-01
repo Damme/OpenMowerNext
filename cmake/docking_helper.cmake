@@ -1,7 +1,8 @@
 ###
 # docking_helper
 ###
-add_library(docking_helper_component SHARED src/docking_helper/docking_helper_node.cpp)
+add_library(docking_helper_component SHARED src/docking_helper/docking_helper_node.cpp
+        src/docking_helper/line_docker.cpp)
 target_compile_features(docking_helper_component PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
 target_include_directories(docking_helper_component PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>

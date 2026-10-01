@@ -83,6 +83,7 @@ private:
     bool require_crc = false;          // drop board messages without "#hhhh" CRC
     bool bump_detection = true;
     int dock_wiggle_pwm = 150;         // one wheel back this much for 60 ms to clear BlockForward at the dock
+    int dock_wiggles = 15;             // wiggles per docking mode (0: none, line docking backs off itself)
     double bump_min_speed = 0.05;      // m/s before BlockForward counts as a bump
     double collision_hold = 1.0;       // s the bump latch holds after the last evidence
     bool lift_emergency = false;       // Lift latches an emergency; false: Lift = bump + blade off

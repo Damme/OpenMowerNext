@@ -28,6 +28,14 @@ open_mower_next::docking_helper::DockingHelperNode::DockingHelperNode(const rclc
 
   dock_client_ = rclcpp_action::create_client<nav2_msgs::action::DockRobot>(this, "/dock_robot");
   docking_mode_client_ = create_client<std_srvs::srv::SetBool>("/worx/docking_mode");
+  if (declare_parameter("line_dock.enabled", false))
+  {
+    // In the dock zone (gate to dock): no GPS under the roof, worx_hardware docking mode.
+    line_docker_ = std::make_unique<LineDocker>(*this, tf_buffer_, [this](bool on) {
+      final_approach_ = on;
+      setDockingMode(on);
+    });
+  }
 
   dock_robot_nearest_server_ = rclcpp_action::create_server<DockRobotNearestAction>(
       this, "dock_robot_nearest", std::bind(&DockingHelperNode::handleDockRobotNearestGoal, this, _1, _2),
@@ -351,6 +359,7 @@ void open_mower_next::docking_helper::DockingHelperNode::mapCallback(const open_
   {
     std::lock_guard<std::mutex> lock(docking_stations_mutex_);
     docking_stations_.clear();
+    areas_ = msg->areas;
 
     for (const auto& docking_station : msg->docking_stations)
     {
@@ -529,6 +538,63 @@ void open_mower_next::docking_helper::DockingHelperNode::executeDockingAction(
 
   feedback->chosen_docking_station = *docking_station;
   result->chosen_docking_station = *docking_station;
+
+  if (line_docker_)
+  {
+    std::shared_ptr<geometry_msgs::msg::PoseStamped> pose;
+    try
+    {
+      pose = dockPose(docking_station);
+    }
+    catch (const tf2::TransformException& ex)
+    {
+      RCLCPP_ERROR(get_logger(), "No dock pose: %s", ex.what());
+    }
+    if (!pose)
+    {
+      result->code = ActionT::Result::CODE_DOCK_NOT_VALID;
+      result->message = "No dock pose";
+      goal_handle->abort(result);
+      return;
+    }
+    std::vector<open_mower_next::msg::Area> areas;
+    {
+      std::lock_guard<std::mutex> lock(docking_stations_mutex_);
+      areas = areas_;
+    }
+    const auto start_time = now();
+    const auto r = line_docker_->dock(
+        pose->pose, areas,
+        [&](uint16_t status, int attempt, const std::string& message) {
+          const auto elapsed = now() - start_time;
+          feedback->status = status;
+          feedback->num_retries = attempt - 1;
+          feedback->message = message + (attempt > 1 ? " (attempt " + std::to_string(attempt) + ")" : "");
+          feedback->docking_time.sec = elapsed.seconds();
+          feedback->docking_time.nanosec = elapsed.nanoseconds() % 1000000000;
+          goal_handle->publish_feedback(feedback);
+        },
+        [&]() { return goal_handle->is_canceling(); });
+    result->num_retries = r.attempts > 0 ? r.attempts - 1 : 0;
+    result->message = r.message;
+    if (r.success)
+    {
+      result->code = ActionT::Result::CODE_SUCCESS;
+      goal_handle->succeed(result);
+    }
+    else if (goal_handle->is_canceling())
+    {
+      result->code = ActionT::Result::CODE_UNKNOWN;
+      goal_handle->canceled(result);
+    }
+    else
+    {
+      result->code = r.code;
+      RCLCPP_ERROR(get_logger(), "Line docking failed: %s", r.message.c_str());
+      goal_handle->abort(result);
+    }
+    return;
+  }
 
   feedback->status = ActionT::Feedback::STATUS_NAV_TO_STAGING_POSE;
   feedback->message = "Starting docking to: " + docking_station->name;
