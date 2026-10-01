@@ -190,6 +190,13 @@ public:
   std::atomic<int> undock_failures{0};
   std::atomic<int> skipped_passes_in_row{0};
   std::atomic<bool> blade_in_use{false};  // set by FollowPass while it runs
+  // Daniel: the blade stays on between passes of one area (ROS1 did the same); it
+  // goes off between areas and to/from the dock. A finished pass leaves it on
+  // "carried"; every tick without a node of the pass chain (GetPass, Transit,
+  // CornerTurn, FollowPass) ends the carry, and so does setBlade(false).
+  std::atomic<bool> blade_carried{false};
+  std::atomic<bool> blade_carry_seen{false};  // reset before each tick (tick thread)
+  void keepCarriedBlade() { blade_carry_seen = true; }
   std::atomic<bool> count_failure{true};
   std::atomic<bool> parked{false};        // a parking Hold was ticked in this tick (tick thread)  // false: last pass "failure" was an early end, resume without counting
 
@@ -288,6 +295,7 @@ public:
   bool refreshObstacles();
   std::atomic<bool> bump_on_pass{false};  // the last interrupted action was FollowPass
   std::atomic<bool> pass_is_outline{false};  // the pass GetPass handed out last
+  size_t pass_area = SIZE_MAX;                // its area index (tick thread)
   // Behaviour tree thread only: the last reversal (bump recovery or a blind
   // FreeFootprint back-up). Daniel 2026-09-28: after a bump it backed up three
   // times where one was enough - a blind back-up isn't repeated near the last one.

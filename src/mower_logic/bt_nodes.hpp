@@ -1,7 +1,9 @@
 #pragma once
 // Behaviour tree nodes of the mower_logic executor (BehaviorTree.CPP v4).
 // Tree: config/mower_logic.xml. Blade safety: only FollowPass switches the
-// blade on, and it switches it off on success, failure and halt.
+// blade on, and it switches it off on failure and halt. After a finished pass
+// it stays on while only the pass chain to the next pass of the same area runs
+// (Context::blade_carried).
 
 #include "mower_logic/context.hpp"
 
@@ -55,9 +57,12 @@ protected:
   virtual bool abortOnBump() const { return false; }
   // Drive actions for a pass stop when the operator skipped it meanwhile.
   virtual bool staleOnSkip() const { return false; }
+  // Part of the pass chain: a blade carried over from the last pass stays on.
+  virtual bool keepsCarriedBlade() const { return false; }
 
   BT::NodeStatus onStart() override
   {
+    if (keepsCarriedBlade()) ctx_->keepCarriedBlade();
     sent_ = false;
     state_.reset();
     started_ = Context::Clock::now();
@@ -67,6 +72,7 @@ protected:
 
   BT::NodeStatus onRunning() override
   {
+    if (keepsCarriedBlade()) ctx_->keepCarriedBlade();
     if (abortOnBump() && ctx_->bumpedSince(started_)) {
       RCLCPP_WARN(ctx_->node->get_logger(), "%s: bumped - stopping", server_.c_str());
       onHalted();
@@ -193,6 +199,7 @@ public:
 protected:
   bool abortOnBump() const override { return true; }
   bool staleOnSkip() const override { return true; }
+  bool keepsCarriedBlade() const override { return true; }  // only used between passes
   BT::NodeStatus beforeSend() override { return settle_.check(*ctx_); }
   void onCancel() override
   {
@@ -243,8 +250,15 @@ public:
 protected:
   bool abortOnBump() const override { return true; }
   bool staleOnSkip() const override { return true; }
+  bool keepsCarriedBlade() const override { return true; }
   BT::NodeStatus beforeSend() override
   {
+    // Still spinning from the last pass: drive at once.
+    if (!blade_since_ && ctx_->blade_carried.exchange(false)) {
+      ctx_->blade_in_use = true;
+      blade_since_ = std::chrono::steady_clock::now();
+      return BT::NodeStatus::SUCCESS;
+    }
     // Blade on first, drive after the spin-up time.
     if (!blade_since_) {
       if (!ctx_->motorsReady()) return BT::NodeStatus::RUNNING;
@@ -334,8 +348,10 @@ protected:
   }
   BT::NodeStatus onResult(const Result & r) override
   {
-    bladeOff();
-    if (r.code != rclcpp_action::ResultCode::SUCCEEDED) return BT::NodeStatus::FAILURE;
+    if (r.code != rclcpp_action::ResultCode::SUCCEEDED) {
+      bladeOff();
+      return BT::NodeStatus::FAILURE;
+    }
     // A goal checker only compares with the LAST pose; passes that loop back
     // near their end (stacked perimeter loops) can "succeed" early. Accept
     // success only near the end of the path, otherwise resume from progress.
@@ -344,8 +360,13 @@ protected:
       RCLCPP_WARN(ctx_->node->get_logger(), "follow_path ended at pose %zu of %zu - resuming the rest", reached,
                   path_.poses.size());
       ctx_->count_failure = false;
+      bladeOff();
       return BT::NodeStatus::FAILURE;
     }
+    // Done: the blade keeps spinning into the next pass of this area.
+    ctx_->blade_carried = true;
+    ctx_->blade_in_use = false;
+    blade_since_.reset();
     if (const auto resume = std::exchange(ctx_->segment_resume, std::nullopt)) {
       // Segment ended before a corner the body can't drive: continue after it.
       if (*resume == SIZE_MAX) {

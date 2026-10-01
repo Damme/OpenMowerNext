@@ -150,9 +150,11 @@ public:
   }
   NodeStatus tick() override
   {
+    ctx_->keepCarriedBlade();
     auto & m = ctx_->mission;
     for (size_t guard = 0; guard <= m.areaCount() + 1; ++guard) {
       if (auto area = m.areaNeedingPlan()) {
+        ctx_->setBlade(false);  // next area
         if (!plan(*area)) m.skipArea();
         continue;
       }
@@ -181,6 +183,9 @@ public:
     RCLCPP_INFO(ctx_->node->get_logger(), "Next: %s (%zu poses%s%s)", m.summary().c_str(), pass->path.poses.size(),
                 pass->is_outline ? ", outline" : "", direct ? ", from here" : "");
     ctx_->pass_is_outline = pass->is_outline;
+    // Blade off between areas (Daniel); within one it stays on.
+    if (ctx_->blade_carried && pass->area_index != ctx_->pass_area) ctx_->setBlade(false);
+    ctx_->pass_area = pass->area_index;
     setOutput("path", pass->path);
     setOutput("start", pass->path.poses.front());
     setOutput("start_index", pass->start_index);
@@ -425,6 +430,7 @@ public:
   static BT::PortsList providedPorts() { return {BT::InputPort<nav_msgs::msg::Path>("path")}; }
   NodeStatus onStart() override
   {
+    ctx_->keepCarriedBlade();
     const auto path = getInput<nav_msgs::msg::Path>("path");
     align_ = path.has_value();
     std::optional<double> target;
@@ -464,6 +470,7 @@ public:
   }
   NodeStatus onRunning() override
   {
+    ctx_->keepCarriedBlade();
     const auto pose = ctx_->robotPose();
     if (!pose || std::chrono::steady_clock::now() > deadline_) {
       ctx_->drive(0.0, 0.0);

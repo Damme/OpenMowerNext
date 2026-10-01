@@ -270,9 +270,12 @@ void MowerLogicNode::run(const std::string & tree_file, double rate, bool log_tr
   auto parked_since = Context::Clock::now();
   while (rclcpp::ok() && !stop_) {
     ctx_->parked = false;
+    ctx_->blade_carry_seen = false;
     tree.tickOnce();
-    // Belt and braces: nothing but FollowPass may keep the blade on.
-    if (!ctx_->blade_in_use) ctx_->setBlade(false);
+    // Belt and braces: nothing but FollowPass (and the pass chain right after
+    // one, see blade_carried) may keep the blade on.
+    if (!ctx_->blade_carry_seen) ctx_->blade_carried = false;
+    if (!ctx_->blade_in_use && !ctx_->blade_carried) ctx_->setBlade(false);
     if (ctx_->params.auto_motors) {
       const auto now = Context::Clock::now();
       if (!ctx_->parked) parked_since = now;

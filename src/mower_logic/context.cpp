@@ -491,6 +491,7 @@ void Context::setBlade(bool on)
     }
     blade_on_ = on;
   }
+  if (!on) blade_carried = false;
   std_msgs::msg::Float64MultiArray m;
   m.data = {on ? 1.0 : 0.0};
   blade_pub_->publish(m);

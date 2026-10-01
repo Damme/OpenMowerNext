@@ -5,7 +5,9 @@
     emergency > charging > rain > mowing (paused while GPS is bad) > go home > idle.
   After a charging / rain return the mower stays docked (auto_resume false,
   Daniel): start_mowing continues the kept mission.
-  The blade is only ever on inside FollowPass.
+  The blade is only switched on by FollowPass. After a finished pass it stays on
+  through GetPass / Transit / CornerTurn to the next pass of the same area; any
+  other node (bump recovery, Hold, docking, next area) ends that.
   A bump (worx_hardware: firmware BlockForward / Collision) stops the transit or
   pass. On a pass MowPass tries again: along the same line after a first bump
   (often a false detection), sideways around the spot once a second bump there
