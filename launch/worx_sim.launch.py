@@ -68,7 +68,8 @@ def launch_setup(context):
              remappings=[('map_grid', 'map_grid'), ('map', 'mowing_map')]),
         Node(package='open_mower_next', executable='coverage_server', output='screen'),
         Node(package='open_mower_next', executable='docking_helper', name='docking_helper', output='screen',
-             parameters=[{'line_dock.enabled': True, 'line_dock.require_gps': False}]),
+             parameters=[{'line_dock.enabled': True,
+                          'line_dock.require_gps': LaunchConfiguration('dock_gps').perform(context) == 'true'}]),
         Node(package='open_mower_next', executable='worx_sim_dock.py', output='screen',
              parameters=[{'fail_contacts': int(LaunchConfiguration('dock_fail_contacts').perform(context))}]),
         Node(package='open_mower_next', executable='worx_sim_obstacles.py', output='screen',
@@ -110,5 +111,7 @@ def generate_launch_description():
         DeclareLaunchArgument('require_gps', default_value='false', description='true: mower_logic needs /gps/fix'),
         DeclareLaunchArgument('dock_fail_contacts', default_value='0',
                               description='the simulated dock does not charge on this many first contacts'),
+        DeclareLaunchArgument('dock_gps', default_value='false',
+                              description='true: line docking checks /odometry/gps at the gate (needs a GPS source)'),
         OpaqueFunction(function=launch_setup),
     ])
