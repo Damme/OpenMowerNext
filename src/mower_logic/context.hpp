@@ -151,6 +151,11 @@ struct Params
   int max_skipped_passes_in_row = 3; // then stop the mission and go home (navigation keeps failing)
   std::string dock_type = "openmower";
   double undock_distance = 1.5;      // m from the dock pose: below this the robot counts as docked
+  // ... and only when facing into the dock on its line (an aborted undock reversed
+  // straight out). The mow_0 outline passes 0.9 m from the dock across its line
+  // (robot 2026-10-01: start there reversed 1.5 m blind out of the area).
+  double undock_heading_tolerance = 0.5;  // rad from the dock heading
+  double undock_lateral_tolerance = 0.3;  // m off the dock's line
   std::string transit_bt;            // navigate_through_poses tree for transits to a pass (empty = bt_navigator default)
   // Random via point on longer transits so repeated trips don't wear one track into the lawn.
   double transit_jitter = 0.35;      // m: max lateral offset of the via point (0 = off)
@@ -203,9 +208,9 @@ public:
   // ---- inputs ----
   double batteryFraction() const;
   bool charging() const;   // charger present
-  // On the charger or still within undock_distance of a docking station (an
-  // undock that aborted halfway leaves the robot off the charger but in the dock
-  // entrance, outside the areas: nothing can be planned from there).
+  // On the charger or still in a docking station's entrance: within undock_distance
+  // in front of it, on its line, facing into it (an undock that aborted halfway leaves
+  // the robot off the charger there, outside the areas: nothing can be planned from there).
   bool atDock() const;
   bool emergency() const;
   // Clears the latched emergency if nothing still demands it; the message says why not.

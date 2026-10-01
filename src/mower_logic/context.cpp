@@ -344,9 +344,22 @@ bool Context::atDock() const
   const auto pose = robotPose();
   std::lock_guard<std::mutex> l(mutex_);
   if (!pose) return false;
+  const auto & rq = pose->pose.orientation;
+  const double robot_yaw = std::atan2(2.0 * (rq.w * rq.z + rq.x * rq.y), 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z));
   for (const auto & d : map_.docking_stations) {
     const auto & p = d.pose.pose.position;
-    if (std::hypot(p.x - pose->pose.position.x, p.y - pose->pose.position.y) < params.undock_distance) return true;
+    const auto & q = d.pose.pose.orientation;
+    const double dock_yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    const double dx = pose->pose.position.x - p.x, dy = pose->pose.position.y - p.y;
+    // Dock frame: x along the docked heading (the entrance is at x < 0), y sideways.
+    const double along = dx * std::cos(dock_yaw) + dy * std::sin(dock_yaw);
+    const double lateral = -dx * std::sin(dock_yaw) + dy * std::cos(dock_yaw);
+    const double heading_err = std::remainder(robot_yaw - dock_yaw, 2.0 * M_PI);
+    if (std::hypot(dx, dy) < params.undock_distance && along < 0.1 &&
+        std::abs(lateral) < params.undock_lateral_tolerance &&
+        std::abs(heading_err) < params.undock_heading_tolerance) {
+      return true;
+    }
   }
   return false;
 }

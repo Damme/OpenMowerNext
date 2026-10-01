@@ -97,6 +97,8 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
     static_cast<int>(node->declare_parameter("max_skipped_passes_in_row", p.max_skipped_passes_in_row));
   p.dock_type = node->declare_parameter("dock_type", p.dock_type);
   p.undock_distance = node->declare_parameter("undock_distance", p.undock_distance);
+  p.undock_heading_tolerance = node->declare_parameter("undock_heading_tolerance", p.undock_heading_tolerance);
+  p.undock_lateral_tolerance = node->declare_parameter("undock_lateral_tolerance", p.undock_lateral_tolerance);
   p.transit_jitter = node->declare_parameter("transit_jitter", p.transit_jitter);
   p.transit_jitter_min_distance = node->declare_parameter("transit_jitter_min_distance", p.transit_jitter_min_distance);
   p.transit_via_margin = node->declare_parameter("transit_via_margin", p.transit_via_margin);
