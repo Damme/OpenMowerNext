@@ -33,7 +33,9 @@ namespace open_mower_next::docking_helper
 //     the line leaves it (the dock and its roof are outside).
 //  3. Gate: the pose must be proven - RTK all the way through the last gps_window,
 //     the GPS track's direction = the EKF heading, EKF = GPS position, and on the
-//     line. Anything off: back out and try again rather than steer in the slot.
+//     line (mean heading over the last heading_window: it weaves a little). Anything
+//     off: back out and try again rather than steer in the slot. Passed: turn in
+//     place onto the line heading.
 //  4. Blind push: GPS off, heading held on the line, no sideways correction. Stops on
 //     the bumper (BlockForward), a charge start (powerState), a stall or the charger.
 //  5. Wait charge_wait for charge current; none: back off a little, push once more,
@@ -53,7 +55,14 @@ public:
     double k_heading = 1.5;         // 1/s
     double max_angular = 0.5;       // rad/s
     double lateral_tolerance = 0.05;          // m at the gate
-    double heading_tolerance = 4.0 * M_PI / 180.0;
+    // The robot weaves on the line (heading +-5..10 deg, 3-4 s period, lateral 1-3 cm;
+    // robot 2026-10-01): judge the mean heading over the last heading_window, cap
+    // the momentary one, then turn in place onto the line before the push.
+    double heading_tolerance = 5.0 * M_PI / 180.0;   // mean over heading_window
+    double heading_max = 12.0 * M_PI / 180.0;        // momentary at the gate
+    double heading_window = 0.5;                     // m before the gate
+    double align_tolerance = 2.0 * M_PI / 180.0;     // turn in place to this before the push
+    double align_speed = 0.25;                       // rad/s max while aligning
     bool require_gps = true;
     double gps_window = 1.5;                  // m before the gate: RTK all the way, track = heading
     double gps_max_gap = 1.0;                 // s between GPS fixes inside the window
@@ -124,7 +133,9 @@ private:
   Drive driveTo(double target, double speed, Steer steer, bool stop_on_contact, double timeout,
                 const std::function<bool()> & cancelled, const std::function<void(const LinePose &)> & on_tick = {});
   bool gateCheck(const LinePose & at_gate, const rclcpp::Time & window_start, const std::vector<double> & yaws,
-                 std::string & why);
+                 double mean_heading, std::string & why);
+  // Turn in place onto the line heading (base_link is on the wheel axle: no sideways move).
+  bool alignHeading(const std::function<bool()> & cancelled);
   bool waitGps(double timeout, const std::function<bool()> & cancelled);
   bool waitCharge(double timeout, const std::function<bool()> & cancelled);
   bool navigateToStart(const geometry_msgs::msg::Pose & start, const std::function<bool()> & cancelled);

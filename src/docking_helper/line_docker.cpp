@@ -48,6 +48,10 @@ LineDocker::LineDocker(rclcpp::Node & node, std::shared_ptr<tf2_ros::Buffer> tf,
   p_.max_angular = d("max_angular", p_.max_angular);
   p_.lateral_tolerance = d("lateral_tolerance", p_.lateral_tolerance);
   p_.heading_tolerance = d("heading_tolerance_deg", p_.heading_tolerance * 180.0 / M_PI) * M_PI / 180.0;
+  p_.heading_max = d("heading_max_deg", p_.heading_max * 180.0 / M_PI) * M_PI / 180.0;
+  p_.heading_window = d("heading_window", p_.heading_window);
+  p_.align_tolerance = d("align_tolerance_deg", p_.align_tolerance * 180.0 / M_PI) * M_PI / 180.0;
+  p_.align_speed = d("align_speed", p_.align_speed);
   p_.require_gps = node_.declare_parameter("line_dock.require_gps", p_.require_gps);
   p_.gps_window = d("gps_window", p_.gps_window);
   p_.gps_max_gap = d("gps_max_gap", p_.gps_max_gap);
@@ -262,7 +266,7 @@ LineDocker::Drive LineDocker::driveTo(double target, double speed, Steer steer, 
 }
 
 bool LineDocker::gateCheck(const LinePose & g, const rclcpp::Time & window_start, const std::vector<double> & yaws,
-                           std::string & why)
+                           double mean_heading, std::string & why)
 {
   char buf[256];
   std::vector<std::string> bad;
@@ -270,7 +274,11 @@ bool LineDocker::gateCheck(const LinePose & g, const rclcpp::Time & window_start
     snprintf(buf, sizeof(buf), "lateral %+.3f m", g.lateral);
     bad.emplace_back(buf);
   }
-  if (std::abs(g.heading) > p_.heading_tolerance) {
+  if (!(std::abs(mean_heading) <= p_.heading_tolerance)) {
+    snprintf(buf, sizeof(buf), "mean heading %+.1f deg", mean_heading * 180.0 / M_PI);
+    bad.emplace_back(buf);
+  }
+  if (std::abs(g.heading) > p_.heading_max) {
     snprintf(buf, sizeof(buf), "heading %+.1f deg", g.heading * 180.0 / M_PI);
     bad.emplace_back(buf);
   }
@@ -317,11 +325,43 @@ bool LineDocker::gateCheck(const LinePose & g, const rclcpp::Time & window_start
     if (!(std::abs(track_err) <= p_.gps_heading_tolerance)) bad.emplace_back("GPS track != EKF heading");
     if (!(pos_err <= p_.gps_position_tolerance)) bad.emplace_back("EKF != GPS position");
   }
-  RCLCPP_INFO(node_.get_logger(), "Line docking gate: lateral %+.3f m, heading %+.1f deg; %s", g.lateral,
-              g.heading * 180.0 / M_PI, gps_info.c_str());
+  RCLCPP_INFO(node_.get_logger(), "Line docking gate: lateral %+.3f m, heading %+.1f deg (mean %+.1f); %s",
+              g.lateral, g.heading * 180.0 / M_PI, mean_heading * 180.0 / M_PI, gps_info.c_str());
   why.clear();
   for (const auto & b : bad) why += (why.empty() ? "" : ", ") + b;
   return bad.empty();
+}
+
+bool LineDocker::alignHeading(const std::function<bool()> & cancelled)
+{
+  // The drive lags ~0.5 s and needs some speed to turn at all: slow, stop, settle, check.
+  for (int tries = 0; tries < 4; ++tries) {
+    const rclcpp::Time start = node_.now();
+    LinePose lp;
+    while (rclcpp::ok()) {
+      if (cancelled()) {
+        stop();
+        return false;
+      }
+      if (!linePose(lp) || (node_.now() - start).seconds() > 8.0) {
+        stop();
+        return false;
+      }
+      if (std::abs(lp.heading) <= 0.5 * p_.align_tolerance) break;
+      double w = std::clamp(-1.0 * lp.heading, -p_.align_speed, p_.align_speed);
+      if (std::abs(w) < 0.12) w = std::copysign(0.12, w);
+      publish(0.0, w);
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    stop();
+    if (!sleepFor(0.7, cancelled) || !linePose(lp)) return false;
+    if (std::abs(lp.heading) <= p_.align_tolerance) {
+      RCLCPP_INFO(node_.get_logger(), "Line docking: aligned to the line (heading %+.1f deg, lateral %+.3f m)",
+                  lp.heading * 180.0 / M_PI, lp.lateral);
+      return true;
+    }
+  }
+  return false;
 }
 
 bool LineDocker::waitGps(double timeout, const std::function<bool()> & cancelled)
@@ -481,8 +521,13 @@ LineDocker::Result LineDocker::dock(const geometry_msgs::msg::Pose & dock_pose,
     if (!linePose(lp)) continue;
     rclcpp::Time window_start{0, 0, RCL_ROS_TIME};
     std::vector<double> yaws;
+    double hx = 0.0, hy = 0.0;  // heading over the last heading_window
     auto d = driveTo(gate, p_.speed, Steer::LINE, false, (lp.s - gate) / p_.speed * 2.0 + 20.0, cancelled,
                      [&](const LinePose & now) {
+                       if (now.s <= gate + p_.heading_window) {
+                         hx += std::cos(now.heading);
+                         hy += std::sin(now.heading);
+                       }
                        if (now.s > gate + p_.gps_window) return;
                        if (window_start.nanoseconds() == 0) window_start = node_.now();
                        yaws.push_back(now.yaw);
@@ -495,9 +540,15 @@ LineDocker::Result LineDocker::dock(const geometry_msgs::msg::Pose & dock_pose,
     if (window_start.nanoseconds() == 0) window_start = node_.now();
     if (!sleepFor(0.3, cancelled)) return cancelledResult();
     std::string why;
-    if (!linePose(lp) || !gateCheck(lp, window_start, yaws, why)) {
+    const double mean_heading = hx == 0.0 && hy == 0.0 ? NAN : std::atan2(hy, hx);
+    if (!linePose(lp) || !gateCheck(lp, window_start, yaws, mean_heading, why)) {
       RCLCPP_WARN(node_.get_logger(), "Line docking: pose not proven at the gate (%s): backing out",
                   why.empty() ? "no pose" : why.c_str());
+      continue;
+    }
+    if (!alignHeading(cancelled)) {
+      if (cancelled()) return cancelledResult();
+      RCLCPP_WARN(node_.get_logger(), "Line docking: could not turn onto the line: backing out");
       continue;
     }
 
