@@ -20,6 +20,7 @@ struct NavPvt
   uint8_t num_sv = 0;
   double lon_deg = 0, lat_deg = 0;
   double height_m = 0;      // above the ellipsoid
+  double h_msl_m = 0;       // above mean sea level (receiver's geoid model)
   double h_acc_m = 0, v_acc_m = 0;
 };
 
@@ -38,6 +39,7 @@ inline std::optional<NavPvt> parseNavPvt(const uint8_t * p, size_t len)
   n.lon_deg = i32(p + 24) * 1e-7;
   n.lat_deg = i32(p + 28) * 1e-7;
   n.height_m = i32(p + 32) * 1e-3;
+  n.h_msl_m = i32(p + 36) * 1e-3;
   n.h_acc_m = u32(p + 40) * 1e-3;
   n.v_acc_m = u32(p + 44) * 1e-3;
   return n;

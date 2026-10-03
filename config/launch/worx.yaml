@@ -7,6 +7,7 @@
 #
 # Options (environment): OM_WORX_MOTORS_ENABLED (true), OM_IMU_I2C_DEVICE (/dev/i2c-1),
 # OM_GPS_ENABLED (true), OM_GPS_HOST/OM_GPS_PORT (str2str's UBX server, 127.0.0.1:5015), OM_GPS_FIX_TOPIC,
+# OM_ELEVATION_PATH (/data/elevation_grid.csv, "" = off), OM_ELEVATION_ANTENNA_HEIGHT (0.0),
 # OM_GPS_WAIT_TIME_SEC, OM_GPS_RECENT_TIMEOUT_SEC, OM_BATTERY_LOW_FRACTION,
 # OM_BATTERY_RESUME_FRACTION, OM_MOWING_AREAS, OM_DISABLED_AREAS_PATH, OM_EDGE_CORRECTIONS_PATH,
 # OM_MISSION_PATH, OM_AUTO_RESUME (false: after charging / rain it stays docked until start_mowing),
@@ -217,6 +218,11 @@ processes:
         params:
           - host: $(env OM_GPS_HOST 127.0.0.1)
             port: $(env OM_GPS_PORT 5015)
+            # Garden elevation for CAD: RTK fixed heights averaged in a 0.2 m grid (map frame),
+            # whole CSV rewritten at most every 10 min (only if changed). "" = off.
+            elevation.file: $(env OM_ELEVATION_PATH /data/elevation_grid.csv)
+            elevation.datum: [$(env OM_DATUM_LAT), $(env OM_DATUM_LONG)]
+            elevation.antenna_height: $(env OM_ELEVATION_ANTENNA_HEIGHT 0.0)
 
   # Test recording (OM_RECORD=true) into an MCAP bag at OM_RECORD_URI (a
   # directory that must not exist yet). Only what drive/dock tests need: all

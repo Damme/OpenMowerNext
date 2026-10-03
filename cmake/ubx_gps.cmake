@@ -4,6 +4,7 @@
 add_library(ubx_gps_component SHARED src/ubx_gps/ubx_gps_node.cpp)
 target_include_directories(ubx_gps_component PRIVATE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
 ament_target_dependencies(ubx_gps_component rclcpp rclcpp_components sensor_msgs)
+target_link_libraries(ubx_gps_component ${GeographicLib_LIBRARIES})
 rclcpp_components_register_node(ubx_gps_component
   PLUGIN "open_mower_next::ubx_gps::UbxGpsNode"
   EXECUTABLE ubx_gps_node)
