@@ -95,6 +95,11 @@ reaches the robot before Save.
 - Simplify: Douglas-Peucker like JOSM's Simplify way: drops every point less than the tolerance (default 4 cm) off
   the line through the points kept around it. On the selected stretch only (its ends stay), or the whole outline.
 - Delete points (at least 3 stay), Undo / Redo (Ctrl+Z / Ctrl+Y, 100 steps), rename, Delete area.
+- Mowing direction (mowing areas): angle in degrees in the map frame (0 = east/+x, 90 = north), empty = automatic
+  (the planner's long axis, shown as "≈"). While the angle field is active, a drag on the map draws the direction
+  (the lanes run along the line, the way it was drawn); Enter, Escape or any other control ends that. Reverse keeps
+  the same lanes and drives each one the other way. The map shows the lanes (dashed while automatic) and an arrow
+  for the first lane's direction. Stored per area in the map (`mow_angle`, `mow_reverse`), saved with Save.
 - Save warns when the outline crosses itself. Saving and removing only work while mower_logic's command is `IDLE`.
 
 map_server stores and publishes the new outline like any other change. The area's recorded stance (where the body
@@ -121,8 +126,9 @@ JSON text messages over `ws://<host>:<port>/ws`.
   `~/obstacles`, on connect and when it changes).
 - Page → robot: `{"c":"logic","name":…}`, `{"c":"motors","on":…}`, `{"c":"joy","v":-1..1,"w":-1..1}`, `{"c":"blade","on":…}`, `{"c":"blade_pwm","pwm":…}`,
   `{"c":"area","id":…,"enabled":…}`, `{"c":"area_remove","id":…}`, `{"c":"area_get","id"}` (answered to that page
-  only with `{"t":"area","id","name","type","pts"}`, mm), `{"c":"area_save","id","name","pts":[[x,y],…]}`
-  (3–10000 points; an empty name keeps the old one), `{"c":"rec_start","name","type","auto"}`,
+  only with `{"t":"area","id","name","type","mow_angle","mow_reverse","pts"}`, mm),
+  `{"c":"area_save","id","name","pts":[[x,y],…],"mow_angle","mow_reverse"}` (3–10000 points; an empty name keeps the
+  old one; `mow_angle` 0..360 or < 0 = automatic, both optional), `{"c":"rec_start","name","type","auto"}`,
   `{"c":"rec_auto","auto"}`, `{"c":"rec_point"}`, `{"c":"rec_finish"}`, `{"c":"rec_cancel"}`,
   `{"c":"dock_start","name"}`, `{"c":"dock_cancel"}`, `{"c":"forget","kind","x","y"}` (mower_logic's
   `~/forget_obstacle`: `obstacle` / `edge` nearest to x, y within 0.6 m, `all_obstacles`, `all_edges`).

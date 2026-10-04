@@ -55,6 +55,7 @@ button { font: inherit; font-weight: 600; padding: 10px 12px; border-radius: 8px
   background: var(--bg); color: var(--text); cursor: pointer; touch-action: manipulation; }
 button:disabled { opacity: .45; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+input.on { outline: 2px solid var(--rec); }
 button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 button.small { padding: 4px 10px; font-size: 13px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -206,6 +207,17 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
           <button id="ed-simp">Simplify</button></div>
         <p class="muted">Drops every point that lies less than the tolerance off the line through its neighbours (like
           JOSM's Simplify way). Only the selected stretch when points are selected, else the whole outline.</p>
+        <div id="ed-dir">
+          <h2>Mowing direction</h2>
+          <div class="row" style="align-items:center"><label class="muted" for="ed-ang">Angle (°)</label>
+            <input type="number" id="ed-ang" min="0" max="359.9" step="1" placeholder="auto" style="width:6em">
+            <button id="ed-ang-auto">Auto</button></div>
+          <label class="check"><input type="checkbox" id="ed-rev"> Reverse (flip 180°): the same lanes, each driven the other way</label>
+          <div id="ed-dir-info" class="muted" style="margin-bottom:8px"></div>
+          <p class="muted">While the angle field is active, drag on the map to draw the direction: the lanes run along the
+            line, the way it was drawn. 0° = east (+x), 90° = north. Empty = automatic (the area's long axis). Only the
+            fill lanes follow it, not the outline loops.</p>
+        </div>
         <h2>Area</h2>
         <div class="row"><button class="danger" id="ed-delete">Delete area</button></div>
       </div>
@@ -453,7 +465,8 @@ function renderAreas() {
     const n1 = document.createElement("div"); n1.textContent = areaLabel(a);
     const n2 = document.createElement("div"); n2.className = "muted";
     n2.textContent = a.id + " · " + Math.round(polyArea(a.pts)) + " m²" + (a.type !== 2 ? " · " + TYPES[a.type] : "") +
-      (a.locked ? " · not in OM_MOWING_AREAS" : "");
+      (a.type === 2 && a.mow_angle >= 0 ? " · " + fmtDeg(a.mow_angle) : "") +
+      (a.type === 2 && a.mow_reverse ? " · reversed" : "") + (a.locked ? " · not in OM_MOWING_AREAS" : "");
     name.append(n1, n2);
     name.onclick = () => { S.sel = S.sel === a.id ? null : a.id; renderAreas(); if (S.sel) focusArea(a); draw(); };
     row.append(name);
@@ -700,15 +713,25 @@ cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); p
   tap = ptrs.size === 1 ? { x: e.offsetX, y: e.offsetY, t: Date.now(), follow: S.follow } : null; S.follow = false;
   // Map editor: a drag that starts on a point or a line of the edited outline moves it instead of the map.
   ed.drag = null;
-  if (ed.a && ptrs.size === 1) {
+  if (ed.a && ed.angDraw && ptrs.size === 1) {
+    e.preventDefault();  // keep the angle field active
+    const w = [(e.offsetX - view.ox) / view.s, (view.oy - e.offsetY) / view.s];
+    ed.drag = { ang: true, x0: e.offsetX, y0: e.offsetY, mouse: e.pointerType === "mouse" };
+    ed.angLine = { a: w, b: w };
+  } else if (ed.a && ptrs.size === 1) {
     const h = edHit(e.offsetX, e.offsetY, e.pointerType === "mouse" ? 10 : 20);
     if (h) ed.drag = { h, x0: e.offsetX, y0: e.offsetY, moved: false, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
   }
+  if (ptrs.size === 2 && ed.drag && ed.drag.ang) { ed.drag.cancel = true; ed.angLine = null; }  // a pinch, not a line
   if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), s: view.s }; } });
 cv.addEventListener("pointermove", (e) => {
   if (!ptrs.has(e.pointerId)) return;
   const prev = ptrs.get(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
   if (tap && Math.hypot(e.offsetX - tap.x, e.offsetY - tap.y) > 6) tap = null;
+  if (ed.drag && ed.drag.ang && ptrs.size === 1) {
+    if (ed.drag.cancel) return;
+    ed.angLine.b = [(e.offsetX - view.ox) / view.s, (view.oy - e.offsetY) / view.s]; draw(); return;
+  }
   if (ed.drag && ptrs.size === 1) { edDragMove(e.offsetX, e.offsetY); return; }
   if (ptrs.size === 1) { view.ox += e.offsetX - prev[0]; view.oy += e.offsetY - prev[1]; }
   else if (ptrs.size === 2 && pinch) {
@@ -720,6 +743,7 @@ cv.addEventListener("pointermove", (e) => {
 const up = (e) => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; };
 cv.addEventListener("pointerup", (e) => {
   const t = tap, d = ed.drag; tap = null; ed.drag = null; up(e);
+  if (d && d.ang) { edAngLine(d, e); return; }
   if (d) { if (!d.moved && t) edTap(d); edChanged(); return; }
   if (!t || e.type !== "pointerup" || Date.now() - t.t > 600) return;
   if (ed.a) { if (!ed.a.range && !e.shiftKey && !e.ctrlKey) { ed.a.sel.clear(); edChanged(); } return; }
@@ -736,7 +760,8 @@ cv.addEventListener("pointerup", (e) => {
   else { S.feltSel = "e" + hit.e.x + "," + hit.e.y; draw(); forgetEdge(hit.e); }
   S.feltSel = null; draw();
 });
-cv.addEventListener("pointercancel", (e) => { tap = null; ed.drag = null; up(e); edChanged(); });
+cv.addEventListener("pointercancel", (e) => { tap = null; ed.drag = null; ed.angLine = null; up(e); edChanged(); });
+cv.addEventListener("mousedown", (e) => { if (ed.a && ed.angDraw) e.preventDefault(); });  // the field keeps the focus
 cv.addEventListener("wheel", (e) => { e.preventDefault(); S.follow = false; zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0015)); draw(); }, { passive: false });
 function zoomAt(px, py, f) {
   const s = Math.min(Math.max(view.s * f, 0.5), 400); f = s / view.s;
@@ -756,7 +781,9 @@ function edStart(id) {
 function edLoad(m) {
   ed.a = { id: m.id, name: m.name, type: m.type, orig: m.pts, pts: cp(m.pts), sel: new Set(), anchor: -1,
            hist: [], redo: [], range: false, dirty: false, pending: null };
-  ed.drag = null;
+  ed.drag = null; ed.angLine = null; ed.angDraw = false;
+  $("ed-ang").value = m.mow_angle >= 0 ? m.mow_angle : "";
+  $("ed-rev").checked = !!m.mow_reverse;
   // A ROS1 default name (shown by id, see areaLabel) stays unless a new one is typed.
   const label = areaLabel(m);
   $("ed-name").value = label === (m.name || m.id) ? m.name || "" : "";
@@ -764,7 +791,7 @@ function edLoad(m) {
   S.sel = m.id;
   showTab("areas"); focusArea({ pts: m.pts }); edChanged();
 }
-function edClose() { ed.a = null; ed.drag = null; edChanged(); renderAreas(); }
+function edClose() { ed.a = null; ed.drag = null; ed.angLine = null; ed.angDraw = false; edChanged(); renderAreas(); }
 function edChanged() {
   const a = ed.a;
   $("areas-list").hidden = !!a; $("editor").hidden = !a;
@@ -783,6 +810,37 @@ function edChanged() {
   $("ed-redo").disabled = busy || !a.redo.length;
   $("ed-save").disabled = busy || !S.ws;
   $("ed-save").textContent = a.pending === "save" ? "Saving…" : "Save";
+  $("ed-dir").hidden = a.type !== 2;
+  $("ed-ang").classList.toggle("on", !!ed.angDraw);
+  const ang = edAngle(), auto = principalAxis(a.pts);
+  $("ed-dir-info").textContent = (ang < 0 ? "Automatic: ≈ " + fmtDeg(auto) : "Lanes at " + fmtDeg(ang)) +
+    ($("ed-rev").checked ? ", reversed: the first lane runs towards " + fmtDeg(((ang < 0 ? auto : ang) + 180) % 360) : "") +
+    (ed.angDraw ? " · drag on the map to draw" : "");
+}
+// The angle field: degrees 0..360, < 0 = automatic (empty).
+function edAngle() {
+  const t = $("ed-ang").value.trim(), v = +t;
+  return t === "" || !isFinite(v) ? -1 : Math.round((((v % 360) + 360) % 360) * 10) / 10;
+}
+const fmtDeg = (d) => (Math.round(d * 10) / 10) + "°";
+// Long axis of the outline (what the planner's optimize_sweep_angle picks, roughly), 0..180.
+function principalAxis(p) {
+  let mx = 0, my = 0; p.forEach(([x, y]) => { mx += x; my += y; }); mx /= p.length; my /= p.length;
+  let sxx = 0, sxy = 0, syy = 0;
+  p.forEach(([x, y]) => { const dx = x - mx, dy = y - my; sxx += dx * dx; sxy += dx * dy; syy += dy * dy; });
+  return ((0.5 * Math.atan2(2 * sxy, sxx - syy) * 180 / Math.PI) + 180) % 180;
+}
+// A line drawn on the map while the angle field is active: its direction becomes the angle.
+function edAngLine(d, e) {
+  const l = ed.angLine; ed.angLine = null;
+  if (!l) { edChanged(); return; }
+  const dx = l.b[0] - l.a[0], dy = l.b[1] - l.a[1];
+  if (Math.hypot(dx, dy) * view.s >= 10) {
+    $("ed-ang").value = Math.round(((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360 * 10) / 10;
+    ed.a.dirty = true;
+  }
+  if (d.mouse) $("ed-ang").focus();
+  edChanged();
 }
 // Before each change: kept for Undo.
 function edPush() {
@@ -960,6 +1018,36 @@ function edDraw() {
     ctx.strokeStyle = css.text; ctx.lineWidth = 1.5; ctx.beginPath();
     ctx.arc(X(a.pts[a.anchor][0]), Y(a.pts[a.anchor][1]), 8, 0, 7); ctx.stroke();
   }
+  if (a.type === 2 && n >= 3) edDrawDirection(a);
+  if (ed.angLine) edArrow(ed.angLine.a, ed.angLine.b, css.rec, 3);
+}
+// Lane direction preview: faint lines along the angle inside the outline, an arrow for the
+// first lane's driving direction (dashed while automatic).
+function edDrawDirection(a) {
+  const set = edAngle(), deg = (set < 0 ? principalAxis(a.pts) : set) + ($("ed-rev").checked ? 180 : 0);
+  const r = deg * Math.PI / 180, ux = Math.cos(r), uy = Math.sin(r);
+  const b = bbox(a.pts, [Infinity, Infinity, -Infinity, -Infinity]), cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+  const R = Math.hypot(b[2] - b[0], b[3] - b[1]) / 2, gap = Math.max(1, Math.ceil(20 / view.s));  // >= 20 px apart
+  ctx.save(); path(a.pts, true); ctx.clip();
+  ctx.strokeStyle = css.text; ctx.globalAlpha = 0.15; ctx.lineWidth = 1; ctx.setLineDash(set < 0 ? [6, 6] : []);
+  ctx.beginPath();
+  for (let o = -Math.ceil(R / gap) * gap; o <= R; o += gap) {
+    const px = cx - uy * o, py = cy + ux * o;
+    ctx.moveTo(X(px - ux * R), Y(py - uy * R)); ctx.lineTo(X(px + ux * R), Y(py + uy * R));
+  }
+  ctx.stroke(); ctx.restore();
+  const len = Math.min(R, 80 / view.s);
+  edArrow([cx - ux * len / 2, cy - uy * len / 2], [cx + ux * len / 2, cy + uy * len / 2], css.text, 2.5, set < 0);
+}
+function edArrow(p, q, col, w, dashed) {
+  const ax = X(p[0]), ay = Y(p[1]), bx = X(q[0]), by = Y(q[1]), t = Math.atan2(by - ay, bx - ax), h = 12;
+  ctx.strokeStyle = col; ctx.lineWidth = w; ctx.setLineDash(dashed ? [6, 4] : []);
+  ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.setLineDash([]);
+  if (Math.hypot(bx - ax, by - ay) < 4) return;
+  ctx.beginPath(); ctx.moveTo(bx, by);
+  ctx.lineTo(bx - h * Math.cos(t - 0.45), by - h * Math.sin(t - 0.45));
+  ctx.lineTo(bx - h * Math.cos(t + 0.45), by - h * Math.sin(t + 0.45)); ctx.closePath();
+  ctx.fillStyle = col; ctx.fill();
 }
 // The robot's answer to Save / Delete area (a log line): close the editor when it worked.
 function edResult(m) {
@@ -978,13 +1066,24 @@ $("ed-simp").onclick = edSimplify;
 $("ed-undo").onclick = () => edUndo(true);
 $("ed-redo").onclick = () => edUndo(false);
 $("ed-name").oninput = () => { ed.a.dirty = true; };
+// The angle field active = draw mode; it ends with Enter / Escape or any other control (not the map:
+// a press on the map keeps the focus, see the canvas mousedown).
+$("ed-ang").onfocus = () => { ed.angDraw = true; edChanged(); };
+$("ed-ang").onkeydown = (e) => { if (e.key === "Enter" || e.key === "Escape") { ed.angDraw = false; e.target.blur(); edChanged(); } };
+$("ed-ang").oninput = () => { ed.a.dirty = true; edChanged(); };
+document.addEventListener("pointerdown", (e) => {
+  if (ed.angDraw && e.target !== cv && e.target !== $("ed-ang")) { ed.angDraw = false; if (ed.a) edChanged(); }
+}, true);
+$("ed-ang-auto").onclick = () => { $("ed-ang").value = ""; ed.a.dirty = true; edChanged(); };
+$("ed-rev").onchange = () => { ed.a.dirty = true; edChanged(); };
 $("ed-cancel").onclick = () => { if (!ed.a.dirty || confirm("Throw away the changes?")) edClose(); };
 $("ed-save").onclick = () => {
   const a = ed.a, c = edCrossing(a.pts);
   if (c && !confirm("The outline crosses itself near " + c[0].toFixed(2) + ", " + c[1].toFixed(2) + ". Save anyway?")) return;
   if (!confirm("Save " + areaLabel(a) + " with " + a.pts.length + " points? Recorded poses more than 5 cm off the new " +
       "outline are dropped. A saved mission replans this area.")) return;
-  if (send({ c: "area_save", id: a.id, name: $("ed-name").value.trim(), pts: a.pts })) { a.pending = "save"; edChanged(); }
+  if (send({ c: "area_save", id: a.id, name: $("ed-name").value.trim(), pts: a.pts, mow_angle: edAngle(),
+              mow_reverse: $("ed-rev").checked })) { a.pending = "save"; edChanged(); }
   else toast("Not connected", true);
 };
 $("ed-delete").onclick = () => {

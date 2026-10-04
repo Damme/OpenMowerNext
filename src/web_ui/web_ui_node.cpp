@@ -428,7 +428,8 @@ private:
     } else if (c == "area_get") {
       sendArea(client, m.at("id").get<std::string>());
     } else if (c == "area_save") {
-      saveArea(m.at("id").get<std::string>(), m.value("name", std::string()), m.at("pts"));
+      saveArea(m.at("id").get<std::string>(), m.value("name", std::string()), m.at("pts"),
+               m.value("mow_angle", -1.0), m.value("mow_reverse", false));
     } else if (c == "rec_start") {
       recordArea(m.at("name").get<std::string>(), m.at("type").get<int>(), m.at("auto").get<bool>());
     } else if (c == "rec_auto") {
@@ -744,13 +745,22 @@ private:
     for (const auto & q : a->area.polygon.points) {
       pts.push_back({std::round(double{q.x} * 1000) / 1000, std::round(double{q.y} * 1000) / 1000});
     }
-    send(client, Json{{"t", "area"}, {"id", a->id}, {"name", a->name}, {"type", a->type}, {"pts", pts}}.dump());
+    send(client, Json{{"t", "area"},
+                      {"id", a->id},
+                      {"name", a->name},
+                      {"type", a->type},
+                      {"mow_angle", a->mow_angle},
+                      {"mow_reverse", a->mow_reverse},
+                      {"pts", pts}}
+                   .dump());
   }
 
   // The edited outline replaces the area's polygon (map_server's save_area: same id = update).
   // The recorded stance (where the body stood, map_server grid.stance_*) is kept only where it
   // still lies on the new outline: along a moved line the body never stood there.
-  void saveArea(const std::string & id, const std::string & name, const Json & pts)
+  // mow_angle (deg, < 0 = automatic) and mow_reverse: the area's mowing direction.
+  void saveArea(const std::string & id, const std::string & name, const Json & pts, double mow_angle,
+                bool mow_reverse)
   {
     if (!logicIdle()) {
       event(false, "Save area " + id + ": only while mower_logic is idle (Stop first)");
@@ -772,6 +782,12 @@ private:
     auto req = std::make_shared<srv::SaveArea::Request>();
     req->area = *old;
     if (!name.empty()) req->area.name = name.substr(0, 60);
+    if (!std::isfinite(mow_angle) || mow_angle >= 360.0) {
+      event(false, "Save area " + id + ": mow angle must be 0..360 (or automatic)");
+      return;
+    }
+    req->area.mow_angle = mow_angle < 0.0 ? -1.0 : std::round(mow_angle * 10.0) / 10.0;
+    req->area.mow_reverse = mow_reverse;
     auto & poly = req->area.area.polygon.points;
     poly.clear();
     for (const auto & p : pts) {
@@ -793,6 +809,12 @@ private:
              st.end());
     std::string note =
       std::to_string(old->area.polygon.points.size()) + " -> " + std::to_string(poly.size()) + " points";
+    if (old->mow_angle != req->area.mow_angle || old->mow_reverse != req->area.mow_reverse) {
+      note += ", direction " +
+              (req->area.mow_angle < 0.0 ? std::string("auto")
+                                         : std::to_string(static_cast<int>(std::lround(req->area.mow_angle))) + " deg") +
+              (req->area.mow_reverse ? " reversed" : "");
+    }
     if (st.size() != stance_before) {
       note += ", " + std::to_string(stance_before - st.size()) + " of " + std::to_string(stance_before) +
               " recorded poses dropped (off the new outline)";
@@ -815,6 +837,8 @@ private:
                        {"type", a.type},
                        {"enabled", !op || (!disabled.count(a.id) && (only_areas_.empty() || only_areas_.count(a.id)))},
                        {"locked", op && !only_areas_.empty() && !only_areas_.count(a.id)},
+                       {"mow_angle", a.mow_angle},
+                       {"mow_reverse", a.mow_reverse},
                        {"pts", points(a.area.polygon, 0.02)}});
     }
     Json docks = Json::array();
