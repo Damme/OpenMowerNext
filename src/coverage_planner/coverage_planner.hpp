@@ -51,7 +51,10 @@ struct Request
 {
   std::vector<Pt> outline;                 // zone boundary (open or closed ring)
   std::vector<std::vector<Pt>> holes;      // obstacles / exclusions; ones outside the zone are ignored
-  double angle_rad = 0.0;                  // fill direction (ignored if optimize_sweep_angle)
+  double angle_rad = 0.0;                  // fill direction (ignored if optimize_sweep_angle
+                                           // and not fixed_angle)
+  bool fixed_angle = false;                // true: angle_rad even when optimize_sweep_angle (per area)
+  bool reverse = false;                    // same fill lanes, each driven the other way
   double distance = 0.0;                   // cut width, used when Params::tool_width <= 0
   double outer_offset = 0.0;               // boundary inset, used when Params::clearance < 0
   int outline_count = 0;                   // perimeter passes, used when Params::outline_count < 0

@@ -42,6 +42,7 @@ struct PlanConfig {
   double clearance = 0.0;             // inset from the recorded edge; 0 = retrace it
   double obstacle_clearance = 0.0;    // same, from recorded obstacle loops
   double angle_deg = 0.0;
+  bool reverse = false;               // same fill lanes, each driven the other way
   bool concentric = false;            // request fill type FILL_CONCENTRIC
   std::string edge_side = "right";
   // turning geometry -> turn_footprint(), the max-gap cutoff for U-turns
@@ -82,7 +83,8 @@ PlanConfig buildConfig(const Request &req, const Params &prm) {
   else if (prm.fill_mode == "serpentine") c.concentric = false;
   else c.concentric = req.concentric;
   c.lane_skip = std::max(1, prm.lane_skip);
-  c.optimize_angle = prm.optimize_sweep_angle;
+  c.optimize_angle = prm.optimize_sweep_angle && !req.fixed_angle;
+  c.reverse = req.reverse;
   c.path_spacing = std::min(0.5, std::max(0.02, prm.path_spacing));
   c.loop_transition = std::max(1.0, prm.loop_transition);
   c.blade_off_x = prm.blade_offset_x; c.blade_off_y = prm.blade_offset_y;
@@ -455,29 +457,26 @@ std::vector<std::vector<Swath>> laneSkipGroups(const std::vector<Swath> &sw, int
   return groups;
 }
 
-// Canonical lane direction: fixed unit vector toward +x (tie-break +y), the
-// same for every group and cell. Flip the sign here to run stripes the other way.
-Pt laneAxis(const std::vector<Pt> &lane) {
-  if (lane.size() < 2) return Pt(1.0, 0.0);
-  Pt d(lane.back().x - lane.front().x, lane.back().y - lane.front().y);
-  double l = std::hypot(d.x, d.y); if (l < 1e-9) return Pt(1.0, 0.0);
-  d.x /= l; d.y /= l;
-  if (d.x < -1e-9 || (std::fabs(d.x) < 1e-9 && d.y < 0.0)) { d.x = -d.x; d.y = -d.y; }
-  return d;
+// Lane direction: along the sweep angle (rows count from its right, rotated -y),
+// the opposite with `reverse` -- same lanes, each driven the other way. The same
+// for every group and cell.
+Pt laneAxis(double angle_deg, bool reverse) {
+  double rad = angle_deg * M_PI / 180.0, s = reverse ? -1.0 : 1.0;
+  return Pt(s * std::cos(rad), s * std::sin(rad));
 }
 
 // Chain a cell's swaths into serpentine runs, one per lane_skip group. Drive
 // direction = (row/k) parity -> k-wide stripes, phase-aligned field-wide.
 // U-turns are fitted to the headland; one that fails even at the tightest
 // radius breaks the run (nav repositions).
-std::vector<Pass> stitchSwaths(const std::vector<Swath> &sw_in,
+std::vector<Pass> stitchSwaths(const std::vector<Swath> &sw_in, double angle_deg,
                                       const BMultiPolygon &drivable, const PlanConfig &cfg) {
   std::vector<Pass> out;
   if (sw_in.empty()) return out;
   const int k = std::max(1, cfg.lane_skip);
   double base_r = cfg.min_turn_radius > 1e-6 ? cfg.min_turn_radius : cfg.swath_step;
   double max_gap = cfg.turn_footprint() * 2.0 + k * cfg.swath_step;
-  Pt pref = laneAxis(sw_in[0].pts);                          // shared by all groups/cells
+  Pt pref = laneAxis(angle_deg, cfg.reverse);                // shared by all groups/cells
   for (auto &sw : laneSkipGroups(sw_in, k)) {
     for (auto &s : sw) {                                     // orient by the row's k-band
       if (s.pts.size() < 2) continue;
@@ -593,7 +592,7 @@ std::vector<Pass> fillArea(const Field &f, const BMultiPolygon &inner, const Pla
   bool ride = (cfg.n_perimeter_passes == 0);                 // no loops -> rows ride the boundary
   for (auto &cell : decomposeCells(inner, ang, cfg.swath_step, ride)) {
     if (cell.empty()) continue;
-    for (auto &p : stitchSwaths(cell, drivable, cfg)) {
+    for (auto &p : stitchSwaths(cell, ang, drivable, cfg)) {
       if (p.pts.size() >= 2 && pathLength(p.pts) >= min_run) out.push_back(std::move(p));
     }
   }
@@ -655,7 +654,9 @@ Result planImpl(const Request &req, const Params &prm, const LogFn &log) {
       << cfg.n_perimeter_passes
       << (prm.outline_count >= 0 ? " perimeter pass(es) (param)" : " perimeter pass(es)")
       << ", edge_side=" << cfg.edge_side << ", mow_angle=" << cfg.angle_deg << " deg"
-      << (cfg.optimize_angle ? " (overridden by optimize_sweep_angle)" : "") << ".";
+      << (cfg.optimize_angle ? " (overridden by optimize_sweep_angle)"
+          : req.fixed_angle  ? " (area)" : "")
+      << (cfg.reverse ? ", lanes reversed" : "") << ".";
     info(m);
   }
 

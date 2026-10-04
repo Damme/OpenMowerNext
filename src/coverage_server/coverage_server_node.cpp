@@ -126,6 +126,11 @@ void CoverageServerNode::handleAreaCoverageRequest(
     plan_request.holes.push_back(utils::toPoints(exclusion.polygon));
   }
   plan_request.angle_rad = request->swath_angle * M_PI / 180.0;
+  if (area->mow_angle >= 0.0) {  // the area's own direction beats optimize_sweep_angle
+    plan_request.angle_rad = area->mow_angle * M_PI / 180.0;
+    plan_request.fixed_angle = true;
+  }
+  plan_request.reverse = area->mow_reverse;
   plan_request.outline_count = request->headland_loops;
 
   const auto result = ::coverage_planner::plan(

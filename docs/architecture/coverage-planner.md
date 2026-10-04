@@ -20,6 +20,12 @@ the slic3r-based planner OpenMower originally used). Per area:
 It returns `paths` (`CoveragePath[]`: kind, `is_outline`, `nav_msgs/Path`) in driving order, their concatenation
 `path`, and the mowable geometry.
 
+Per area (`Area.msg`, GeoJSON properties `mow_angle` / `mow_reverse`, set in the web UI's map editor):
+`mow_angle` >= 0 fixes the fill direction (degrees, map frame) and beats `optimize_sweep_angle`; the first lane (on
+the right of that direction) runs along it, the others alternate by `lane_skip` band. `mow_reverse` keeps the same
+lanes and drives each one the other way (also with the automatic angle). Concentric fill and the outline loops
+ignore both.
+
 ## Parameters
 
 `tool_width` (0.22), `overlap` (0.35), `clearance` (0.04), `obstacle_clearance` (follows clearance), `outline_count`

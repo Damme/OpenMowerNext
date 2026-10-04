@@ -95,6 +95,14 @@ json GeoJSONMap::mapAreaToGeoJSONFeature(const msg::Area & area) const
   }
   feature["geometry"]["coordinates"].push_back(coordinates);
 
+  // Only when set: maps without them stay as they were.
+  if (area.mow_angle >= 0.0) {
+    feature["properties"]["mow_angle"] = std::round(area.mow_angle * 10.0) / 10.0;
+  }
+  if (area.mow_reverse) {
+    feature["properties"]["mow_reverse"] = true;
+  }
+
   // [lon, lat, heading in deg (ENU, counter-clockwise from east)]
   if (!area.stance.empty()) {
     json stance = json::array();
@@ -270,6 +278,15 @@ void GeoJSONMap::parsePolygonFeature(msg::Map & map, const json & feature)
   for (const auto & ll : feature["geometry"]["coordinates"][0]) {
     auto p = parsePoint(ll);
     area.area.polygon.points.push_back(p);
+  }
+
+  const auto & props = feature["properties"];
+  if (props.contains("mow_angle") && props["mow_angle"].is_number()) {
+    const double a = props["mow_angle"].get<double>();
+    area.mow_angle = a >= 0.0 && a < 360.0 ? a : -1.0;
+  }
+  if (props.contains("mow_reverse") && props["mow_reverse"].is_boolean()) {
+    area.mow_reverse = props["mow_reverse"].get<bool>();
   }
 
   if (feature["properties"].contains("stance")) {
