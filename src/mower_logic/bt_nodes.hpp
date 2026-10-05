@@ -482,7 +482,11 @@ public:
   static BT::PortsList providedPorts() { return {}; }
 
 protected:
-  bool makeGoal(Goal &) override { return true; }
+  bool makeGoal(Goal &) override
+  {
+    ctx_->setBranch("DOCKING");  // else the label of what came before (RAIN_PAUSE, MOWING) stays
+    return true;
+  }
   BT::NodeStatus beforeSend() override { return settle_.check(*ctx_); }
   void onCancel() override { settle_.reset(); }
   MarksSettle settle_;
