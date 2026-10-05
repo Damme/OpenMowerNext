@@ -176,6 +176,7 @@ private:
     fake_charger_srv_, fake_collision_srv_, fake_lift_srv_;
   FakeBoardTransport * fake_board_ = nullptr;  // owned by link_, only with transport=fake
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr fake_battery_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr fake_rain_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr fake_speed_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr wheel_scale_sub_;
   rclcpp::TimerBase::SharedPtr status_timer_;

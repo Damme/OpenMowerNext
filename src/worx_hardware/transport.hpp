@@ -68,6 +68,7 @@ public:
   void setBatteryMv(int mv);
   void setCollision(bool active);
   void setLift(bool active);
+  void setRain(bool active);
   // Terrain: actual wheel travel per PWM (1.5 ~ downhill, the robot outruns its
   // commands; 0.6 ~ uphill / tall grass).
   void setSpeedFactor(double factor);
@@ -94,7 +95,7 @@ private:
   bool started_ = false;
   std::chrono::steady_clock::time_point last_step_, last_pulse_, last_status_;
   int status_slot_ = 0;
-  bool collision_ = false, lift_ = false, block_forward_ = false;
+  bool collision_ = false, lift_ = false, block_forward_ = false, rain_ = false;
   uint32_t bumps_ = 0;
   bool peer_crc_ = false;  // host sent a CRC'd command: answer with CRCs too
   double speed_factor_ = 1.0;

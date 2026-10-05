@@ -175,10 +175,10 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
       case 1:
         // Door/Door2/Lift/Collision read 1 when inactive.
         b["Digital"] = {{"Stuck", 1}, {"Stuck2", 1}, {"Door", 1}, {"Door2", 1}, {"Lift", lift_ ? 0 : 1},
-                        {"Collision", collision_ ? 0 : 1}, {"Stop", 0}, {"Rain", 0}};
+                        {"Collision", collision_ ? 0 : 1}, {"Stop", 0}, {"Rain", rain_ ? 1 : 0}};
         break;
       case 2:
-        b["Analog"] = {{"Rain", 3500}, {"boardTemp", 2000}};
+        b["Analog"] = {{"Rain", rain_ ? 2900 : 4070}, {"boardTemp", 2000}};
         break;
       case 3:
         b["MotorPWM"] = {{"Left", std::abs(pwm_l_)}, {"Right", std::abs(pwm_r_)}, {"Mow", std::abs(pwm_mow_)}};
@@ -190,6 +190,12 @@ void FakeBoardTransport::step(std::chrono::steady_clock::time_point now)
     status_slot_ = (status_slot_ + 1) % 5;
     queue(b.dump());
   }
+}
+
+void FakeBoardTransport::setRain(bool active)
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  rain_ = active;
 }
 
 void FakeBoardTransport::setCollision(bool active)

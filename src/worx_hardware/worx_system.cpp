@@ -249,6 +249,8 @@ void WorxSystem::startNode()
       "/worx/fake/speed_factor", 10, [this](std_msgs::msg::Float64::ConstSharedPtr m) { fake_board_->setSpeedFactor(m->data); });
     fake_battery_sub_ = node_->create_subscription<std_msgs::msg::Int32>(
       "/worx/fake/battery_mv", 10, [this](std_msgs::msg::Int32::ConstSharedPtr m) { fake_board_->setBatteryMv(m->data); });
+    fake_rain_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
+      "/worx/fake/rain", 10, [this](std_msgs::msg::Bool::ConstSharedPtr m) { fake_board_->setRain(m->data); });
   }
   wheel_scale_sub_ = node_->create_subscription<std_msgs::msg::Float64>(
     "/worx/wheel_scale", rclcpp::QoS(1).transient_local(), [this](std_msgs::msg::Float64::ConstSharedPtr m) {
