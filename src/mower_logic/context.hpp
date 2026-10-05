@@ -62,6 +62,10 @@ struct Params
   double gps_settle = 10.0;          // s of good fixes before continuing (OM_GPS_WAIT_TIME_SEC)
   bool dock_on_rain = true;
   double rain_clear_delay = 1800.0;  // s without rain before mowing again
+  // Rain while out mowing (Daniel 2026-10-05): stop on the lawn first, blade off.
+  // Dry for rain_resume_dry -> mow on; still raining after rain_pause_time -> dock.
+  double rain_pause_time = 600.0;    // s
+  double rain_resume_dry = 300.0;    // s
   int max_pass_attempts = 3;
   int max_dock_attempts = 3;
   double blade_spinup = 2.0;         // s between blade on and driving
@@ -171,7 +175,7 @@ struct Params
   // every mission start so an area can be switched off without a restart.
   std::string disabled_areas_file;   // empty: none
   // Daniel 2026-09-29: motors on as soon as the tree leaves a parked state (IDLE,
-  // CHARGING, WAITING_FOR_RAIN, EMERGENCY), off once it has been parked this long.
+  // CHARGING, WAITING_FOR_RAIN, RAIN_PAUSE, EMERGENCY), off once it has been parked this long.
   // Only switched on these changes: the web UI's manual Motors on/off (emergency
   // reset) isn't overridden while the state stays the same.
   bool auto_motors = true;
@@ -215,7 +219,10 @@ public:
   bool emergency() const;
   // Clears the latched emergency if nothing still demands it; the message says why not.
   bool clearEmergency(std::string & message);
-  bool raining();          // latched for rain_clear_delay after the last rain
+  bool raining();          // latched for rain_clear_delay after the last rain (a rain pause ends earlier)
+  // Rain while mowing: true while the mower waits on the lawn (rain_pause_time),
+  // false once it gave up (dock) or isn't out mowing.
+  bool rainPause();
   bool gpsOk();            // good fixes for gps_settle, none missing for gps_timeout
   bool needsCharging();    // latched: set below battery_low, cleared at battery_resume
   std::vector<std::string> operationAreas() const;
@@ -361,6 +368,8 @@ private:
   bool worx_emergency_ = false, board_emergency_ = false, lift_ = false, collision_ = false;
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr emergency_client_, motors_client_;
   std::optional<Clock::time_point> last_rain_;
+  enum class RainPause { NONE, WAITING, GAVE_UP } rain_pause_ = RainPause::NONE;
+  Clock::time_point rain_pause_start_;
   std::optional<Clock::time_point> gps_good_since_, gps_last_good_;
   bool needs_charging_ = false;
   std::optional<Clock::time_point> low_since_;  // battery below battery_low since

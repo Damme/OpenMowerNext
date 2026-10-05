@@ -41,6 +41,8 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   p.gps_settle = node->declare_parameter("gps_settle", p.gps_settle);
   p.dock_on_rain = node->declare_parameter("dock_on_rain", p.dock_on_rain);
   p.rain_clear_delay = node->declare_parameter("rain_clear_delay", p.rain_clear_delay);
+  p.rain_pause_time = node->declare_parameter("rain_pause_time", p.rain_pause_time);
+  p.rain_resume_dry = node->declare_parameter("rain_resume_dry", p.rain_resume_dry);
   p.max_pass_attempts = static_cast<int>(node->declare_parameter("max_pass_attempts", p.max_pass_attempts));
   p.max_dock_attempts = static_cast<int>(node->declare_parameter("max_dock_attempts", p.max_dock_attempts));
   p.blade_spinup = node->declare_parameter("blade_spinup", p.blade_spinup);

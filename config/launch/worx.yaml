@@ -175,6 +175,8 @@ processes:
             battery_resume: $(env OM_BATTERY_RESUME_FRACTION 0.95)
             blade_spinup: 4.0   # s: Daniel - let the blade reach speed before driving
             dock_on_rain: $(env OM_DOCK_ON_RAIN true)
+            rain_pause_time: 600.0   # s: Daniel - rain while mowing: wait this long on the lawn, then dock
+            rain_resume_dry: 300.0   # s without rain during the pause -> mow on
             areas: $(env OM_MOWING_AREAS "")
             disabled_areas_file: $(env OM_DISABLED_AREAS_PATH /data/disabled_areas.txt)
             mission_file: $(env OM_MISSION_PATH /data/mission.txt)

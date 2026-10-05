@@ -58,7 +58,7 @@ Everything goes through interfaces that already exist:
 ## Motors
 
 mower_logic switches the motors itself (`auto_motors`): on as soon as it leaves a parked state (`IDLE`,
-`CHARGING`, `WAITING_FOR_RAIN`, `EMERGENCY`), off once it has been parked for `motors_off_delay` (2 s). It only
+`CHARGING`, `WAITING_FOR_RAIN`, `RAIN_PAUSE`, `EMERGENCY`), off once it has been parked for `motors_off_delay` (2 s). It only
 switches when that changes, so the Motors on/off buttons still work in between (off → on is also how the Worx
 firmware resets an emergency).
 

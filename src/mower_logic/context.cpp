@@ -406,7 +406,38 @@ bool Context::raining()
 {
   if (!params.dock_on_rain) return false;
   std::lock_guard<std::mutex> l(mutex_);
-  return last_rain_ && std::chrono::duration<double>(Clock::now() - *last_rain_).count() < params.rain_clear_delay;
+  const double dry = last_rain_ ? std::chrono::duration<double>(Clock::now() - *last_rain_).count() : 1e9;
+  if (rain_pause_ == RainPause::WAITING && dry >= params.rain_resume_dry) {
+    RCLCPP_INFO(node->get_logger(), "Rain pause: dry for %.0f s, mowing on", dry);
+    rain_pause_ = RainPause::NONE;
+    last_rain_.reset();
+    return false;
+  }
+  if (dry < params.rain_clear_delay) return true;
+  rain_pause_ = RainPause::NONE;
+  return false;
+}
+
+bool Context::rainPause()
+{
+  if (command != Command::MOW || charging() || atDock()) return false;
+  std::lock_guard<std::mutex> l(mutex_);
+  const auto now = Clock::now();
+  switch (rain_pause_) {
+    case RainPause::NONE:
+      RCLCPP_INFO(node->get_logger(), "Rain: pausing on the lawn (dock after %.0f s unless dry for %.0f s)",
+                  params.rain_pause_time, params.rain_resume_dry);
+      rain_pause_ = RainPause::WAITING;
+      rain_pause_start_ = now;
+      return true;
+    case RainPause::WAITING:
+      if (std::chrono::duration<double>(now - rain_pause_start_).count() < params.rain_pause_time) return true;
+      RCLCPP_INFO(node->get_logger(), "Rain pause: still raining after %.0f s, going to the dock", params.rain_pause_time);
+      rain_pause_ = RainPause::GAVE_UP;
+      return false;
+    default:
+      return false;
+  }
 }
 
 bool Context::gpsOk()

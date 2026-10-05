@@ -12,7 +12,9 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
 
 1. **Emergency** (`/worx/status`): hold, blade off.
 2. **Charging**: below `battery_low`, dock and wait until `battery_resume`, then continue the mission.
-3. **Rain** (`dock_on_rain`): dock and wait until it has been dry for `rain_clear_delay`.
+3. **Rain** (`dock_on_rain`): out mowing, stop on the lawn with the blade off (`RAIN_PAUSE`). Dry for
+   `rain_resume_dry` (300 s) and the mission goes on; still raining after `rain_pause_time` (600 s) and it docks.
+   Docked, it waits until it has been dry for `rain_clear_delay`.
 4. **Mowing** (command `MOW`): paused while GPS is bad (`gps_timeout`), continues after `gps_settle` s of good fixes.
 5. **Go home** (command `HOME`): dock.
 6. **Idle**.

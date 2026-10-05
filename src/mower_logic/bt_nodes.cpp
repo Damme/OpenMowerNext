@@ -100,7 +100,8 @@ public:
   NodeStatus onRunning() override
   {
     // Standing still on purpose (the others - WAITING_FOR_GPS, RETRYING - are out on the lawn mid-mission).
-    if (state_ == "IDLE" || state_ == "CHARGING" || state_ == "WAITING_FOR_RAIN" || state_ == "EMERGENCY") {
+    if (state_ == "IDLE" || state_ == "CHARGING" || state_ == "WAITING_FOR_RAIN" || state_ == "RAIN_PAUSE" ||
+        state_ == "EMERGENCY") {
       ctx_->parked = true;
     }
     return NodeStatus::RUNNING;
@@ -1072,6 +1073,7 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   addCheck(factory, "IsEmergency", [ctx]() { return ctx->emergency(); });
   addCheck(factory, "NeedsCharging", [ctx]() { return ctx->needsCharging(); });
   addCheck(factory, "IsRaining", [ctx]() { return ctx->raining(); });
+  addCheck(factory, "RainPause", [ctx]() { return ctx->rainPause(); });
   addCheck(factory, "IsDocked", [ctx]() { return ctx->charging(); });
   addCheck(factory, "IsAtDock", [ctx]() { return ctx->atDock(); });
   addCheck(factory, "GpsOK", [ctx]() { return ctx->gpsOk(); });
