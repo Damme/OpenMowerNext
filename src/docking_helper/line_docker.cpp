@@ -64,6 +64,34 @@ LineDocker::LineDocker(rclcpp::Node & node, std::shared_ptr<tf2_ros::Buffer> tf,
   p_.charge_wait = d("charge_wait", p_.charge_wait);
   p_.attempts = static_cast<int>(node_.declare_parameter("line_dock.attempts", p_.attempts));
   p_.nav_timeout = d("nav_timeout", p_.nav_timeout);
+  // The run-up must cover gps_window (RTK + track = heading before the gate) and
+  // some settling onto the line after the start point.
+  const double min_approach = p_.gps_window + 0.2;
+  if (p_.approach_length < min_approach) {
+    RCLCPP_WARN(node_.get_logger(), "line_dock.approach_length %.2f m < gps_window + 0.2 m: using %.2f m",
+                p_.approach_length, min_approach);
+    p_.approach_length = min_approach;
+  }
+  approach_length_ = p_.approach_length;
+  param_cb_ = node_.add_on_set_parameters_callback([this, min_approach](const std::vector<rclcpp::Parameter> & ps) {
+    rcl_interfaces::msg::SetParametersResult r;
+    r.successful = true;
+    for (const auto & p : ps) {
+      if (p.get_name() != "line_dock.approach_length") continue;
+      if (p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE || p.as_double() < min_approach ||
+          p.as_double() > 10.0)
+      {
+        r.successful = false;
+        r.reason = "line_dock.approach_length must be a double in " + std::to_string(min_approach) + "..10 m";
+        return r;
+      }
+      if (p.as_double() != approach_length_) {
+        RCLCPP_INFO(node_.get_logger(), "Docking start point %.2f m before the gate (next docking)", p.as_double());
+      }
+      approach_length_ = p.as_double();
+    }
+    return r;
+  });
 
   cmd_pub_ = node_.create_publisher<geometry_msgs::msg::TwistStamped>(
     node_.declare_parameter("line_dock.cmd_vel_topic", std::string("/cmd_vel_nav")), 10);
@@ -436,7 +464,7 @@ LineDocker::Result LineDocker::dock(const geometry_msgs::msg::Pose & dock_pose,
   dock_yaw_ = tf2::getYaw(dock_pose.orientation);
   const double edge = areaEdge(dock_pose, areas, 10.0);
   const double gate = std::isnan(edge) ? p_.gate_fallback : edge + p_.gate_margin;
-  const double start_s = gate + p_.approach_length;
+  const double start_s = gate + approach_length_;
   RCLCPP_INFO(node_.get_logger(),
               "Line docking to (%.2f, %.2f, %.0f deg): mow area edge %.2f m, gate %.2f m, start %.2f m out",
               dock_x_, dock_y_, dock_yaw_ * 180.0 / M_PI, edge, gate, start_s);

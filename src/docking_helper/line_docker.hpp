@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -148,6 +149,9 @@ private:
   std::function<void(bool)> dock_zone_;
   bool in_dock_zone_ = false;
   Params p_;
+  // line_dock.approach_length can be changed at runtime (web UI, Mower tab): read at each dock().
+  std::atomic<double> approach_length_{3.0};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_;
 
   // Line of the current dock (map frame): dock pose and its yaw.
   double dock_x_ = 0.0, dock_y_ = 0.0, dock_yaw_ = 0.0;
