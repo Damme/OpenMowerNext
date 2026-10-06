@@ -134,8 +134,8 @@ void FTCController::setState(PlannerState s)
   publishFinished(s == FINISHED && !is_crashed_);
 }
 
-// Parameters are read at configure and again at every new plan (each pass), so
-// they can be tuned live between passes: ros2 param set /controller_server FTC.kp_lat 12.0
+// Parameters are read at configure, at every new plan and after any change of one of
+// them (next control cycle): ros2 param set /controller_server FTC.kp_lat 12.0
 void FTCController::loadParams()
 {
   auto node = node_.lock();
@@ -189,6 +189,13 @@ void FTCController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & p
 
   loadParams();
   auto & c = cfg_;
+  // A changed parameter (web UI) applies from the next control cycle, not only the next pass:
+  // passes along a whole area run for many minutes.
+  params_cb_ = node->add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
+    for (const auto & p : ps) {
+      if (p.get_name().rfind(name_ + ".", 0) == 0) params_changed_ = true;
+    }
+  });
 
   double controller_frequency = 20.0;
   if (node->has_parameter("controller_frequency")) {
@@ -208,6 +215,7 @@ void FTCController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & p
 
 void FTCController::cleanup()
 {
+  params_cb_.reset();
   carrot_pub_.reset();
   plan_pub_.reset();
 }
@@ -255,7 +263,7 @@ void FTCController::setPlan(const nav_msgs::msg::Path & path)
   current_index_ = 0;
   current_progress_ = 0.0;
   last_time_ = now();
-  current_movement_speed_ = cfg_.speed_slow;
+  current_movement_speed_ = carrot_speed_ = cfg_.speed_slow;
   lat_error_ = lon_error_ = angle_error_ = 0.0;
   last_lat_error_ = last_lon_error_ = last_angle_error_ = last_rejoin_error_ = 0.0;
   rejoining_ = false;
@@ -311,6 +319,7 @@ geometry_msgs::msg::TwistStamped FTCController::computeVelocityCommands(
   if (dt <= 0.0 || dt > 1.0) dt = 0.05;
   robot_pos_ = Eigen::Vector2d(pose.pose.position.x, pose.pose.position.y);
 
+  if (params_changed_.exchange(false)) loadParams();
   if (is_crashed_) throw nav2_core::FailedToMakeProgress("FTC: robot crashed / far from plan");
   if (state_ == FINISHED) return cmd;
 
@@ -459,6 +468,10 @@ void FTCController::updateControlPoint(double dt)
       Eigen::Affine3d result = Eigen::Affine3d::Identity();
       result.translation() = (1.0 - current_progress_) * cur.translation() + current_progress_ * next.translation();
       result.linear() = Eigen::Quaterniond(cur.linear()).slerp(current_progress_, Eigen::Quaterniond(next.linear())).toRotationMatrix();
+      // What the carrot really moved: in a tight turn speed_angular holds it far below
+      // current_movement_speed_ (a jump - skipAhead - counts as that at most).
+      carrot_speed_ = std::min(current_movement_speed_,
+                               (result.translation() - current_control_point_.translation()).norm() / dt);
       current_control_point_ = result;
       break;
     }
@@ -546,7 +559,10 @@ void FTCController::calculateVelocityCommands(double dt, geometry_msgs::msg::Twi
     // it lags the carrot (v = kp_lon * distance), so with the Worx's command lag
     // (smoother + wheel loop, 0.2-0.4 s) it caught up, stopped, and restarted:
     // stop-and-go at ~0.5 Hz in the slow sections (real robot 2026-09-28).
-    const double ff = cfg_.lon_feedforward && !carrot_gated_ ? current_movement_speed_ : 0.0;
+    // The carrot's real speed: with the nominal one the robot ran ahead of a carrot
+    // crawling through a U-turn (curve speed 0.225 m/s on the robot, 2026-10-06), until
+    // kp_lon * lead cancelled it - 15 cm past the carrot, out of the turn.
+    const double ff = cfg_.lon_feedforward && !carrot_gated_ ? carrot_speed_ : 0.0;
     double lin = ff + lon_error_ * cfg_.kp_lon + i_lon_error_ * cfg_.ki_lon + d_lon * cfg_.kd_lon;
     // Heading far off (after a corner): turn first, then drive; in between the
     // forward speed fades with cos(error). Never faster than speed_fast, nor more
@@ -559,7 +575,7 @@ void FTCController::calculateVelocityCommands(double dt, geometry_msgs::msg::Twi
       lin = 0.0;
     } else if (lin > 0.0) {
       double cap = cfg_.speed_fast;
-      if (cfg_.catchup_speed >= 0.0) cap = std::min(cap, current_movement_speed_ + cfg_.catchup_speed);
+      if (cfg_.catchup_speed >= 0.0) cap = std::min(cap, carrot_speed_ + cfg_.catchup_speed);
       if (speed_limit_ > 0.0) cap = std::min(cap, speed_limit_);
       lin = std::min(lin * std::cos(abs_ang), cap);
     }

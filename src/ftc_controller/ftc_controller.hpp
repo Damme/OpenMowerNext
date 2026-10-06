@@ -58,6 +58,7 @@
 
 #include <Eigen/Geometry>
 
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <string>
@@ -171,7 +172,10 @@ private:
   double i_lon_error_ = 0, i_lat_error_ = 0, i_angle_error_ = 0;
   double last_cmd_vel_linear_ = 0;
   bool carrot_gated_ = false;
-  double current_movement_speed_ = 0;
+  double current_movement_speed_ = 0;  // the carrot's nominal speed (speed_fast/slow, ramped)
+  double carrot_speed_ = 0;            // what it really moved last cycle (speed_angular limits it in turns)
+  std::atomic<bool> params_changed_{false};
+  rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr params_cb_;
   uint32_t current_index_ = 0;
   double current_progress_ = 0;
   double last_time_ = 0;
