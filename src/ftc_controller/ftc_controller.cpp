@@ -391,7 +391,12 @@ void FTCController::updateControlPoint(double dt)
       break;
     case FOLLOWING: {
       const double straight_dist = distanceLookahead();
-      double speed = straight_dist >= cfg_.speed_fast_threshold ? cfg_.speed_fast : cfg_.speed_slow;
+      // Fast only while the carrot can still brake to speed_slow (at `acceleration`)
+      // before the straight ends: 0.6 m fit 0.3 m/s, a faster speed_fast (web UI) needs more.
+      const double brake = cfg_.acceleration > 0.0
+        ? (cfg_.speed_fast * cfg_.speed_fast - cfg_.speed_slow * cfg_.speed_slow) / (2.0 * cfg_.acceleration) + 0.2
+        : 0.0;
+      double speed = straight_dist >= std::max(cfg_.speed_fast_threshold, brake) ? cfg_.speed_fast : cfg_.speed_slow;
       // The lookahead only sees the carrot's path: right after a corner it is straight
       // again while the robot is still turned far away (real robot 2026-09-28: 0.30 m/s
       // at 100+ deg heading error, out of the area). Slow while the robot is off.
