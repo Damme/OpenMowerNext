@@ -226,6 +226,8 @@ public:
   bool gpsOk();            // good fixes for gps_settle, none missing for gps_timeout
   bool needsCharging();    // latched: set below battery_low, cleared at battery_resume
   std::vector<std::string> operationAreas() const;
+  // Counts /mowing_map messages (0: no map yet).
+  uint64_t mapVersion() const;
   std::optional<geometry_msgs::msg::PoseStamped> robotPose() const;
   // Can the mower stand at this pose? Centre inside the areas (not in an
   // exclusion), the whole footprint on known, non-lethal cells of /map_grid
@@ -374,6 +376,7 @@ private:
   bool needs_charging_ = false;
   std::optional<Clock::time_point> low_since_;  // battery below battery_low since
   open_mower_next::msg::Map map_;
+  uint64_t map_version_ = 0;
   nav_msgs::msg::OccupancyGrid grid_;
   std::string branch_;
   std::optional<uint32_t> bumps_seen_;

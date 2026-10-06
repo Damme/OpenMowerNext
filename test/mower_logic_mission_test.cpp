@@ -360,3 +360,31 @@ TEST(FeltObstacles, DrivingThroughErasesMarks)
   EXPECT_FALSE(open_mower_next::mower_logic::insideBody(s.body, 0.0, 0.0, 0.0, 0.46, 0.18));  // cut corner
   EXPECT_FALSE(open_mower_next::mower_logic::insideBody(s.body, 0.0, 0.0, 0.0, -0.12, 0.0));
 }
+
+TEST(Mission, SetAreasDuringMission)
+{
+  Mission m;
+  EXPECT_EQ(m.setAreas({"a"}), "");  // no mission: nothing to change
+  m.begin({"a", "b", "c"});
+  m.setPlan({straight(10), straight(10)});
+  m.passDone();  // on a's second pass
+  const auto gen = m.generation();
+  EXPECT_NE(m.setAreas({"a", "b"}), "");  // c switched off ahead
+  EXPECT_EQ(m.areaCount(), 2u);
+  EXPECT_EQ(m.generation(), gen);  // the running pass goes on
+  EXPECT_EQ(m.currentPass(0.0)->pass_index, 1u);
+  EXPECT_EQ(m.setAreas({"a", "b"}), "");  // unchanged
+  EXPECT_NE(m.setAreas({"a", "b", "d"}), "");  // d switched on: appended
+  m.passDone();
+  EXPECT_EQ(m.areaNeedingPlan(), "b");
+  EXPECT_EQ(m.setAreas({"b", "d"}), "");  // a off while done: stays done, nothing changes
+  EXPECT_EQ(m.setAreas({"a", "b", "d"}), "");  // a on again: done, not mowed again
+  EXPECT_EQ(m.areaCount(), 3u);
+  m.setPlan({straight(10)});
+  EXPECT_NE(m.setAreas({"a", "d"}), "");  // b (being mowed) switched off: ends now
+  EXPECT_NE(m.generation(), gen);
+  EXPECT_EQ(m.areaNeedingPlan(), "d");
+  EXPECT_NE(m.serialize().find("areas a,d"), std::string::npos);
+  EXPECT_NE(m.setAreas({"a"}), "");  // nothing left
+  EXPECT_FALSE(m.active());
+}

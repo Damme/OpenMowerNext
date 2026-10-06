@@ -114,6 +114,46 @@ void Mission::skipArea()
   if (area_ >= areas_.size()) active_ = false;
 }
 
+std::string Mission::setAreas(const std::vector<std::string> & wanted)
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  if (!active_) return {};
+  auto has = [](auto from, auto to, const std::string & id) { return std::find(from, to, id) != to; };
+  const auto done_end = areas_.begin() + static_cast<long>(std::min(area_, areas_.size()));
+  const bool keep_current = area_ < areas_.size() && has(wanted.begin(), wanted.end(), areas_[area_]);
+  std::vector<std::string> next(areas_.begin(), done_end);
+  if (keep_current) next.push_back(areas_[area_]);
+  for (const auto & id : wanted) {
+    if (!has(next.begin(), next.end(), id)) next.push_back(id);
+  }
+  if (next == areas_) return {};
+  std::ostringstream s;
+  for (size_t i = area_; i < areas_.size(); ++i) {
+    if (!has(next.begin(), next.end(), areas_[i])) s << "-" << areas_[i] << " ";
+  }
+  for (size_t i = area_; i < next.size(); ++i) {
+    if (!has(areas_.begin(), areas_.end(), next[i])) s << "+" << next[i] << " ";
+  }
+  if (!keep_current && area_ < areas_.size()) {
+    // The area being mowed was switched off: it ends here (a running pass is stale).
+    ++generation_;
+    passes_.clear();
+    planned_ = false;
+    restore_.reset();
+    pass_ = pose_ = 0;
+    attempts_ = 0;
+    bumps_ = 0;
+    continuation_steps_ = 0;
+    no_backtrack_ = false;
+  }
+  areas_ = std::move(next);
+  active_ = area_ < areas_.size();
+  s << "->";
+  for (size_t i = area_; i < areas_.size(); ++i) s << " " << areas_[i];
+  if (!active_) s << " nothing left";
+  return s.str();
+}
+
 std::optional<Mission::Pass> Mission::currentPass(double resume_backtrack_m) const
 {
   std::lock_guard<std::mutex> l(mutex_);

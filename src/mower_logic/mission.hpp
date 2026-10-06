@@ -37,6 +37,12 @@ public:
   // Returns a note when a restored position was applied or discarded (else empty).
   std::string setPlan(const std::vector<open_mower_next::msg::CoveragePath> & passes);
   void skipArea();  // also used when planning fails
+  // Area on/off during a mission (Daniel: applies whenever it is switched).
+  // The areas not done yet become the wanted ones, in the wanted order; done
+  // areas are not mowed again. The current area keeps its progress when it is
+  // still wanted, else it ends now (like skipArea). Returns a note when the
+  // mission changed (else empty).
+  std::string setAreas(const std::vector<std::string> & wanted);
   // Modify the current area's plan in place (edge corrections); progress is kept.
   void editPlan(const std::function<void(std::vector<open_mower_next::msg::CoveragePath> &)> & fn);
   // The same for the current pass alone (sidestepping an obstacle); fn gets the

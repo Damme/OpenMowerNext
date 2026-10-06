@@ -8,7 +8,7 @@
 // map_recorder's actions/services and map_server's save_area/remove_area. Manual driving publishes
 // /cmd_vel_joy (twist_mux, top priority), only while mower_logic is IDLE, scaled to
 // max_linear/max_angular here and stopped joy_timeout after the last message.
-// Area on/off rewrites mower_logic's disabled_areas_file (read when a mission is planned).
+// Area on/off rewrites mower_logic's disabled_areas_file (it applies changes to a running mission too).
 // The blade is only switched by hand (Drive tab): worx_hardware's /worx/manual_mow, only
 // while mower_logic is IDLE, at its runtime parameter manual_mow_pwm (Mower tab, sign =
 // direction, missions too). It goes off again when a mission starts or the page that switched it on closes.
@@ -913,7 +913,7 @@ private:
       event(false, "Could not replace " + disabled_file_);
       return;
     }
-    event(true, "Area " + id + (enabled ? " enabled" : " disabled") + " (used from the next new mission)");
+    event(true, "Area " + id + (enabled ? " enabled" : " disabled") + " (applies to the current mission too)");
     sendMap(0);
   }
 

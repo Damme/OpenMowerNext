@@ -127,6 +127,7 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
     [this](open_mower_next::msg::Map::ConstSharedPtr m) {
       std::lock_guard<std::mutex> l(mutex_);
       map_ = *m;
+      ++map_version_;
     });
   loadEdgeCorrections();
   loadObstacles();
@@ -499,6 +500,12 @@ std::vector<std::string> Context::operationAreas() const
     ids.push_back(a.id);
   }
   return ids;
+}
+
+uint64_t Context::mapVersion() const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  return map_version_;
 }
 
 std::optional<geometry_msgs::msg::PoseStamped> Context::robotPose() const

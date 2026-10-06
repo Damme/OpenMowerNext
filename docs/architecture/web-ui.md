@@ -51,7 +51,7 @@ Everything goes through interfaces that already exist:
 | blade on/off | `/worx/manual_mow` (SetBool) |
 | Mower tab settings | parameters of their nodes (`/<node>/get_parameters`, `/<node>/set_parameters`) + `settings_file` |
 | joystick | `/cmd_vel_joy` (TwistStamped) → twist_mux, priority above navigation |
-| areas on/off | rewrites mower_logic's `disabled_areas_file`, read when a new mission is planned |
+| areas on/off | rewrites mower_logic's `disabled_areas_file`; mower_logic applies it within a second, to a running mission too |
 | remove area | `/remove_area` (map_server) |
 | save an edited area | `/save_area` (map_server, same id = update) |
 | recording | `/record_area_boundary`, `/record_docking_station` (actions), `/set_recording_mode`, `/add_boundary_point`, `/finish_area_recording` (map_recorder) |

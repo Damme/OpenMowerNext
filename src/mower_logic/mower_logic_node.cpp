@@ -4,7 +4,8 @@
 // Commands (std_srvs/Trigger): ~/start_mowing, ~/go_home, ~/stop (idle where it
 // is), ~/skip_pass, ~/skip_area, ~/reset_mission. State: ~/state (String, 1 Hz).
 // Felt obstacles and edge corrections: ~/obstacles (JSON String, latched, on
-// change), ~/forget_obstacle (ForgetObstacle) to drop them.
+// change), ~/forget_obstacle (ForgetObstacle) to drop them. Area on/off
+// (disabled_areas_file) and map edits apply to a running mission too.
 #include "mower_logic/mower_logic_node.hpp"
 
 #include "mower_logic/bt_nodes.hpp"
@@ -18,6 +19,7 @@
 #include "open_mower_next/srv/forget_obstacle.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -273,6 +275,27 @@ MowerLogicNode::~MowerLogicNode()
   saveMowed();
 }
 
+void MowerLogicNode::applyAreaChanges()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - areas_checked_at_ < std::chrono::seconds(1)) return;
+  areas_checked_at_ = now;
+  const uint64_t map = ctx_->mapVersion();
+  if (map == 0) return;  // no map yet: a restored mission waits for it
+  std::error_code ec;
+  const auto & file = ctx_->params.disabled_areas_file;
+  const int64_t written =
+    file.empty() ? -1 : std::filesystem::last_write_time(file, ec).time_since_epoch().count();
+  const std::pair<uint64_t, int64_t> stamp{map, ec ? -1 : written};
+  if (stamp == areas_stamp_) return;
+  areas_stamp_ = stamp;
+  if (!ctx_->mission.active()) return;  // a new mission reads them anyway
+  const auto note = ctx_->mission.setAreas(ctx_->operationAreas());
+  if (!note.empty()) {
+    RCLCPP_INFO(node_->get_logger(), "Mission areas changed: %s (%s)", note.c_str(), ctx_->mission.summary().c_str());
+  }
+}
+
 void MowerLogicNode::applyPendingParams()
 {
   std::vector<rclcpp::Parameter> ps;
@@ -308,6 +331,7 @@ void MowerLogicNode::run(const std::string & tree_file, double rate, bool log_tr
   auto parked_since = Context::Clock::now();
   while (rclcpp::ok() && !stop_) {
     applyPendingParams();
+    applyAreaChanges();
     ctx_->parked = false;
     ctx_->blade_carry_seen = false;
     tree.tickOnce();

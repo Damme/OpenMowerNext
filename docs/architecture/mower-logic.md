@@ -22,6 +22,9 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
 ## Mowing
 
 - Undock (Nav2 docking server), then for each operation area (all, or `areas`) plan with `area_coverage`.
+- Areas switched off or on (`disabled_areas_file`, the web UI) and map edits apply to a running mission within a
+  second: the areas not done yet become the enabled ones (map order), done ones aren't mowed again, and the area
+  being mowed ends at once when it is switched off (like `skip_area`).
 - For each pass: a transit to its start, then `follow_path` with the pass controller (`controller_id`; FTC on Worx)
   and the blade on.
 - The transit uses `navigate_through_poses` with `config/behavior_trees/transit_to_pass.xml`: a position-only goal

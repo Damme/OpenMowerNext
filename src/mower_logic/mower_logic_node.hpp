@@ -12,7 +12,9 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace open_mower_next::mower_logic
@@ -34,6 +36,7 @@ private:
   void run(const std::string & tree_file, double rate, bool log_tree);
   void saveMowed();  // params.mowed_file, only if changed
   void applyPendingParams();  // tick thread: runtime parameter changes
+  void applyAreaChanges();    // tick thread: disabled_areas_file / map edits into the mission
 
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<Context> ctx_;
@@ -45,6 +48,8 @@ private:
   std::string saved_mowed_;
   uint64_t saved_rolls_ = 0;
   std::chrono::steady_clock::time_point mowed_saved_at_{};
+  std::chrono::steady_clock::time_point areas_checked_at_{};
+  std::optional<std::pair<uint64_t, int64_t>> areas_stamp_;  // map version, file write time
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_;
   std::mutex param_mutex_;
   std::vector<rclcpp::Parameter> pending_params_;  // param_mutex_
