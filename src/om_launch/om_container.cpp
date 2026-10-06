@@ -19,7 +19,8 @@
 //         name: controller_manager
 //         activate: [joint_state_broadcaster, diff_drive_base_controller]
 //
-// Parameter files containing $(...) are expanded into /tmp first.
+// Parameter files containing $(...) are expanded into /tmp first. In ros_args,
+// `--params-file ?path` is optional: skipped when the file doesn't exist.
 // `key@file: path` sets the string parameter `key` to the file's contents
 // (with $(...) expanded, e.g. $(env OM_WORX_MOTORS_ENABLED true) in the URDF).
 #include "om_launch/manifest.hpp"
@@ -41,6 +42,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -397,7 +399,18 @@ int main(int argc, char ** argv)
   if (process["ros_args"]) {
     for (const auto & a : process["ros_args"]) {
       std::string s = a.as<std::string>();
-      if (!args.empty() && args.back() == "--params-file") s = paramFile(s, process_name);
+      if (!args.empty() && args.back() == "--params-file") {
+        // "?path": optional (e.g. the web UI's settings), skipped while it doesn't exist.
+        if (s.rfind('?', 0) == 0) {
+          s.erase(0, 1);
+          if (!std::ifstream(s).good()) {
+            args.pop_back();
+            continue;
+          }
+          std::cout << "om_container: parameters from " << s << std::endl;
+        }
+        s = paramFile(s, process_name);
+      }
       args.push_back(s);
     }
   }
