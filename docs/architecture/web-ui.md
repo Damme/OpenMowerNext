@@ -97,10 +97,10 @@ defaults (at the next start).
 |---|---|---|---|
 | Blade PWM | `/worx_hardware` `mow_pwm` and \|`manual_mow_pwm`\| | 500 .. `manual_mow_max_pwm` | at once |
 | Blade direction | sign of `/worx_hardware` `manual_mow_pwm` | forward / reverse | next blade start, manual blade off |
-| Straight ahead | `/controller_server` `FTC.speed_fast` | 0.05 .. 0.8 m/s | next pass |
-| Curves (and every pass start) | `FTC.speed_slow` | 0.05 .. 0.8 m/s, ≤ straight | next pass |
-| Turning on a pass | `FTC.speed_angular` | 10 .. 90 °/s | next pass |
-| Catching up (above the pass speed) | `FTC.catchup_speed` | 0 .. 0.15 m/s | next pass |
+| Straight ahead | `/controller_server` `FTC.speed_fast` | 0.05 .. 0.8 m/s | at once |
+| Curves (and every pass start) | `FTC.speed_slow` | 0.05 .. 0.8 m/s, ≤ straight | at once |
+| Turning on a pass | `FTC.speed_angular` | 10 .. 90 °/s | at once |
+| Catching up (above the pass speed) | `FTC.catchup_speed` | 0 .. 0.15 m/s | at once |
 | Transit | `FollowPath.desired_linear_vel` (RPP) | 0.1 .. 0.8 m/s | at once |
 | Feeling around obstacles | `/mower_logic` `feel_speed` | 0.08 .. 0.3 m/s | at once |
 | Manual driving | `/web_ui` `max_linear` | 0.05 .. 0.8 m/s | at once |
