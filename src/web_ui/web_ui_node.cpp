@@ -10,18 +10,22 @@
 // max_linear/max_angular here and stopped joy_timeout after the last message.
 // Area on/off rewrites mower_logic's disabled_areas_file (read when a mission is planned).
 // The blade is only switched by hand (Drive tab): worx_hardware's /worx/manual_mow, only
-// while mower_logic is IDLE, at its runtime parameter manual_mow_pwm (Blade tab, sign =
+// while mower_logic is IDLE, at its runtime parameter manual_mow_pwm (Mower tab, sign =
 // direction, missions too). It goes off again when a mission starts or the page that switched it on closes.
+// Mower tab (settings.hpp): speeds, blade PWM/direction and the docking start point, set as
+// runtime parameters of their nodes and kept in settings_file, which they load at start.
 // Map editor: area_get sends one area at full resolution to the asking page, area_save
 // writes the edited outline back through map_server's save_area (only while IDLE).
 //
 // All ROS callbacks run on this component's own executor thread; the web thread only
 // fills inbox_, which tick() empties.
+#include "web_ui/settings.hpp"
 #include "web_ui/web_server.hpp"
 
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nlohmann/json.hpp>
+#include <rcl_interfaces/srv/get_parameters.hpp>
 #include <rcl_interfaces/srv/set_parameters.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -164,6 +168,15 @@ public:
       }
     }
     max_linear_ = declare_parameter("max_linear", 0.3);
+    settings_file_ = declare_parameter("settings_file", std::string());
+    {
+      std::string error;
+      stored_ = readSettings(settings_file_, &error);
+      if (!error.empty()) RCLCPP_ERROR(get_logger(), "%s: %s", settings_file_.c_str(), error.c_str());
+      if (!stored_.empty()) RCLCPP_INFO(get_logger(), "%zu settings from %s", stored_.size(), settings_file_.c_str());
+      // Its own one directly (the file is also a process-wide parameter file in core).
+      if (const auto it = stored_.find("manual_speed"); it != stored_.end()) max_linear_ = it->second;
+    }
     max_angular_ = declare_parameter("max_angular", 1.0);
     joy_timeout_ = declare_parameter("joy_timeout", 0.3);
     motors_idle_timeout_ = declare_parameter("motors_idle_timeout", 25.0);
@@ -285,7 +298,6 @@ private:
     }
     motors_client_ = create_client<std_srvs::srv::SetBool>("/worx/motors_enabled");
     if (!blade_client_) blade_client_ = create_client<std_srvs::srv::SetBool>("/worx/manual_mow");
-    worx_params_client_ = create_client<rcl_interfaces::srv::SetParameters>("/worx_hardware/set_parameters");
     rec_mode_client_ = create_client<std_srvs::srv::SetBool>("/set_recording_mode");
     rec_point_client_ = create_client<std_srvs::srv::Trigger>("/add_boundary_point");
     rec_finish_client_ = create_client<std_srvs::srv::Trigger>("/finish_area_recording");
@@ -309,7 +321,8 @@ private:
     forget_client_.reset();
     logic_clients_.clear();
     motors_client_.reset();
-    worx_params_client_.reset();
+    param_clients_.clear();
+    settings_ops_.clear();
     rec_mode_client_.reset();
     rec_point_client_.reset();
     rec_finish_client_.reset();
@@ -364,6 +377,7 @@ private:
     if (driving_ && (now() - last_joy_).seconds() > joy_timeout_) stopDriving();
     bladeWatch();
     motorsWatch();
+    settingsWatch();
     if (pages_.empty()) {
       if (blade_client_ && blade_requests_ == 0) blade_client_.reset();
       if (rec_area_client_ && !rec_goal_ && !rec_pending_) rec_area_client_.reset();
@@ -419,8 +433,10 @@ private:
       setBool(motors_client_, m.at("on").get<bool>(), "Motors");
     } else if (c == "blade") {
       blade(client, m.at("on").get<bool>());
-    } else if (c == "blade_pwm") {
-      setBladePwm(m.at("pwm").get<int>());
+    } else if (c == "settings_get") {
+      settings_ops_.push_back({client, false, {}, now() + rclcpp::Duration(3s), {}});
+    } else if (c == "settings_set") {
+      settingsSet(client, m.at("values"));
     } else if (c == "area") {
       setAreaEnabled(m.at("id").get<std::string>(), m.at("enabled").get<bool>());
     } else if (c == "area_remove") {
@@ -611,21 +627,220 @@ private:
     }
   }
 
-  void setBladePwm(int pwm)
+  // ---- settings (Mower tab) ----------------------------------------------------
+
+  using GetParameters = rcl_interfaces::srv::GetParameters;
+  using SetParameters = rcl_interfaces::srv::SetParameters;
+  struct ParamClients
   {
-    if (!worx_params_client_->service_is_ready()) {
-      event(false, "Blade PWM: /worx_hardware/set_parameters not available");
-      return;
+    rclcpp::Client<GetParameters>::SharedPtr get;
+    rclcpp::Client<SetParameters>::SharedPtr set;
+  };
+  // A get or set waits (up to its deadline) until the services of its nodes are found:
+  // the clients are only made on the first use after a page opened.
+  struct SettingsOp
+  {
+    uint64_t client;
+    bool set;
+    std::map<std::string, std::map<std::string, double>> params;  // set: node -> parameter -> value
+    rclcpp::Time deadline;
+    std::map<std::string, double> values;                          // set: the settings
+  };
+
+  static std::vector<std::string> settingNodes()
+  {
+    std::vector<std::string> out;
+    for (const auto & d : settingDefs()) {
+      if (std::string(d.node) != "web_ui" && std::find(out.begin(), out.end(), d.node) == out.end()) out.push_back(d.node);
     }
-    auto req = std::make_shared<rcl_interfaces::srv::SetParameters::Request>();
-    req->parameters.push_back(rclcpp::Parameter("manual_mow_pwm", pwm).to_parameter_msg());
-    worx_params_client_->async_send_request(
-      req, [this, pwm](rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedFuture f) {
+    return out;
+  }
+
+  ParamClients & paramClients(const std::string & node)
+  {
+    auto & c = param_clients_[node];
+    if (!c.get) c.get = create_client<GetParameters>("/" + node + "/get_parameters");
+    if (!c.set) c.set = create_client<SetParameters>("/" + node + "/set_parameters");
+    return c;
+  }
+
+  void settingsWatch()
+  {
+    std::vector<SettingsOp> run;  // runSettingsSet may queue a get: not while iterating
+    for (auto it = settings_ops_.begin(); it != settings_ops_.end();) {
+      bool ready = true;
+      if (it->set) {
+        for (const auto & [node, params] : it->params) ready = ready && paramClients(node).set->service_is_ready();
+      } else {
+        for (const auto & node : settingNodes()) ready = ready && paramClients(node).get->service_is_ready();
+      }
+      if (!ready && now() < it->deadline) {
+        ++it;
+        continue;
+      }
+      run.push_back(std::move(*it));
+      it = settings_ops_.erase(it);
+    }
+    for (const auto & op : run) {
+      if (op.set) {
+        runSettingsSet(op);
+      } else {
+        runSettingsGet(op.client);
+      }
+    }
+  }
+
+  // Current values from the nodes -> {"t":"settings"} to the page.
+  void runSettingsGet(uint64_t client)
+  {
+    struct Collect
+    {
+      std::map<std::string, double> values;
+      std::vector<std::string> missing;
+      int left = 0;
+    };
+    auto col = std::make_shared<Collect>();
+    col->values["manual_speed"] = max_linear_;
+    auto done = [this, client, col]() {
+      Json values = Json::object(), limits = Json::object(), stored = Json::array();
+      for (const auto & [k, v] : col->values) values[k] = v;
+      for (const auto & d : settingDefs()) limits[d.key] = {d.min, d.max};
+      for (const auto & [k, v] : stored_) stored.push_back(k);
+      send(client, Json{{"t", "settings"}, {"values", values}, {"limits", limits}, {"stored", stored},
+                        {"missing", col->missing}, {"file", settings_file_}}.dump());
+    };
+    for (const auto & node : settingNodes()) {
+      auto & c = paramClients(node);
+      if (!c.get->service_is_ready()) {
+        col->missing.push_back(node);
+        continue;
+      }
+      auto req = std::make_shared<GetParameters::Request>();
+      for (const auto & d : settingDefs()) {
+        if (node == d.node) req->names.push_back(d.param);
+      }
+      ++col->left;
+      c.get->async_send_request(req, [col, node, names = req->names, done](rclcpp::Client<GetParameters>::SharedFuture f) {
         const auto r = f.get();
-        const bool ok = !r->results.empty() && r->results[0].successful;
-        event(ok, "Blade PWM " + std::to_string(pwm) + (ok ? "" : ": " + (r->results.empty() ? std::string("no result")
-                                                                                             : r->results[0].reason)));
+        std::map<std::string, double> params;
+        for (size_t i = 0; i < r->values.size() && i < names.size(); ++i) {
+          const auto & v = r->values[i];
+          if (v.type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE) params[names[i]] = v.double_value;
+          if (v.type == rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER) {
+            params[names[i]] = static_cast<double>(v.integer_value);
+          }
+        }
+        paramsToSettings(node, params, col->values);
+        if (--col->left == 0) done();
       });
+    }
+    if (col->left == 0) done();
+  }
+
+  // Checks the page's values ({"key": number}), then sets them on their nodes.
+  void settingsSet(uint64_t client, const Json & j)
+  {
+    auto refuse = [this, client](const std::string & why) { send(client, logLine(false, "Settings: " + why)); };
+    if (settings_file_.empty()) return refuse("no settings_file configured");
+    if (!j.is_object() || j.empty()) return refuse("nothing to set");
+    std::map<std::string, double> values;
+    for (const auto & [key, v] : j.items()) {
+      const auto * d = findSetting(key);
+      if (!d) return refuse("unknown setting " + key);
+      if (!v.is_number()) return refuse(key + " must be a number");
+      const double x = v.get<double>();
+      if (!std::isfinite(x) || x < d->min || x > d->max) {
+        return refuse(key + " " + formatValue(x, d->integer) + " outside " + formatValue(d->min, d->integer) + ".." +
+                      formatValue(d->max, d->integer));
+      }
+      values[key] = d->integer ? std::round(x) : x;
+    }
+    if (values.count("blade_pwm") != values.count("blade_reverse")) return refuse("blade_pwm and blade_reverse go together");
+    const auto slow = values.count("speed_curve") ? values["speed_curve"] : stored_.count("speed_curve") ? stored_["speed_curve"] : -1.0;
+    const auto fast = values.count("speed_straight") ? values["speed_straight"] : stored_.count("speed_straight") ? stored_["speed_straight"] : -1.0;
+    if (slow > 0 && fast > 0 && slow > fast) return refuse("curve speed above the straight speed");
+    auto params = settingsToParams(values);
+    // This node's own: right away.
+    if (auto it = params.find("web_ui"); it != params.end()) {
+      max_linear_ = it->second.at("max_linear");
+      params.erase(it);
+    }
+    settings_ops_.push_back({client, true, params, now() + rclcpp::Duration(3s), values});
+  }
+
+  void runSettingsSet(const SettingsOp & op)
+  {
+    struct Collect
+    {
+      std::map<std::string, double> values;
+      std::vector<std::string> failed;
+      int left = 0;
+    };
+    auto col = std::make_shared<Collect>();
+    col->values = op.values;
+    auto done = [this, col, client = op.client]() {
+      // Only what the nodes took goes into the file.
+      std::map<std::string, double> merged = stored_;
+      for (const auto & [k, v] : col->values) merged[k] = v;
+      std::string error;
+      if (!col->values.empty() && !writeSettings(settings_file_, merged, error)) {
+        event(false, "Settings not saved: " + error);
+      } else if (!col->values.empty()) {
+        stored_ = merged;
+        std::string keys;
+        for (const auto & [k, v] : col->values) keys += (keys.empty() ? "" : ", ") + k + " " + formatValue(v, findSetting(k)->integer);
+        event(true, "Settings saved: " + keys);
+      }
+      if (!col->failed.empty()) {
+        std::string why;
+        for (const auto & f : col->failed) why += (why.empty() ? "" : "; ") + f;
+        event(false, "Settings refused: " + why);
+      }
+      settings_ops_.push_back({client, false, {}, now() + rclcpp::Duration(3s), {}});  // fresh values to the page
+    };
+    // Which settings a node's parameter belongs to (blade: both).
+    auto keysOf = [](const std::string & node, const std::string & param) {
+      std::vector<std::string> keys;
+      for (const auto & d : settingDefs()) {
+        if (node == d.node && param == d.param) keys.push_back(d.key);
+      }
+      if (node == "worx_hardware") keys = {"blade_pwm", "blade_reverse"};
+      return keys;
+    };
+    for (const auto & [node, params] : op.params) {
+      auto & c = paramClients(node);
+      if (!c.set->service_is_ready()) {
+        col->failed.push_back(node + " not available");
+        for (const auto & [name, v] : params) {
+          for (const auto & k : keysOf(node, name)) col->values.erase(k);
+        }
+        continue;
+      }
+      auto req = std::make_shared<SetParameters::Request>();
+      std::vector<std::string> names;
+      for (const auto & [name, v] : params) {
+        bool integer = false;
+        for (const auto & d : settingDefs()) {
+          if (node == d.node && name == d.param) integer = d.integer;
+        }
+        if (node == "worx_hardware") integer = true;
+        req->parameters.push_back(integer ? rclcpp::Parameter(name, static_cast<int64_t>(std::llround(v))).to_parameter_msg()
+                                          : rclcpp::Parameter(name, v).to_parameter_msg());
+        names.push_back(name);
+      }
+      ++col->left;
+      c.set->async_send_request(req, [col, node, names, keysOf, done](rclcpp::Client<SetParameters>::SharedFuture f) {
+        const auto r = f.get();
+        for (size_t i = 0; i < names.size(); ++i) {
+          const bool ok = i < r->results.size() && r->results[i].successful;
+          if (ok) continue;
+          col->failed.push_back(node + " " + names[i] + ": " + (i < r->results.size() ? r->results[i].reason : "no result"));
+          for (const auto & k : keysOf(node, names[i])) col->values.erase(k);
+        }
+        if (--col->left == 0) done();
+      });
+    }
+    if (col->left == 0) done();
   }
 
   void trigger(const rclcpp::Client<Trigger>::SharedPtr & client, const std::string & label)
@@ -1010,7 +1225,10 @@ private:
 
   std::map<std::string, rclcpp::Client<Trigger>::SharedPtr> logic_clients_;
   rclcpp::Client<SetBool>::SharedPtr motors_client_, rec_mode_client_, blade_client_;
-  rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedPtr worx_params_client_;
+  std::string settings_file_;
+  std::map<std::string, double> stored_;  // settings in settings_file_
+  std::map<std::string, ParamClients> param_clients_;  // by node, while a page is open
+  std::vector<SettingsOp> settings_ops_;
   bool blade_on_ = false;  // switched on from a page (the hardware's state is in worx_)
   uint64_t blade_page_ = 0;
   int blade_requests_ = 0;

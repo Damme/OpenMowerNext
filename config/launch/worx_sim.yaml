@@ -43,6 +43,9 @@ processes:
       - $(find-pkg-share open_mower_next)/config/hardware/worx_nav2.yaml
       - --params-file
       - $(find-pkg-share open_mower_next)/config/hardware/worx_nav2_robot.yaml
+      # Web UI settings (Mower tab), when saved there: last, so they win.
+      - --params-file
+      - ?$(env OM_SETTINGS_PATH /data/mower_settings.yaml)
       - -p
       - use_sim_time:=false
     components:
@@ -71,6 +74,7 @@ processes:
 
   # Map, coverage planning, docking helper and the mission.
   - name: core
+    ros_args: [--params-file, "?$(env OM_SETTINGS_PATH /data/mower_settings.yaml)"]
     components:
       - plugin: open_mower_next::map_server::MapServerNode
         name: map_server

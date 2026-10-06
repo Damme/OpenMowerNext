@@ -13,7 +13,8 @@ The page shows the map (areas, dock, robot, trail), battery, GPS, motor and mowe
 
 - **Mow**: start mowing, go home, stop, skip pass/area, reset mission, clear emergency, motors on/off.
 - **Drive**: a joystick (touch or mouse) and arrow keys / WASD, and the blade on/off switch.
-- **Blade**: PWM and direction (sign) the blade runs at when it's switched on by hand.
+- **Mower**: settings kept on the robot (see [Mower settings](#mower-settings)): blade PWM and direction, speeds,
+  docking start point.
 - **Areas**: switch mowing areas on/off, remove areas, edit an area's outline (see [Map editor](#map-editor)).
   Tap an area on the map to find it in the list.
 - **Bumps**: what the mower learned by bumping: obstacles it felt its way around (drawn purple on the map, the
@@ -48,7 +49,7 @@ Everything goes through interfaces that already exist:
 | mission buttons | `/mower_logic/{start_mowing,go_home,stop,skip_pass,skip_area,reset_mission,clear_emergency}` (Trigger) |
 | motors on/off | `/worx/motors_enabled` (SetBool) |
 | blade on/off | `/worx/manual_mow` (SetBool) |
-| blade PWM / direction | parameter `manual_mow_pwm` of `/worx_hardware` (`/worx_hardware/set_parameters`) |
+| Mower tab settings | parameters of their nodes (`/<node>/get_parameters`, `/<node>/set_parameters`) + `settings_file` |
 | joystick | `/cmd_vel_joy` (TwistStamped) → twist_mux, priority above navigation |
 | areas on/off | rewrites mower_logic's `disabled_areas_file`, read when a new mission is planned |
 | remove area | `/remove_area` (map_server) |
@@ -67,7 +68,7 @@ joystick input or a running manual blade, when the last page closes, or never if
 (then they stay as set). The manual blade needs the motors on already.
 
 Manual driving is accepted only while mower_logic's command is `IDLE`. Speeds are scaled on the robot to
-`max_linear` / `max_angular` (0.3 m/s, 1.0 rad/s), and a zero command follows `joy_timeout` (0.3 s) after the last
+`max_linear` / `max_angular` (0.3 m/s, Mower tab; 1.0 rad/s), and a zero command follows `joy_timeout` (0.3 s) after the last
 message, or at once when the page closes or loses focus. twist_mux's own 0.5 s timeout stays behind it.
 
 ## Blade by hand
@@ -81,7 +82,32 @@ The blade can only be switched on while mower_logic's command is `IDLE` and the 
   drive commands. It then stays off until it's switched on again.
 
 The PWM can change while the blade runs; the direction only while it's off. Blade on/off/PWM results appear in the log.
-Missions cut at `mow_pwm` but in the Blade tab's direction, taken each time the mission blade starts.
+Missions cut at the same PWM (`mow_pwm`) and direction, taken each time the mission blade starts.
+
+## Mower settings
+
+The Mower tab shows the values the nodes use now and saves the ones changed there. Each is a ROS parameter, set at
+runtime (SetParameters) and written to `settings_file` (`OM_SETTINGS_PATH`, default `/data/mower_settings.yaml`), a
+ROS parameter file with only the settings changed in the UI. om_launch loads it into the `nav` and `core` processes
+at start (`--params-file ?path`: after the config files, skipped while it doesn't exist), worx_hardware into its own
+node: saved values survive a restart; everything else keeps its config default. Delete the file to go back to the
+defaults (at the next start).
+
+| Setting | Parameter | Range | Applies |
+|---|---|---|---|
+| Blade PWM | `/worx_hardware` `mow_pwm` and \|`manual_mow_pwm`\| | 500 .. `manual_mow_max_pwm` | at once |
+| Blade direction | sign of `/worx_hardware` `manual_mow_pwm` | forward / reverse | next blade start, manual blade off |
+| Straight ahead | `/controller_server` `FTC.speed_fast` | 0.05 .. 0.3 m/s | next pass |
+| Curves (and every pass start) | `FTC.speed_slow` | 0.05 .. 0.3 m/s, ≤ straight | next pass |
+| Turning on a pass | `FTC.speed_angular` | 10 .. 90 °/s | next pass |
+| Catching up (above the pass speed) | `FTC.catchup_speed` | 0 .. 0.15 m/s | next pass |
+| Transit | `FollowPath.desired_linear_vel` (RPP) | 0.1 .. 0.3 m/s | at once |
+| Feeling around obstacles | `/mower_logic` `feel_speed` | 0.08 .. 0.3 m/s | at once |
+| Manual driving | `/web_ui` `max_linear` | 0.05 .. 0.3 m/s | at once |
+| Docking start point | `/docking_helper` `line_dock.approach_length` | 1.7 .. 5 m (≥ `gps_window` + 0.2) | next docking |
+
+Speeds stop at 0.3 m/s, the velocity smoother's `max_velocity`. Not here: docking and reversing speeds. The
+parameter clients exist only after the tab was opened, until the last page closes.
 
 ## Map editor
 

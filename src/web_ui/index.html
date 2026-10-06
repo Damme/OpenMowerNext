@@ -91,6 +91,12 @@ button.bladeon { background: var(--danger); border-color: var(--danger); color: 
 .seg label:has(input:checked) { background: var(--accent); color: var(--accent-text); }
 .seg label:has(input:disabled) { opacity: .45; cursor: default; }
 input[type=range].wide { width: 100%; }
+.setting { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.setting .name { flex: 1; min-width: 0; }
+.setting .name div:last-child { color: var(--muted); font-size: 12px; }
+.setting input { width: 84px; text-align: right; }
+.setting .unit { width: 34px; color: var(--muted); font-size: 13px; }
+.setting.dirty input { outline: 2px solid var(--warn); }
 input[type=number] { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--bg); color: var(--text); }
 button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
@@ -136,7 +142,7 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
     <nav>
       <button data-tab="mow" class="active">Mow</button>
       <button data-tab="drive">Drive</button>
-      <button data-tab="blade">Blade</button>
+      <button data-tab="mower">Mower</button>
       <button data-tab="areas">Areas</button>
       <button data-tab="bumps">Bumps</button>
       <button data-tab="rec">Record</button>
@@ -162,21 +168,25 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
       <p class="muted">Drag the knob, or hold the arrow keys / WASD. Only while mower_logic is idle; the robot stops
         0.3 s after the last command.</p>
     </section>
-    <section id="t-blade">
-      <p class="muted">PWM and direction of the blade when it's switched on by hand (Drive tab). Missions cut at their
-        own PWM but in this direction, from the next time their blade starts (next pass, or stop + resume). The
-        direction can only change while the hand-switched blade is off.</p>
-      <h2>Direction</h2>
+    <section id="t-mower">
+      <p class="muted">Kept on the robot (also after a restart). Pass speeds apply from the next pass, the rest at
+        once. Blade direction: from the next blade start, and only while the hand-switched blade is off.</p>
+      <h2>Blade</h2>
       <div class="seg">
-        <label><input type="radio" name="bdir" id="bdir-fwd" value="1" checked> Forward (+)</label>
-        <label><input type="radio" name="bdir" id="bdir-rev" value="-1"> Reverse (−)</label>
+        <label><input type="radio" name="bdir" id="bdir-fwd" value="0" checked> Forward</label>
+        <label><input type="radio" name="bdir" id="bdir-rev" value="1"> Reverse</label>
       </div>
-      <h2>PWM</h2>
       <div class="big" id="bpwm-val">–</div>
-      <input type="range" class="wide" id="bpwm" min="0" max="1850" step="50" value="1850">
-      <div class="row" style="margin-top:8px"><button class="primary" id="b-bpwm-apply">Apply</button>
-        <button id="b-bpwm-reset">Undo</button></div>
-      <h2>Now</h2>
+      <input type="range" class="wide" id="bpwm" min="500" max="1850" step="50" value="1850">
+      <div class="muted" style="margin-bottom:4px">PWM for mowing and for the blade switched on by hand (Drive tab).</div>
+      <h2>Speeds</h2>
+      <div id="speeds"></div>
+      <h2>Docking</h2>
+      <div id="docking"></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="b-set-save">Save</button>
+        <button id="b-set-undo">Undo</button></div>
+      <div id="set-info" class="muted">–</div>
+      <h2>Blade now</h2>
       <div id="blade-now" class="muted">–</div>
     </section>
     <section id="t-areas">
@@ -271,7 +281,7 @@ const ed = { a: null, drag: null };  // map editor: the area being edited, the d
 function connect() {
   const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
   S.ws = ws;
-  ws.onopen = () => setChip("c-conn", "online", "ok");
+  ws.onopen = () => { setChip("c-conn", "online", "ok"); if (S.tab === "mower") send({ c: "settings_get" }); };
   ws.onclose = () => { S.ws = null; setChip("c-conn", "offline", "bad"); S.state = null; renderState();
     setTimeout(connect, 1500); };
   ws.onmessage = (ev) => {
@@ -283,6 +293,7 @@ function connect() {
     else if (m.t === "obs") { S.obs = m; renderFelt(); draw(); }
     else if (m.t === "area") { edLoad(m); }
     else if (m.t === "log") { addLog(m); }
+    else if (m.t === "settings") { onSettings(m); }
   };
 }
 function send(obj) {
@@ -347,9 +358,7 @@ function renderState() {
   if (ed.a) edChanged();  // its buttons were just switched with all the others
 }
 
-// ---- blade ------------------------------------------------------------------
-const blade = { dirty: false };  // the Blade tab's inputs were changed and not applied yet
-function bladeInput() { return (+$("bpwm").value) * ($("bdir-rev").checked ? -1 : 1); }
+// ---- blade (Drive tab) ------------------------------------------------------
 function fmtPwm(v) { return (v > 0 ? "+" : "") + v; }
 function renderBlade(w) {
   const b = w && w.blade, on = !!(b && b.manual);
@@ -363,17 +372,13 @@ function renderBlade(w) {
   if (!on && S.state) bb.disabled = !b || !!why;
   $("blade-info").textContent = !b ? "no board data" : on
     ? "Running at PWM " + fmtPwm(b.cmd) + " · " + b.current + " mA · " + b.pulses + " pulses. Stops on its own after blade_idle_timeout (25 s) without driving."
-    : "Set to PWM " + fmtPwm(b.pwm) + " (Blade tab)." + (why ? " " + why : "");
+    : "Set to PWM " + fmtPwm(b.pwm) + " (Mower tab)." + (why ? " " + why : "");
   if (b) {
     $("bpwm").max = b.max;
-    if (!blade.dirty) { $("bpwm").value = Math.abs(b.pwm); $("bdir-rev").checked = b.pwm < 0; $("bdir-fwd").checked = b.pwm >= 0; }
     $("bdir-fwd").disabled = $("bdir-rev").disabled = on;
-    $("blade-now").textContent = "Setting " + fmtPwm(b.pwm) + " (max ±" + b.max + ") · blade " + (on ? "on" : "off") +
+    $("blade-now").textContent = "By hand " + fmtPwm(b.pwm) + " (max ±" + b.max + ") · blade " + (on ? "on" : "off") +
       " · sent " + fmtPwm(b.cmd) + " · board " + w.pwm[2] + " · " + b.current + " mA · " + b.pulses + " pulses";
   } else $("blade-now").textContent = "no board data";
-  $("bpwm-val").textContent = fmtPwm(bladeInput()) + (blade.dirty ? " (not applied)" : "");
-  $("b-bpwm-apply").disabled = !b || !blade.dirty;
-  $("b-bpwm-reset").disabled = !blade.dirty;
 }
 $("b-blade").onclick = () => {
   const b = S.state && S.state.worx && S.state.worx.blade;
@@ -382,10 +387,91 @@ $("b-blade").onclick = () => {
   if (confirm("Start the blade at PWM " + fmtPwm(b.pwm) + (b.pwm < 0 ? " (reverse)" : "") + "? Keep hands and feet away."))
     cmd({ c: "blade", on: true });
 };
-const bladeEdit = () => { blade.dirty = true; renderState(); };
-$("bpwm").oninput = bladeEdit; $("bdir-fwd").onchange = bladeEdit; $("bdir-rev").onchange = bladeEdit;
-$("b-bpwm-apply").onclick = () => { if (send({ c: "blade_pwm", pwm: bladeInput() })) { blade.dirty = false; renderState(); } else toast("Not connected", true); };
-$("b-bpwm-reset").onclick = () => { blade.dirty = false; renderState(); };
+
+// ---- settings (Mower tab) ----------------------------------------------------
+// Values come from the nodes ({"t":"settings"}); only changed ones are sent back.
+const SET_ROWS = {
+  speeds: [
+    ["speed_straight", "Straight ahead", "passes with a straight stretch ahead", "m/s", 0.01],
+    ["speed_curve", "Curves", "bends, outlines, the start of every pass", "m/s", 0.01],
+    ["turn_speed", "Turning on a pass", "how fast the path's heading may turn", "°/s", 1],
+    ["catchup_speed", "Catching up", "above the pass speed, when behind the path", "m/s", 0.01],
+    ["transit_speed", "Transit", "between passes and areas", "m/s", 0.01],
+    ["feel_speed", "Feeling around obstacles", "forward, after a bump", "m/s", 0.01],
+    ["manual_speed", "Manual driving", "Drive tab, full joystick", "m/s", 0.01],
+  ],
+  docking: [
+    ["dock_start", "Docking start point", "before the area edge, straight in from there", "m", 0.1],
+  ],
+};
+const ST = { values: null, limits: {}, stored: [], edit: {} };  // edit: key -> value not saved yet
+function setKeys() { return [...SET_ROWS.speeds, ...SET_ROWS.docking].map((r) => r[0]).concat(["blade_pwm", "blade_reverse"]); }
+function setValue(k) { return k in ST.edit ? ST.edit[k] : ST.values && ST.values[k]; }
+function buildSettings() {
+  for (const [box, rows] of Object.entries(SET_ROWS)) {
+    $(box).replaceChildren(...rows.map(([key, name, hint, unit, step]) => {
+      const row = document.createElement("div");
+      row.className = "setting"; row.id = "set-" + key;
+      const n = document.createElement("div"); n.className = "name";
+      const a = document.createElement("div"); a.textContent = name;
+      const b = document.createElement("div"); b.textContent = hint;
+      n.append(a, b);
+      const inp = document.createElement("input");
+      inp.type = "number"; inp.step = step; inp.inputMode = "decimal";
+      inp.oninput = () => { const v = parseFloat(inp.value); if (Number.isFinite(v)) ST.edit[key] = v; else delete ST.edit[key]; renderSettings(); };
+      const u = document.createElement("span"); u.className = "unit"; u.textContent = unit;
+      row.append(n, inp, u);
+      return row;
+    }));
+  }
+}
+buildSettings();
+function onSettings(m) { ST.values = m.values; ST.limits = m.limits || {}; ST.stored = m.stored || []; ST.missing = m.missing || []; ST.edit = {}; renderSettings(true); }
+function renderSettings(fill) {
+  const have = !!ST.values;
+  for (const k of setKeys()) {
+    const row = $("set-" + k);
+    if (!row) continue;
+    const inp = row.querySelector("input"), lim = ST.limits[k];
+    if (lim) { inp.min = lim[0]; inp.max = lim[1]; }
+    if (fill || !(k in ST.edit)) inp.value = have && ST.values[k] !== undefined ? +(+ST.values[k]).toFixed(3) : "";
+    inp.disabled = !have || ST.values[k] === undefined;
+    row.classList.toggle("dirty", k in ST.edit && ST.edit[k] !== ST.values[k]);
+    row.title = ST.stored.includes(k) ? "saved" : "config default";
+  }
+  const pwm = setValue("blade_pwm"), rev = setValue("blade_reverse");
+  if (fill || !("blade_pwm" in ST.edit)) $("bpwm").value = pwm || $("bpwm").value;
+  if (fill || !("blade_reverse" in ST.edit)) { $("bdir-rev").checked = rev > 0.5; $("bdir-fwd").checked = !(rev > 0.5); }
+  $("bpwm").disabled = pwm === undefined;
+  const bladeDirty = ("blade_pwm" in ST.edit && ST.edit.blade_pwm !== ST.values.blade_pwm) ||
+                     ("blade_reverse" in ST.edit && ST.edit.blade_reverse !== ST.values.blade_reverse);
+  $("bpwm-val").textContent = pwm === undefined ? "–" : (rev > 0.5 ? "Reverse " : "Forward ") + Math.round(pwm) + (bladeDirty ? " (not saved)" : "");
+  const dirty = setChanges();
+  $("b-set-save").disabled = !have || !Object.keys(dirty).length;
+  $("b-set-undo").disabled = !Object.keys(ST.edit).length;
+  $("set-info").textContent = !have ? "loading…" :
+    (ST.missing.length ? "Not reachable: " + ST.missing.join(", ") + ". " : "") +
+    (ST.stored.length ? "Saved on the robot: " + ST.stored.length + " setting" + (ST.stored.length > 1 ? "s" : "") + "; the rest are the config defaults." : "All config defaults.");
+}
+function setChanges() {
+  const out = {};
+  if (!ST.values) return out;
+  for (const [k, v] of Object.entries(ST.edit)) if (v !== ST.values[k]) out[k] = v;
+  // The blade's direction needs its PWM and vice versa.
+  if ("blade_pwm" in out || "blade_reverse" in out) { out.blade_pwm = setValue("blade_pwm"); out.blade_reverse = setValue("blade_reverse"); }
+  return out;
+}
+$("bpwm").oninput = () => { ST.edit.blade_pwm = +$("bpwm").value; renderSettings(); };
+$("bdir-fwd").onchange = $("bdir-rev").onchange = () => { ST.edit.blade_reverse = $("bdir-rev").checked ? 1 : 0; renderSettings(); };
+$("b-set-undo").onclick = () => { ST.edit = {}; renderSettings(true); };
+$("b-set-save").onclick = () => {
+  const ch = setChanges();
+  for (const [k, v] of Object.entries(ch)) {
+    const l = ST.limits[k];
+    if (l && (v < l[0] || v > l[1])) { toast($("set-" + k) ? $("set-" + k).querySelector(".name div").textContent + ": " + l[0] + " … " + l[1] : k, true); return; }
+  }
+  cmd({ c: "settings_set", values: ch });
+};
 
 // ---- log --------------------------------------------------------------------
 function addLog(m) {
@@ -437,6 +523,7 @@ function showTab(name) {
   const slot = name === "rec" ? $("joyslot-rec") : name === "drive" ? $("joyslot") : null;
   const jw = $("joywrap");
   if (slot) { slot.append(jw); jw.hidden = false; } else { jw.hidden = true; joy.release(); }
+  if (name === "mower") send({ c: "settings_get" });
   try { localStorage.setItem("om.tab", name); } catch {}
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));

@@ -11,7 +11,8 @@
 # OM_GPS_WAIT_TIME_SEC, OM_GPS_RECENT_TIMEOUT_SEC, OM_BATTERY_LOW_FRACTION,
 # OM_BATTERY_RESUME_FRACTION, OM_MOWING_AREAS, OM_DISABLED_AREAS_PATH, OM_EDGE_CORRECTIONS_PATH,
 # OM_MISSION_PATH, OM_AUTO_RESUME (false: after charging / rain it stays docked until start_mowing),
-# OM_WEB_BIND / OM_WEB_PORT / OM_WEB_ALLOW (web UI: 10.99.99.99, 8090, 10.99.99.0/24,10.42.40.0/22).
+# OM_WEB_BIND / OM_WEB_PORT / OM_WEB_ALLOW (web UI: 10.99.99.99, 8090, 10.99.99.0/24,10.42.40.0/22),
+# OM_SETTINGS_PATH (/data/mower_settings.yaml: the web UI's Mower tab, loaded by nav, core and worx_hardware).
 env:
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
   ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
@@ -52,6 +53,9 @@ processes:
       - $(find-pkg-share open_mower_next)/config/hardware/worx_nav2.yaml
       - --params-file
       - $(find-pkg-share open_mower_next)/config/hardware/worx_nav2_robot.yaml
+      # Web UI settings (Mower tab), when saved there: last, so they win.
+      - --params-file
+      - ?$(env OM_SETTINGS_PATH /data/mower_settings.yaml)
       - -p
       - use_sim_time:=false
     components:
@@ -83,6 +87,8 @@ processes:
     ros_args:
       - --params-file
       - $(find-pkg-share open_mower_next)/config/robot_localization.yaml
+      - --params-file
+      - ?$(env OM_SETTINGS_PATH /data/mower_settings.yaml)
       - -p
       - use_sim_time:=false
     components:
@@ -200,8 +206,8 @@ processes:
           - bind_address: $(env OM_WEB_BIND 10.99.99.99)
             port: $(env OM_WEB_PORT 8090)
             allow: ["$(env OM_WEB_ALLOW 10.99.99.0/24,10.42.40.0/22)"]   # quoted: the commas stay in one string
-            max_linear: 0.3
-            max_angular: 1.0
+            max_angular: 1.0   # max_linear (default 0.3): a setting of the Mower tab, not here
+            settings_file: $(env OM_SETTINGS_PATH /data/mower_settings.yaml)
             disabled_areas_file: $(env OM_DISABLED_AREAS_PATH /data/disabled_areas.txt)
             areas: $(env OM_MOWING_AREAS "")
 

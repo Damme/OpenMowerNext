@@ -2,6 +2,7 @@
 # web_ui - control page on the robot's VPN address (Boost.Beast HTTP + WebSocket)
 ###
 find_package(Boost REQUIRED)
+find_package(yaml-cpp REQUIRED)  # settings file (already loaded by om_container)
 
 # The page is compiled in: nothing to install or find at runtime.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/web_ui/index.html)
@@ -15,7 +16,7 @@ add_library(web_ui_component SHARED
 target_compile_features(web_ui_component PUBLIC cxx_std_17)
 target_include_directories(web_ui_component PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
 target_link_libraries(web_ui_component "${cpp_typesupport_target}" Boost::boost nlohmann_json::nlohmann_json
-  Threads::Threads)
+  Threads::Threads yaml-cpp)
 ament_target_dependencies(web_ui_component rclcpp rclcpp_action rclcpp_components geometry_msgs nav_msgs
   sensor_msgs std_msgs std_srvs)
 # Size (Pi memory): exported Beast/asio template names alone were ~1.9 MB of symbol
@@ -27,3 +28,13 @@ target_link_options(web_ui_component PRIVATE -Wl,--gc-sections)
 add_dependencies(web_ui_component ${PROJECT_NAME})
 rclcpp_components_register_nodes(web_ui_component "open_mower_next::web_ui::WebUiNode")
 install(TARGETS web_ui_component DESTINATION lib)
+
+if (BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(rcl_yaml_param_parser REQUIRED)
+  ament_add_gtest(web_ui_settings_test test/web_ui_settings_test.cpp)
+  if (TARGET web_ui_settings_test)
+    target_include_directories(web_ui_settings_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(web_ui_settings_test yaml-cpp rcl_yaml_param_parser::rcl_yaml_param_parser)
+  endif ()
+endif ()

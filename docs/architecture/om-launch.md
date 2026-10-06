@@ -63,6 +63,9 @@ processes:
   `$(find-pkg-share pkg)`, `$(dirname)`.
 - Nav2's costmaps are child nodes: they only see **process-wide** parameter files (`ros_args`).
 - Controllers only see the **controller manager's** arguments. Put the controller parameter file in its `params`.
+- `--params-file ?path` in `ros_args` is optional: skipped while the file doesn't exist. The web UI's settings
+  (`/data/mower_settings.yaml`, Mower tab) come in this way, last, so they win over the files before them. Inline
+  `params` of a component still win over process-wide files: don't set a setting's parameter inline.
 
 Run it:
 
@@ -81,6 +84,7 @@ Set in the environment when starting `worx.yaml`:
 | `OM_WORX_MOTORS_ENABLED` | `true` | `false`: motors stay disabled (`/worx/motors_enabled` can switch them on later) |
 | `OM_WORX_BLADE_ENABLED` | `true` | `false`: blade PWM is always 0, whatever is requested (tests near the dock) |
 | `OM_GPS_ENABLED` | `true` | `ubx_gps` reads the F9P's NAV-PVT from str2str's TCP server (`OM_GPS_HOST`, `OM_GPS_PORT`, default 127.0.0.1:5015) |
+| `OM_SETTINGS_PATH` | `/data/mower_settings.yaml` | Web UI settings (Mower tab: speeds, blade, docking start point), loaded at start when it exists |
 | `OM_RECORD` | `false` | `true`: MCAP bag of all topics except the grids and ros2_control introspection, into `OM_RECORD_URI` (a directory that must not exist yet; ~4 MB per minute, `/rosout` included) |
 
 On the charger, `docking_helper` (`set_pose_when_docked`) sets `ekf_se_map` to the recorded pose of the docking
