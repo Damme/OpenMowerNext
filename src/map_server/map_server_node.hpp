@@ -54,7 +54,7 @@ private:
   // parameters
   std::string map_type_;
   std::string map_file_;
-  bool use_gaussian_blur_;
+  bool use_gaussian_blur_ = false;
 
   void configureGaussianBlur();
 
@@ -63,7 +63,7 @@ private:
   void configureMap();
   void saveAndPublishMap();
 
-  SomeGaussianFilter* gaussian_filter_;
+  SomeGaussianFilter* gaussian_filter_ = nullptr;  // was uninitialized: random crashes with blur off
   msg::Map current_map_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_grid_publisher_;
   rclcpp::Publisher<msg::Map>::SharedPtr map_publisher_;
