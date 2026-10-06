@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -32,6 +33,7 @@ public:
 private:
   void run(const std::string & tree_file, double rate, bool log_tree);
   void saveMowed();  // params.mowed_file, only if changed
+  void applyPendingParams();  // tick thread: runtime parameter changes
 
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<Context> ctx_;
@@ -43,6 +45,9 @@ private:
   std::string saved_mowed_;
   uint64_t saved_rolls_ = 0;
   std::chrono::steady_clock::time_point mowed_saved_at_{};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_;
+  std::mutex param_mutex_;
+  std::vector<rclcpp::Parameter> pending_params_;  // param_mutex_
   std::atomic<bool> stop_{false};
   std::thread tick_thread_;
 };

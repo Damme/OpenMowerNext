@@ -127,6 +127,25 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   ctx_ = std::make_shared<Context>(node, p);
   auto ctx = ctx_;
 
+  // Runtime settings (web UI, Mower tab): checked here, applied by the tick thread
+  // between two ticks (the BT nodes read ctx_->params without a lock).
+  param_cb_ = node->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
+    rcl_interfaces::msg::SetParametersResult r;
+    r.successful = true;
+    for (const auto & q : ps) {
+      if (q.get_name() != "feel_speed") continue;
+      // Bumps only count above worx_hardware's bump_min_speed (0.05 m/s).
+      if (q.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE || q.as_double() < 0.08 || q.as_double() > 0.3) {
+        r.successful = false;
+        r.reason = "feel_speed must be a double in 0.08..0.3 m/s";
+        return r;
+      }
+      std::lock_guard<std::mutex> l(param_mutex_);
+      pending_params_.push_back(q);
+    }
+    return r;
+  });
+
   auto trigger = [this](const std::string & name, std::function<std::string()> fn) {
     return node_->create_service<std_srvs::srv::Trigger>(
       "~/" + name, [fn, name, this](const std_srvs::srv::Trigger::Request::SharedPtr,
@@ -254,6 +273,21 @@ MowerLogicNode::~MowerLogicNode()
   saveMowed();
 }
 
+void MowerLogicNode::applyPendingParams()
+{
+  std::vector<rclcpp::Parameter> ps;
+  {
+    std::lock_guard<std::mutex> l(param_mutex_);
+    ps.swap(pending_params_);
+  }
+  for (const auto & q : ps) {
+    if (q.get_name() == "feel_speed" && ctx_->params.feel_speed != q.as_double()) {
+      ctx_->params.feel_speed = q.as_double();
+      RCLCPP_INFO(node_->get_logger(), "feel_speed %.2f m/s", ctx_->params.feel_speed);
+    }
+  }
+}
+
 void MowerLogicNode::run(const std::string & tree_file, double rate, bool log_tree)
 {
   BT::BehaviorTreeFactory factory;
@@ -273,6 +307,7 @@ void MowerLogicNode::run(const std::string & tree_file, double rate, bool log_tr
   std::optional<bool> motors;  // last automatic switch (none yet)
   auto parked_since = Context::Clock::now();
   while (rclcpp::ok() && !stop_) {
+    applyPendingParams();
     ctx_->parked = false;
     ctx_->blade_carry_seen = false;
     tree.tickOnce();
