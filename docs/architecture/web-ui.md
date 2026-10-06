@@ -97,16 +97,17 @@ defaults (at the next start).
 |---|---|---|---|
 | Blade PWM | `/worx_hardware` `mow_pwm` and \|`manual_mow_pwm`\| | 500 .. `manual_mow_max_pwm` | at once |
 | Blade direction | sign of `/worx_hardware` `manual_mow_pwm` | forward / reverse | next blade start, manual blade off |
-| Straight ahead | `/controller_server` `FTC.speed_fast` | 0.05 .. 0.3 m/s | next pass |
-| Curves (and every pass start) | `FTC.speed_slow` | 0.05 .. 0.3 m/s, ≤ straight | next pass |
+| Straight ahead | `/controller_server` `FTC.speed_fast` | 0.05 .. 0.8 m/s | next pass |
+| Curves (and every pass start) | `FTC.speed_slow` | 0.05 .. 0.8 m/s, ≤ straight | next pass |
 | Turning on a pass | `FTC.speed_angular` | 10 .. 90 °/s | next pass |
 | Catching up (above the pass speed) | `FTC.catchup_speed` | 0 .. 0.15 m/s | next pass |
-| Transit | `FollowPath.desired_linear_vel` (RPP) | 0.1 .. 0.3 m/s | at once |
+| Transit | `FollowPath.desired_linear_vel` (RPP) | 0.1 .. 0.8 m/s | at once |
 | Feeling around obstacles | `/mower_logic` `feel_speed` | 0.08 .. 0.3 m/s | at once |
-| Manual driving | `/web_ui` `max_linear` | 0.05 .. 0.3 m/s | at once |
+| Manual driving | `/web_ui` `max_linear` | 0.05 .. 0.8 m/s | at once |
 | Docking start point | `/docking_helper` `line_dock.approach_length` | 1.7 .. 5 m (≥ `gps_window` + 0.2) | next docking |
 
-Speeds stop at 0.3 m/s, the velocity smoother's `max_velocity`. Not here: docking and reversing speeds. The
+Speeds stop at 0.8 m/s, the velocity smoother's `max_velocity` (reversing: 0.3 m/s). FTC starts braking for a
+corner early enough for the straight speed (braking distance at `acceleration`, at least `speed_fast_threshold`). Not here: docking and reversing speeds. The
 parameter clients exist only after the tab was opened, until the last page closes.
 
 ## Map editor

@@ -35,15 +35,16 @@ struct SettingDef
 // has no parameter of its own: it is the sign of manual_mow_pwm.
 inline const std::vector<SettingDef> & settingDefs()
 {
-  // Speeds stay <= 0.3 m/s: the velocity smoother's max_velocity (worx_nav2.yaml).
+  // Speeds stay <= 0.8 m/s: the velocity smoother's max_velocity (worx_nav2.yaml); the
+  // wheels' speed loop needs PWM headroom below max_pwm (1.0 m/s).
   static const std::vector<SettingDef> defs{
-    {"speed_straight", "controller_server", "FTC.speed_fast", false, 0.05, 0.3},
-    {"speed_curve", "controller_server", "FTC.speed_slow", false, 0.05, 0.3},
+    {"speed_straight", "controller_server", "FTC.speed_fast", false, 0.05, 0.8},
+    {"speed_curve", "controller_server", "FTC.speed_slow", false, 0.05, 0.8},
     {"turn_speed", "controller_server", "FTC.speed_angular", false, 10.0, 90.0},
     {"catchup_speed", "controller_server", "FTC.catchup_speed", false, 0.0, 0.15},
-    {"transit_speed", "controller_server", "FollowPath.desired_linear_vel", false, 0.1, 0.3},
+    {"transit_speed", "controller_server", "FollowPath.desired_linear_vel", false, 0.1, 0.8},
     {"feel_speed", "mower_logic", "feel_speed", false, 0.08, 0.3},
-    {"manual_speed", "web_ui", "max_linear", false, 0.05, 0.3},
+    {"manual_speed", "web_ui", "max_linear", false, 0.05, 0.8},
     {"dock_start", "docking_helper", "line_dock.approach_length", false, 1.7, 5.0},
     {"blade_pwm", "worx_hardware", "mow_pwm", true, 500, 1850},
     {"blade_reverse", "worx_hardware", "manual_mow_pwm", true, 0, 1},

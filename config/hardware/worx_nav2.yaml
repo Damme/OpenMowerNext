@@ -36,6 +36,7 @@ controller_server:
       speed_fast: 0.3
       # m of straight path ahead for speed_fast. 2.0 slowed down ~3 m before every
       # turn (Daniel, real mow 2026-09-28); braking 0.3 -> 0.1 m/s takes ~0.4 m.
+      # At least the braking distance at `acceleration` + 0.2 m (FTC raises it for faster speed_fast).
       speed_fast_threshold: 0.6
       speed_fast_threshold_angle: 20.0
       speed_slow: 0.10
@@ -107,7 +108,9 @@ velocity_smoother:
     # 1.0 rad/s^2 made FTC (ROS1 gains, ROS1 had no smoother) swing +-60 deg in
     # S-curves; 1.5 rad/s / 3.0 rad/s^2 tracked. The undock wheel spin was the
     # docking controller swinging w: limited there (docking_server v_angular_max).
-    max_velocity: [0.3, 0.0, 1.5]
+    # Forward up to 0.8 m/s (Daniel 2026-10-06: faster speeds from the web UI's Mower tab; the
+    # controllers keep their own limits, hardware 1.0 m/s = max_pwm). Reversing stays <= 0.3.
+    max_velocity: [0.8, 0.0, 1.5]
     min_velocity: [-0.3, 0.0, -1.5]
     max_accel: [0.3, 0.0, 3.0]
     max_decel: [-0.5, 0.0, -3.0]
