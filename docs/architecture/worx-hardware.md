@@ -73,6 +73,11 @@ the manual blade runs. Both start from `config/hardware/worx.yaml`. Its sign is 
 (`mower_joint`) blade, taken whenever that blade starts from 0: a change made while a mission cuts applies at the
 next blade start (next pass, or stop + resume).
 
+`mow_pwm` (the commanded blade's PWM at effort 1.0) is a runtime parameter too, 1..max(`mow_pwm`,
+`manual_mow_max_pwm`) of the config. Both blade parameters can also come from `settings_file`
+(`OM_SETTINGS_PATH`, default `/data/mower_settings.yaml`: the web UI's Mower tab), a ROS parameter file loaded into
+the `worx_hardware` node when it exists. That node ignores the process' own arguments.
+
 `Digital` inputs are published raw and as "active". Inputs listed in `digital_inverted`
 (default `Door,Door2,Lift,Collision`) read 1 in their normal state.
 

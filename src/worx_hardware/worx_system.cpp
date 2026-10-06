@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <map>
 #include <sstream>
 
@@ -81,6 +82,7 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     cfg_.pwm_per_mps = paramD(info, "pwm_per_mps", cfg_.pwm_per_mps);
     cfg_.max_pwm = static_cast<int>(paramD(info, "max_pwm", cfg_.max_pwm));
     cfg_.mow_pwm = static_cast<int>(paramD(info, "mow_pwm", cfg_.mow_pwm));
+    cfg_.settings_file = param(info, "settings_file", cfg_.settings_file);
     cfg_.blade_enabled = paramB(info, "blade_enabled", cfg_.blade_enabled);
     cfg_.manual_mow_pwm = static_cast<int>(paramD(info, "manual_mow_pwm", cfg_.manual_mow_pwm));
     cfg_.manual_mow_max_pwm = static_cast<int>(paramD(info, "manual_mow_max_pwm", cfg_.manual_mow_max_pwm));
@@ -139,6 +141,7 @@ CallbackReturn WorxSystem::on_init(const hardware_interface::HardwareComponentIn
     return CallbackReturn::ERROR;
   }
   manual_mow_pwm_ = cfg_.manual_mow_pwm;
+  mow_pwm_ = cfg_.mow_pwm;
   odo_left_ = WheelOdometer(cfg_.wheel_ticks_per_m, cfg_.tick_counter_bits);
   odo_right_ = WheelOdometer(cfg_.wheel_ticks_per_m, cfg_.tick_counter_bits);
   RCLCPP_INFO(
@@ -160,6 +163,9 @@ void WorxSystem::startNode()
   if (node_) return;
   rclcpp::NodeOptions opts;
   opts.use_global_arguments(false);  // don't pick up the controller manager's __node remap
+  if (!cfg_.settings_file.empty() && std::ifstream(cfg_.settings_file).good()) {
+    opts.arguments({"--ros-args", "--params-file", cfg_.settings_file});
+  }
   node_ = std::make_shared<rclcpp::Node>("worx_hardware", opts);
   battery_pub_ = node_->create_publisher<sensor_msgs::msg::BatteryState>("/power", 10);
   charger_pub_ = node_->create_publisher<std_msgs::msg::Bool>("/power/charger_present", 10);
@@ -272,11 +278,45 @@ void WorxSystem::startNode()
   node_->declare_parameter("speed_pos_max", gains_.pos_max);
   // Manual blade PWM, sign = direction (of the commanded blade too):
   // ros2 param set /worx_hardware manual_mow_pwm -1500
-  node_->declare_parameter("manual_mow_pwm", manual_mow_pwm_.load());
-  gains_cb_ = node_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
+  // Both may come from settings_file: checked like a runtime change.
+  const int max_mow = std::max(cfg_.mow_pwm, cfg_.manual_mow_max_pwm);
+  const auto manual = node_->declare_parameter("manual_mow_pwm", static_cast<int64_t>(manual_mow_pwm_.load()));
+  if (std::abs(manual) <= cfg_.manual_mow_max_pwm) {
+    manual_mow_pwm_ = static_cast<int>(manual);
+  } else {
+    RCLCPP_ERROR(node_->get_logger(), "manual_mow_pwm %ld from %s outside +-%d: keeping %d", manual,
+                 cfg_.settings_file.c_str(), cfg_.manual_mow_max_pwm, manual_mow_pwm_.load());
+    node_->set_parameter(rclcpp::Parameter("manual_mow_pwm", manual_mow_pwm_.load()));
+  }
+  // Mission blade PWM (magnitude): ros2 param set /worx_hardware mow_pwm 1600
+  const auto mow = node_->declare_parameter("mow_pwm", static_cast<int64_t>(mow_pwm_.load()));
+  if (mow > 0 && mow <= max_mow) {
+    mow_pwm_ = static_cast<int>(mow);
+  } else {
+    RCLCPP_ERROR(node_->get_logger(), "mow_pwm %ld from %s outside 1..%d: keeping %d", mow,
+                 cfg_.settings_file.c_str(), max_mow, mow_pwm_.load());
+    node_->set_parameter(rclcpp::Parameter("mow_pwm", mow_pwm_.load()));
+  }
+  if (mow_pwm_ != cfg_.mow_pwm || manual_mow_pwm_ != cfg_.manual_mow_pwm) {
+    RCLCPP_INFO(node_->get_logger(), "Blade from %s: mow_pwm %d, manual_mow_pwm %d", cfg_.settings_file.c_str(),
+                mow_pwm_.load(), manual_mow_pwm_.load());
+  }
+  gains_cb_ = node_->add_on_set_parameters_callback([this, max_mow](const std::vector<rclcpp::Parameter> & ps) {
     rcl_interfaces::msg::SetParametersResult r;
     r.successful = true;
     for (const auto & p : ps) {
+      if (p.get_name() != "mow_pwm") continue;
+      if (p.get_type() != rclcpp::ParameterType::PARAMETER_INTEGER || p.as_int() < 1 || p.as_int() > max_mow) {
+        r.successful = false;
+        r.reason = "mow_pwm must be an integer in 1.." + std::to_string(max_mow);
+        return r;
+      }
+    }
+    for (const auto & p : ps) {
+      if (p.get_name() == "mow_pwm") {
+        if (p.as_int() != mow_pwm_) RCLCPP_INFO(node_->get_logger(), "Mission blade PWM %ld", p.as_int());
+        mow_pwm_ = static_cast<int>(p.as_int());
+      }
       if (p.get_name() != "manual_mow_pwm") continue;
       if (p.get_type() != rclcpp::ParameterType::PARAMETER_INTEGER) {
         r.successful = false;
@@ -567,7 +607,7 @@ return_type WorxSystem::write(const rclcpp::Time &, const rclcpp::Duration & per
     mow_dir_ = dir;
   }
   int pm = blade_lockout_ || !cfg_.blade_enabled
-    ? 0 : mow_dir_ * static_cast<int>(std::clamp(blade, 0.0, 1.0) * cfg_.mow_pwm);
+    ? 0 : mow_dir_ * static_cast<int>(std::clamp(blade, 0.0, 1.0) * mow_pwm_);
   if (manual) {
     if (blade_lockout_) {
       // Emergency, motors off, link loss, bump or idle: stays off until switched on again.

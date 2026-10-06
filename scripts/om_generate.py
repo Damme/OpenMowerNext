@@ -29,7 +29,8 @@ def main():
 
     # Environment the xacro files read stays a runtime choice: om_container
     # expands $(env ...) when it reads the URDF (robot_description@file).
-    runtime_env = {'OM_WORX_MOTORS_ENABLED': 'true', 'OM_WORX_BLADE_ENABLED': 'true'}
+    runtime_env = {'OM_WORX_MOTORS_ENABLED': 'true', 'OM_WORX_BLADE_ENABLED': 'true',
+                   'OM_SETTINGS_PATH': '/data/mower_settings.yaml'}
     for name in runtime_env:
         os.environ[name] = f'@@{name}@@'
     for transport in ('spidev', 'fake'):
