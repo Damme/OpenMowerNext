@@ -165,7 +165,7 @@ void FTCController::loadParams()
   d("max_cmd_vel_accel", c.max_cmd_vel_accel); d("oscillation_recovery", c.oscillation_recovery);
   d("oscillation_v_eps", c.oscillation_v_eps); d("oscillation_omega_eps", c.oscillation_omega_eps);
   d("oscillation_recovery_min_duration", c.oscillation_recovery_min_duration);
-  d("lon_feedforward", c.lon_feedforward);
+  d("lon_feedforward", c.lon_feedforward); d("catchup_speed", c.catchup_speed);
   d("max_drive_angle", c.max_drive_angle);
   d("rejoin", c.rejoin); d("rejoin_blend_start", c.rejoin_cfg.blend_start);
   d("rejoin_blend_full", c.rejoin_cfg.blend_full); d("rejoin_lookahead", c.rejoin_cfg.lookahead);
@@ -544,13 +544,19 @@ void FTCController::calculateVelocityCommands(double dt, geometry_msgs::msg::Twi
     const double ff = cfg_.lon_feedforward && !carrot_gated_ ? current_movement_speed_ : 0.0;
     double lin = ff + lon_error_ * cfg_.kp_lon + i_lon_error_ * cfg_.ki_lon + d_lon * cfg_.kd_lon;
     // Heading far off (after a corner): turn first, then drive; in between the
-    // forward speed fades with cos(error). Never faster than speed_fast.
-    // Rejoining, the robot is meant to be turned by the approach angle.
+    // forward speed fades with cos(error). Never faster than speed_fast, nor more
+    // than catchup_speed above the carrot: behind it (resumed beside the path,
+    // after the stuck recovery's reverse + skip, carrot gated) kp_lon * lag
+    // saturated at speed_fast, and the robot raced at 3x the slow pass speed to
+    // catch it (real robot 2026-10-06, area 7).
     const double abs_ang = std::abs(angle_error_ + w_rejoin * approach);
     if (abs_ang > cfg_.max_drive_angle * (M_PI / 180.0)) {
       lin = 0.0;
     } else if (lin > 0.0) {
-      lin = std::min(lin * std::cos(abs_ang), cfg_.speed_fast);
+      double cap = cfg_.speed_fast;
+      if (cfg_.catchup_speed >= 0.0) cap = std::min(cap, current_movement_speed_ + cfg_.catchup_speed);
+      if (speed_limit_ > 0.0) cap = std::min(cap, speed_limit_);
+      lin = std::min(lin * std::cos(abs_ang), cap);
     }
     if (lin < 0 && cfg_.forward_only) {
       lin = 0;

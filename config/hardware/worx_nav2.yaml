@@ -52,6 +52,9 @@ controller_server:
       rejoin_max_angle: 30.0
       kp_lon: 1.5          # ROS1 4.0 without feedforward: stop-and-go on the robot
       lon_feedforward: true
+      # Behind the carrot (resumed beside the path, after a reverse) the robot drove
+      # speed_fast to catch up, 3x the pass speed (2026-10-06): at most this much faster.
+      catchup_speed: 0.05
       ki_lon: 0.0
       ki_lon_max: 10.0
       kd_lon: 0.0

@@ -90,6 +90,8 @@ struct FtcConfig
   double lateral_priority_distance = 0.0;
   double kp_lon = 1.0, ki_lon = 0.0, ki_lon_max = 10.0, kd_lon = 0.0;
   bool lon_feedforward = true;  // add the carrot speed to the longitudinal command
+  // m/s the robot may drive faster than the carrot to catch up with it (< 0: up to speed_fast)
+  double catchup_speed = 0.05;
   double max_drive_angle = 45.0;  // deg heading error above which FOLLOWING turns in place
   bool rejoin = true;             // off the path: steer at a capped approach angle (rejoin.hpp)
   RejoinConfig rejoin_cfg;
