@@ -147,6 +147,10 @@ public:
   {
     rotateRtcm(t);
     auto & c = rtcm_[m.type];
+    if (c.total > 0) {  // typical gap; an outage counts at most twice the usual interval
+      const double gap = t - c.t;
+      c.interval = c.interval > 0 ? 0.7 * c.interval + 0.3 * std::min(gap, 2 * c.interval) : gap;
+    }
     ++c.total;
     ++c.minute;
     if (m.crc_failed) ++c.crc;
@@ -196,9 +200,10 @@ public:
                    {"obs_miss", relpos_.ref_obs_miss}};
     }
     if (!rtcm_.empty()) {
-      Json r = Json::array();  // [type, last minute, total, crc failed, used (0 ?, 1 no, 2 yes), age s, station]
+      // [type, last minute, total, crc failed, used (0 ?, 1 no, 2 yes), age s, station, interval s (0 = one seen)]
+      Json r = Json::array();
       for (const auto & [type, c] : rtcm_) {
-        r.push_back({type, c.last_minute, c.total, c.crc, c.used, r1(t - c.t), c.ref});
+        r.push_back({type, c.last_minute, c.total, c.crc, c.used, r1(t - c.t), c.ref, r1(c.interval)});
       }
       j["rtcm"] = r;
     }
@@ -225,6 +230,7 @@ private:
     uint8_t used = 0;
     uint16_t ref = 0;
     double t = 0;
+    double interval = 0;  // smoothed gap between messages of this type
   };
 
   static double r1(double v) { return std::round(v * 10) / 10; }

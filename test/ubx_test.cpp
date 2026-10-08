@@ -290,6 +290,17 @@ TEST(GpsStats, RtcmPerMinute)
   EXPECT_EQ(j["rtcm"][0][3], 1);  // crc failed
   EXPECT_EQ(j["rtcm"][1][1], 60);
   EXPECT_EQ(j["rtcm"][1][4], 2);
+  EXPECT_DOUBLE_EQ(j["rtcm"][0][7].get<double>(), 0.0);  // only one seen
+  EXPECT_DOUBLE_EQ(j["rtcm"][1][7].get<double>(), 1.0);
+}
+
+TEST(GpsStats, RtcmIntervalIgnoresOutage)
+{
+  GpsStats s;
+  for (int i = 0; i < 5; ++i) s.onRtcm({1005, 3, false, 2}, 30.0 * i);
+  s.onRtcm({1005, 3, false, 2}, 120 + 300);  // 5 min outage counts as 60 s
+  const auto j = s.json(421, 421);
+  EXPECT_NEAR(j["rtcm"][0][7].get<double>(), 39.0, 0.05);
 }
 
 TEST(ElevationGrid, AveragesPerCell)
