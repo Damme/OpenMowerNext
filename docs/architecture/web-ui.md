@@ -151,7 +151,7 @@ page. The statistics live in `ubx_gps`, so the history survives reloading the pa
 | C/N0 per band (L1 and L2/E5b), carrier phase used | NAV-SIG | enable on the receiver |
 | antenna status and power, noise, AGC, jamming per RF band | MON-RF | enable on the receiver |
 | distance to the base, base position / observations missing | NAV-RELPOSNED | enable on the receiver |
-| RTCM messages per minute, CRC failures, used or not, station | RXM-RTCM | enable on the receiver |
+| RTCM messages per minute, CRC failures, used or not, station; "last" turns orange after 3 usual intervals of that type (min 10 s) | RXM-RTCM | enable on the receiver |
 
 A re-fix is flagged when the new fixed position is more than 0.3 m further from the last fixed one than the robot
 drove meanwhile (ground speed integrated over the gap), a jump when two fixed positions are further apart than the
