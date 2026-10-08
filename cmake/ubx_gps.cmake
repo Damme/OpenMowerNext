@@ -1,10 +1,10 @@
 ###
-# ubx_gps - F9P NAV-PVT from str2str's TCP server -> gps/fix (Worx robot)
+# ubx_gps - F9P NAV-PVT from str2str's TCP server -> gps/fix, receiver statistics -> gps/stats (Worx robot)
 ###
 add_library(ubx_gps_component SHARED src/ubx_gps/ubx_gps_node.cpp)
 target_include_directories(ubx_gps_component PRIVATE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
-ament_target_dependencies(ubx_gps_component rclcpp rclcpp_components sensor_msgs)
-target_link_libraries(ubx_gps_component ${GeographicLib_LIBRARIES})
+ament_target_dependencies(ubx_gps_component rclcpp rclcpp_components sensor_msgs std_msgs)
+target_link_libraries(ubx_gps_component ${GeographicLib_LIBRARIES} nlohmann_json::nlohmann_json)
 rclcpp_components_register_node(ubx_gps_component
   PLUGIN "open_mower_next::ubx_gps::UbxGpsNode"
   EXECUTABLE ubx_gps_node)
@@ -15,5 +15,6 @@ if (BUILD_TESTING)
   ament_add_gtest(ubx_test test/ubx_test.cpp)
   if (TARGET ubx_test)
     target_include_directories(ubx_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(ubx_test nlohmann_json::nlohmann_json)
   endif ()
 endif ()

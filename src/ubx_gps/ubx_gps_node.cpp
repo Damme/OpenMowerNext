@@ -7,10 +7,15 @@
 // Status: NO_FIX without gnssFixOK, GBAS_FIX for RTK fixed, FIX otherwise.
 // Covariance: hAcc^2, hAcc^2, vAcc^2 (diagonal known).
 //
+// Receiver statistics (stats, default on): NAV-PVT plus NAV-SAT, NAV-SIG, NAV-RELPOSNED,
+// MON-RF and RXM-RTCM when the receiver sends them, summed up by GpsStats and published
+// once a second as JSON (std_msgs/String, latched) on gps/stats for the web UI's GPS tab.
+//
 // Optional (elevation.file set): RTK fixed heights averaged into a grid in the
 // map frame (ElevationGrid), written as CSV every elevation.save_interval s if
 // something changed, and on shutdown. For terrain in CAD.
 #include "ubx_gps/elevation_grid.hpp"
+#include "ubx_gps/gps_stats.hpp"
 #include "ubx_gps/ubx.hpp"
 
 #include <arpa/inet.h>
@@ -22,6 +27,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <GeographicLib/LocalCartesian.hpp>
 
@@ -30,6 +36,7 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -45,6 +52,11 @@ public:
     port_ = declare_parameter("port", 5015);
     frame_id_ = declare_parameter("frame_id", std::string("gps"));
     pub_ = create_publisher<sensor_msgs::msg::NavSatFix>("gps/fix", 10);
+    if (declare_parameter("stats", true)) {
+      stats_ = std::make_unique<GpsStats>();
+      stats_pub_ = create_publisher<std_msgs::msg::String>("gps/stats", rclcpp::QoS(1).transient_local());
+      stats_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { publishStats(); });
+    }
     initElevation();
     thread_ = std::thread([this]() { run(); });
   }
@@ -131,7 +143,27 @@ private:
   {
     FrameParser parser([this](uint8_t cls, uint8_t id, const uint8_t * p, size_t len) {
       if (cls == 0x01 && id == 0x07) {
-        if (auto pvt = parseNavPvt(p, len)) publish(*pvt);
+        if (auto pvt = parseNavPvt(p, len)) {
+          publish(*pvt);
+          if (stats_) {
+            std::lock_guard<std::mutex> l(stats_mutex_);
+            stats_->onPvt(*pvt, monotonic(), wall());
+          }
+        }
+      } else if (stats_) {
+        std::lock_guard<std::mutex> l(stats_mutex_);
+        const double t = monotonic();
+        if (cls == 0x01 && id == 0x35) {
+          if (auto v = parseNavSat(p, len)) stats_->onSat(std::move(*v), t);
+        } else if (cls == 0x01 && id == 0x43) {
+          if (auto v = parseNavSig(p, len)) stats_->onSig(std::move(*v), t);
+        } else if (cls == 0x01 && id == 0x3C) {
+          if (auto v = parseNavRelPosNed(p, len)) stats_->onRelPos(*v, t);
+        } else if (cls == 0x0A && id == 0x38) {
+          if (auto v = parseMonRf(p, len)) stats_->onRf(std::move(*v), t);
+        } else if (cls == 0x02 && id == 0x32) {
+          if (auto v = parseRxmRtcm(p, len)) stats_->onRtcm(*v, t);
+        }
       }
     });
     while (running()) {
@@ -193,11 +225,34 @@ private:
     }
   }
 
+  static double monotonic()
+  {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  static double wall()
+  {
+    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+  }
+
+  void publishStats()
+  {
+    std_msgs::msg::String m;
+    {
+      std::lock_guard<std::mutex> l(stats_mutex_);
+      m.data = stats_->json(monotonic(), wall()).dump();
+    }
+    stats_pub_->publish(m);
+  }
+
   std::string host_;
   int64_t port_;
   std::string frame_id_;
   int last_quality_ = -2;
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr pub_;
+  std::unique_ptr<GpsStats> stats_;
+  std::mutex stats_mutex_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr stats_pub_;
+  rclcpp::TimerBase::SharedPtr stats_timer_;
   std::string elevation_file_;
   double elevation_max_v_acc_ = 0.03;
   double elevation_antenna_height_ = 0.0;
