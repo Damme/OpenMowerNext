@@ -21,6 +21,8 @@ The page shows the map (areas, dock, robot, trail), battery, GPS, motor and mowe
   bumper outline at each touch; kept until Reset mission or a new mission from the beginning) and edge corrections (dashed circles, where the outline runs further in
   after perimeter bumps). Forget one (tap it on the map, or the list) or all of them. Many corrections along one
   edge mean that boundary is worth re-recording.
+- **GPS**: receiver statistics from `ubx_gps` (see [GPS tab](#gps-tab)): solution, satellites, signal strength,
+  sky plot, how RTK held up since the start and over the last two hours, antenna and correction input.
 - **Record**: record an area boundary (automatic points while driving, or points by hand) and the docking station.
 - **Log**: results of commands, including those sent from other open pages.
 
@@ -134,6 +136,28 @@ stood while recording, `grid.stance_*` in map_server) is kept only within 5 cm o
 the body never stood there, so the grid there comes from the polygon alone. A saved mission notices the change
 (plan fingerprint) and replans that area.
 
+## GPS tab
+
+`ubx_gps` keeps statistics of the F9P's UBX stream (`src/ubx_gps/gps_stats.hpp`) and publishes them once a second as
+JSON on `/gps/stats` (`std_msgs/String`, latched; parameter `stats`, default on). web_ui passes them through to the
+page. The statistics live in `ubx_gps`, so the history survives reloading the page.
+
+| Shows | From | |
+|---|---|---|
+| solution, satellites used, accuracy estimate, correction age, pDOP | NAV-PVT | always |
+| time per solution type since the start; RTK fixed lost / back (how long, and how far the fixed position moved compared with the distance driven meanwhile); jumps between consecutive fixed positions | NAV-PVT | always |
+| last 2 h in 20 s buckets: share of each solution type, mean C/N0 of the 4 strongest satellites, satellites used | NAV-PVT, NAV-SAT (NAV-SIG) | always |
+| sky plot, C/N0 per satellite, used or not | NAV-SAT | sent by the receiver now |
+| C/N0 per band (L1 and L2/E5b), carrier phase used | NAV-SIG | enable on the receiver |
+| antenna status and power, noise, AGC, jamming per RF band | MON-RF | enable on the receiver |
+| distance to the base, base position / observations missing | NAV-RELPOSNED | enable on the receiver |
+| RTCM messages per minute, CRC failures, used or not, station | RXM-RTCM | enable on the receiver |
+
+A re-fix is flagged when the new fixed position is more than 0.3 m further from the last fixed one than the robot
+drove meanwhile (ground speed integrated over the gap), a jump when two fixed positions are further apart than the
+ground speed explains plus 0.1 m (and at least 0.15 m). Both point at a wrong fixed solution: localization takes
+every RTK fixed position as it is.
+
 ## Resources
 
 Subscriptions and service/action clients exist only while a page is open. With no page open, the component is a
@@ -150,7 +174,8 @@ JSON text messages over `ws://<host>:<port>/ws`.
   default `/odometry/filtered/map`), `{"t":"map","areas":[…],"docks":[…]}` (on connect and when the map changes;
   polygons simplified to 2 cm), `{"t":"rec","pts":[…]}` (boundary being recorded), `{"t":"log","ok","msg","time"}`,
   `{"t":"obs","depth","obstacles":[{"id","lines":[[[x,y],…],…]}],"edges":[{"x","y","offset","radius"}]}` (mower_logic's
-  `~/obstacles`, on connect and when it changes).
+  `~/obstacles`, on connect and when it changes), `{"t":"gps","d":{…}}` (`/gps/stats` as published, 1 Hz; fields
+  documented in `gps_stats.hpp`).
 - Page → robot: `{"c":"logic","name":…}`, `{"c":"motors","on":…}`, `{"c":"joy","v":-1..1,"w":-1..1}`, `{"c":"blade","on":…}`, `{"c":"blade_pwm","pwm":…}`,
   `{"c":"area","id":…,"enabled":…}`, `{"c":"area_remove","id":…}`, `{"c":"area_get","id"}` (answered to that page
   only with `{"t":"area","id","name","type","mow_angle","mow_reverse","pts"}`, mm),

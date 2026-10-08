@@ -11,6 +11,9 @@
   --area: #2f7d32; --area-off: #8a9187; --nav: #1e62b0; --excl: #c62828; --robot: #111; --rec: #e36a00;
   --bump: #8e24aa; --edge: #00796b;
   --grid: rgba(0,0,0,.06);
+  --st-good: #0ca30c; --st-warn: #fab219; --st-serious: #ec835a; --st-crit: #d03b3b;
+  --s1: #2a78d6; --s2: #eb6834;
+  --cno1: #86b6ef; --cno2: #3987e5; --cno3: #256abf; --cno4: #184f95; --cno5: #0d366b;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -20,6 +23,8 @@
     --area: #5cb860; --area-off: #6d746a; --nav: #64a8f0; --excl: #ef5350; --robot: #f5f5f5; --rec: #ff9a3c;
     --bump: #d17be6; --edge: #4db6ac;
     --grid: rgba(255,255,255,.05);
+    --s1: #3987e5; --s2: #d95926;
+    --cno1: #184f95; --cno2: #2a78d6; --cno3: #5598e7; --cno4: #86b6ef; --cno5: #b7d3f6;
     color-scheme: dark;
   }
 }
@@ -43,8 +48,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: 
 .mapbtns { position: absolute; right: 8px; top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .mapbtns button { width: 40px; height: 40px; padding: 0; display: grid; place-items: center; }
 #side { width: 380px; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); min-height: 0; }
-nav { display: flex; border-bottom: 1px solid var(--line); }
-nav button { flex: 1; border: 0; border-radius: 0; background: none; color: var(--muted); padding: 10px 0;
+nav { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+nav button { flex: 1 0 auto; border: 0; border-radius: 0; background: none; color: var(--muted); padding: 10px 6px;
   border-bottom: 2px solid transparent; font-weight: 600; }
 nav button.active { color: var(--text); border-bottom-color: var(--accent); }
 section { display: none; padding: 12px; overflow-y: auto; flex: 1; }
@@ -109,6 +114,31 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
   transition: opacity .2s; pointer-events: none; }
 #toast.show { opacity: .95; }
 #toast.bad { background: var(--danger); color: #fff; }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; min-width: 0; }
+.tile .k { color: var(--muted); font-size: 12px; }
+.tile .v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.tile .s { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin: 4px 0 2px; }
+.legend span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.gcv { position: relative; width: 100%; display: block; touch-action: pan-y; }
+.gcv canvas { position: static; touch-action: pan-y; }
+.axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); padding-left: 22px; }
+.glines div { font-size: 13px; padding: 2px 0; font-variant-numeric: tabular-nums; }
+.gwarn { color: var(--warn); font-weight: 600; }
+.gbad { color: var(--danger); font-weight: 600; }
+table.g { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+table.g th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; }
+table.g td, table.g th { padding: 3px 4px; border-bottom: 1px solid var(--line); }
+table.g td.n, table.g th.n { text-align: right; }
+#gps-events div { font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+#gps-events time { color: var(--muted); margin-right: 6px; font-variant-numeric: tabular-nums; }
+#tip { position: fixed; z-index: 10; pointer-events: none; background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 12px; line-height: 1.35;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2); font-variant-numeric: tabular-nums; max-width: 240px; }
 @media (max-width: 760px) {
   main { flex-direction: column; }
   #mapwrap { flex: none; height: 42vh; }
@@ -145,6 +175,7 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
       <button data-tab="mower">Mower</button>
       <button data-tab="areas">Areas</button>
       <button data-tab="bumps">Bumps</button>
+      <button data-tab="gps">GPS</button>
       <button data-tab="rec">Record</button>
       <button data-tab="log">Log</button>
     </nav>
@@ -261,6 +292,40 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
       <div class="row"><button id="b-dock-start">Record dock</button><button id="b-dock-cancel">Cancel</button></div>
       <div id="dock-status" class="muted"></div>
     </section>
+    <section id="t-gps">
+      <div id="gps-none" class="muted">No receiver statistics yet (ubx_gps sends them once a second).</div>
+      <div id="gps-body" hidden>
+        <div class="tiles" id="gps-tiles"></div>
+        <h2 id="gps-since">Since start</h2>
+        <div class="gcv"><canvas id="gps-share" height="14"></canvas></div>
+        <div class="legend" id="gps-share-legend"></div>
+        <div class="glines" id="gps-session"></div>
+        <h2>Last 2 hours</h2>
+        <div class="muted">Solution (share of each 20 s)</div>
+        <div class="gcv"><canvas id="gps-h-sol" height="22"></canvas></div>
+        <div class="muted" id="gps-h-cno-title">Signal: mean of the 4 strongest, dB-Hz</div>
+        <div class="gcv"><canvas id="gps-h-cno" height="96"></canvas></div>
+        <div class="legend" id="gps-h-cno-legend"></div>
+        <div class="muted">Satellites used</div>
+        <div class="gcv"><canvas id="gps-h-sv" height="64"></canvas></div>
+        <div class="axis"><span>−2 h</span><span>−1 h</span><span>last 20 s</span></div>
+        <h2>Sky</h2>
+        <div class="gcv"><canvas id="gps-sky" height="260"></canvas></div>
+        <div class="legend" id="gps-sky-legend"></div>
+        <h2>Signal per satellite</h2>
+        <div class="gcv"><canvas id="gps-bars" height="130"></canvas></div>
+        <div class="legend" id="gps-bars-legend"></div>
+        <p class="muted">Open sky with a good antenna: the strongest satellites reach about 45–50 dB-Hz, the second
+          band (L2/E5b) a few dB less. A damaged antenna or cable shows as all of them low, or one band missing.</p>
+        <h2>Antenna</h2>
+        <div id="gps-rf"></div>
+        <h2>Corrections</h2>
+        <div id="gps-base"></div>
+        <div id="gps-rtcm"></div>
+        <h2>RTK fixed lost / back</h2>
+        <div id="gps-events"></div>
+      </div>
+    </section>
     <section id="t-log"><div id="log"></div></section>
   </div>
 </main>
@@ -271,6 +336,7 @@ button.on { background: var(--rec); border-color: var(--rec); color: #fff; }
     <span id="speedv">50 %</span></label>
 </div>
 <div id="toast"></div>
+<div id="tip" hidden></div>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -294,6 +360,7 @@ function connect() {
     else if (m.t === "area") { edLoad(m); }
     else if (m.t === "log") { addLog(m); }
     else if (m.t === "settings") { onSettings(m); }
+    else if (m.t === "gps") { onGps(m.d); }
   };
 }
 function send(obj) {
@@ -323,8 +390,8 @@ function renderState() {
   if (l && l.docked) { batt += " ⚡"; bc = "ok"; }
   setChip("c-batt", batt, bc);
   if (g) {
-    const t = g.status === 2 ? "RTK fixed" : g.status >= 0 ? "GPS float" : "no GPS fix";
-    setChip("c-gps", t, g.status === 2 ? "ok" : g.status >= 0 ? "warn" : "bad");
+    const t = g.status === 2 ? "RTK fixed" : g.status >= 0 ? "GPS float" : "no GPS fix", n = G.d && G.d.now;
+    setChip("c-gps", t + (n ? " · " + n.sv + " sats" : ""), g.status === 2 ? "ok" : g.status >= 0 ? "warn" : "bad");
   } else setChip("c-gps", "no GPS data", "bad");
   const motorsOn = w && w.motors;
   setChip("c-motors", w ? (w.link ? "motors " + (motorsOn ? "on" : "off") : "board link lost") : "no board data",
@@ -524,6 +591,7 @@ function showTab(name) {
   const jw = $("joywrap");
   if (slot) { slot.append(jw); jw.hidden = false; } else { jw.hidden = true; joy.release(); }
   if (name === "mower") send({ c: "settings_get" });
+  if (name === "gps") renderGps();
   try { localStorage.setItem("om.tab", name); } catch {}
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
@@ -663,8 +731,10 @@ const cv = $("map"), ctx = cv.getContext("2d");
 const view = { s: 10, ox: 0, oy: 0 };  // px per m, screen position of map (0,0)
 let css = {};
 function readColors() { const st = getComputedStyle(document.documentElement);
-  for (const k of ["area", "area-off", "nav", "excl", "robot", "rec", "grid", "muted", "accent", "text", "bump", "edge"]) css[k] = st.getPropertyValue("--" + k).trim(); }
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); renderFelt(); draw(); });
+  for (const k of ["area", "area-off", "nav", "excl", "robot", "rec", "grid", "muted", "accent", "text", "bump", "edge",
+                   "line", "panel", "st-good", "st-warn", "st-serious", "st-crit", "s1", "s2",
+                   "cno1", "cno2", "cno3", "cno4", "cno5"]) css[k] = st.getPropertyValue("--" + k).trim(); }
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); renderFelt(); draw(); renderGps(); });
 readColors();
 function resize() {
   const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
@@ -1242,6 +1312,315 @@ addEventListener("keydown", (e) => {
 addEventListener("keyup", (e) => { if (joy.keys.delete(e.key)) keyDrive(); });
 addEventListener("blur", () => { joy.keys.clear(); joy.release(); });
 document.addEventListener("visibilitychange", () => { if (document.hidden) { joy.keys.clear(); joy.release(); } });
+
+// ---- GPS tab ----------------------------------------------------------------
+// ubx_gps's receiver statistics (gps_stats.hpp), drawn only while the tab is shown.
+const G = { d: null, hi: null, hit: {} };  // hi: hovered history bucket; hit: per canvas, what is under the pointer
+const GNSS = { 0: "G", 1: "S", 2: "E", 3: "C", 5: "J", 6: "R", 7: "I" };
+const GNSS_NAME = { 0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 5: "QZSS", 6: "GLONASS", 7: "NavIC" };
+const Q_NAME = ["no fix", "no RTK", "RTK float", "RTK fixed"];
+const Q_COLOR = ["st-crit", "st-serious", "st-warn", "st-good"];
+const RTCM_NAME = { 1005: "base position", 1006: "base position", 1033: "receiver, antenna", 1074: "GPS", 1077: "GPS",
+  1084: "GLONASS", 1087: "GLONASS", 1094: "Galileo", 1097: "Galileo", 1114: "QZSS", 1117: "QZSS", 1124: "BeiDou",
+  1127: "BeiDou", 1230: "GLONASS biases", 4072: "u-blox reference" };
+function onGps(d) { G.d = d; if (S.tab === "gps") renderGps(); }
+function svName(s) { return (GNSS[s[0]] || "?") + s[1]; }
+function cnoColor(c) { return css["cno" + (c < 30 ? 1 : c < 35 ? 2 : c < 40 ? 3 : c < 45 ? 4 : 5)]; }
+function dur(s) {
+  if (s < 60) return Math.round(s) + " s";
+  if (s < 3600) return Math.round(s / 60) + " min";
+  return Math.floor(s / 3600) + " h " + String(Math.round(s % 3600 / 60)).padStart(2, "0") + " min";
+}
+function hhmm(wall) { return new Date(wall * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function legendItem(color, text, round) {
+  const sp = el("span"), i = el("i"); i.style.background = color; if (round) i.style.borderRadius = "50%";
+  sp.append(i, document.createTextNode(text)); return sp;
+}
+// Canvas sized to its box (CSS height from the height attribute), in CSS pixels.
+function gcv(id) {
+  const c = $(id), d = devicePixelRatio || 1, w = c.parentElement.clientWidth;
+  const h = +(c.dataset.h || (c.dataset.h = c.getAttribute("height")));  // the attribute follows c.height (device px)
+  if (c.width !== Math.round(w * d) || c.height !== Math.round(h * d)) {
+    c.width = Math.round(w * d); c.height = Math.round(h * d); c.style.width = w + "px"; c.style.height = h + "px";
+  }
+  const g = c.getContext("2d"); g.setTransform(d, 0, 0, d, 0, 0); g.clearRect(0, 0, w, h);
+  return { g, w, h };
+}
+function showTip(e, lines) {
+  const t = $("tip"); t.replaceChildren(...lines.map((l, i) => { const d = el("div", null, l); if (!i) d.style.fontWeight = 600; return d; }));
+  t.hidden = false;
+  const r = t.getBoundingClientRect();
+  t.style.left = Math.max(4, Math.min(innerWidth - r.width - 4, e.clientX + 12)) + "px";
+  t.style.top = Math.max(4, e.clientY - r.height - 12) + "px";
+}
+function hideTip() { $("tip").hidden = true; }
+
+function renderGps() {
+  const d = G.d;
+  $("gps-none").hidden = !!d; $("gps-body").hidden = !d;
+  if (!d || S.tab !== "gps") return;
+  renderGpsTiles(d); renderGpsSession(d); renderGpsHistory(d); renderGpsSky(d); renderGpsBars(d);
+  renderGpsRf(d); renderGpsCorrections(d); renderGpsEvents(d);
+}
+
+function renderGpsTiles(d) {
+  const n = d.now, sats = d.sats || [], tiles = [];
+  const tile = (k, v, sub, dot) => {
+    const t = el("div", "tile"), vv = el("div", "v");
+    if (dot) { const i = el("span", "dot"); i.style.background = css[dot]; vv.append(i); }
+    vv.append(document.createTextNode(v)); t.append(el("div", "k", k), vv, el("div", "s", sub || "")); tiles.push(t);
+  };
+  if (!n || n.age > 3) tile("Solution", "no data", n ? "receiver silent " + dur(n.age) : "", "st-crit");
+  else tile("Solution", Q_NAME[n.q], n.diff ? "with corrections" : "no corrections", Q_COLOR[n.q]);
+  const tracked = sats.length;
+  tile("Satellites", n ? n.sv + " / " + tracked : "–", "used / tracked");
+  const top = (a) => { a.sort((x, y) => y - x); a = a.slice(0, 4); return a.length ? a.reduce((x, y) => x + y, 0) / a.length : null; };
+  const sig = sats.some((s) => s[8] != null);
+  const l1 = top(sats.map((s) => sig ? s[8] : s[2]).filter((c) => c > 0));
+  const l2 = sig ? top(sats.map((s) => s[9]).filter((c) => c > 0)) : null;
+  tile("Signal", l1 != null ? l1.toFixed(0) + " dB-Hz" : "–", sig ? "top 4 · L2 " + (l2 != null ? l2.toFixed(0) : "none") : "top 4");
+  tile("Accuracy", n ? (n.hacc * 100).toFixed(1) + " cm" : "–", "receiver estimate");
+  const age = n && n.corr_age;
+  tile("Corrections", age == null || age < 0 ? "–" : age > 1e6 ? "> 120 s" : "≤ " + age + " s", "age");
+  tile("pDOP", n ? n.pdop.toFixed(1) : "–", n ? n.speed.toFixed(2) + " m/s" : "");
+  $("gps-tiles").replaceChildren(...tiles);
+}
+
+function renderGpsSession(d) {
+  const s = d.session, sec = s.seconds, total = sec.reduce((a, b) => a + b, 0);
+  $("gps-since").textContent = "Since " + new Date(d.since * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const { g, w, h } = gcv("gps-share");
+  let x = 0;
+  for (const q of [3, 2, 1, 0]) {
+    if (!total || !sec[q]) continue;
+    const bw = sec[q] / total * w;
+    g.fillStyle = css[Q_COLOR[q]]; g.beginPath(); g.roundRect(x, 0, Math.max(1, bw - 2), h, 3); g.fill();
+    x += bw;
+  }
+  $("gps-share-legend").replaceChildren(...[3, 2, 1, 0].filter((q) => sec[q] > 0).map((q) =>
+    legendItem(css[Q_COLOR[q]], Q_NAME[q] + " " + Math.round(100 * sec[q] / total) + " % (" + dur(sec[q]) + ")")));
+  const lines = [];
+  const line = (text, cls) => lines.push(el("div", cls, text));
+  if (s.lost_for != null) line("RTK fixed lost for " + dur(s.lost_for) + " now", "gwarn");
+  let t = "RTK fixed lost " + s.losses + "×";
+  if (s.refix) t += " · back after " + dur(s.refix.median) + " (median), longest " + dur(s.refix.max);
+  line(t);
+  line("Back > 0.3 m off the driven path: " + s.suspect_refix + "×", s.suspect_refix ? "gwarn" : "");
+  line("Jumps between fixed positions: " + s.jumps + "×", s.jumps ? "gwarn" : "");
+  $("gps-session").replaceChildren(...lines);
+}
+
+// History: [end wall, % fixed, % float, % no RTK, % no fix, top-4 C/N0, top-4 L1, top-4 L2, sats used]
+function histX(d, w) {
+  const h = d.hist, end = h.length ? h[h.length - 1][0] : 0, span = 7200;
+  return { x: (t) => w - (end - t) / span * w, bw: Math.max(1, 20 / span * w), end, span };
+}
+function renderGpsHistory(d) {
+  const h = d.hist;
+  // solution strip: each bucket stacked fixed (bottom) .. no fix (top)
+  let { g, w, h: hh } = gcv("gps-h-sol");
+  const sx = histX(d, w);
+  g.fillStyle = css.grid; g.fillRect(0, 0, w, hh);
+  for (const b of h) {
+    if (b[1] == null) continue;
+    const x0 = sx.x(b[0]) - sx.bw;
+    let y = hh;
+    for (const [q, i] of [[3, 1], [2, 2], [1, 3], [0, 4]]) {
+      const v = b[i] / 100 * hh; if (v <= 0) continue;
+      g.fillStyle = css[Q_COLOR[q]]; g.fillRect(x0, y - v, sx.bw + 0.5, v); y -= v;
+    }
+  }
+  crosshair(g, sx, hh);
+  // signal: L1 and L2 with NAV-SIG, else the per-satellite top 4
+  const sig = h.some((b) => b[6] != null);
+  const series = sig ? [[6, css.s1, "L1"], [7, css.s2, "L2 / E5b"]] : [[5, css.s1, null]];
+  lineChart("gps-h-cno", d, series, 20, 55, [30, 40, 50]);
+  $("gps-h-cno-legend").replaceChildren(...(sig ? series.map(([, c, n]) => legendItem(c, n)) : []));
+  const svMax = Math.max(10, ...h.map((b) => b[8] || 0));
+  lineChart("gps-h-sv", d, [[8, css.s1, null]], 0, Math.ceil(svMax / 10) * 10, [10, 20, 30, 40].filter((v) => v < svMax));
+}
+function crosshair(g, sx, hh) {
+  if (G.hi == null || !G.d.hist[G.hi]) return;
+  const x = Math.round(sx.x(G.d.hist[G.hi][0]) - sx.bw / 2) + 0.5;
+  g.strokeStyle = css.text; g.globalAlpha = 0.5; g.lineWidth = 1; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, hh); g.stroke();
+  g.globalAlpha = 1;
+}
+function lineChart(id, d, series, lo, hi, grid) {
+  const { g, w, h } = gcv(id), sx = histX(d, w), pad = 4, Yv = (v) => pad + (1 - (v - lo) / (hi - lo)) * (h - 2 * pad);
+  g.font = "11px system-ui, sans-serif"; g.textBaseline = "middle";
+  for (const v of grid) {
+    const y = Math.round(Yv(v)) + 0.5;
+    g.strokeStyle = css.grid; g.lineWidth = 1; g.beginPath(); g.moveTo(22, y); g.lineTo(w, y); g.stroke();
+    g.fillStyle = css.muted; g.fillText(v, 0, y);
+  }
+  for (const [i, color] of series) {
+    g.strokeStyle = color; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+    let pen = false, prev = null;
+    for (const b of d.hist) {
+      const v = b[i];
+      if (v == null || (prev != null && b[0] - prev > 30)) pen = false;
+      if (v != null) { const x = sx.x(b[0]) - sx.bw / 2, y = Yv(Math.max(lo, Math.min(hi, v))); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; }
+      prev = b[0];
+    }
+    g.stroke();
+  }
+  crosshair(g, sx, h);
+}
+function histHover(e) {
+  const d = G.d; if (!d || !d.hist.length) return;
+  const r = e.currentTarget.getBoundingClientRect(), sx = histX(d, r.width), t = sx.end - (r.width - (e.clientX - r.left)) / r.width * sx.span;
+  let best = null, bd = Infinity;
+  d.hist.forEach((b, i) => { const dd = Math.abs(b[0] - 10 - t); if (dd < bd) { bd = dd; best = i; } });
+  if (bd > 40) { histLeave(); return; }
+  G.hi = best; renderGpsHistory(d);
+  const b = d.hist[best], l = [hhmm(b[0] - 20) + "–" + hhmm(b[0])];
+  if (b[1] == null) l.push("no data");
+  else l.push([[1, "fixed"], [2, "float"], [3, "no RTK"], [4, "no fix"]].filter(([i]) => b[i] > 0).map(([i, n]) => n + " " + b[i] + " %").join(" · "));
+  if (b[6] != null) l.push("signal L1 " + b[6] + (b[7] != null ? " · L2 " + b[7] : "") + " dB-Hz");
+  else if (b[5] != null) l.push("signal " + b[5] + " dB-Hz");
+  if (b[8] != null) l.push(Math.round(b[8]) + " satellites used");
+  showTip(e, l);
+}
+function histLeave() { if (G.hi != null) { G.hi = null; if (G.d) renderGpsHistory(G.d); } hideTip(); }
+for (const id of ["gps-h-sol", "gps-h-cno", "gps-h-sv"]) {
+  $(id).addEventListener("pointermove", histHover); $(id).addEventListener("pointerleave", histLeave);
+}
+
+function renderGpsSky(d) {
+  const { g, w, h } = gcv("gps-sky"), cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 14;
+  g.strokeStyle = css.line; g.lineWidth = 1; g.fillStyle = css.muted; g.font = "11px system-ui, sans-serif";
+  g.textAlign = "center"; g.textBaseline = "middle";
+  for (const e of [0, 30, 60]) { g.beginPath(); g.arc(cx, cy, R * (90 - e) / 90, 0, 7); g.stroke(); }
+  g.beginPath(); g.moveTo(cx - R, cy); g.lineTo(cx + R, cy); g.moveTo(cx, cy - R); g.lineTo(cx, cy + R); g.stroke();
+  for (const [t, a] of [["N", 0], ["E", 90], ["S", 180], ["W", 270]]) {
+    const r = R + 8, rad = a * Math.PI / 180; g.fillText(t, cx + r * Math.sin(rad), cy - r * Math.cos(rad));
+  }
+  g.fillText("30°", cx + 12, cy - R * 2 / 3 + 7); g.fillText("60°", cx + 12, cy - R / 3 + 7);
+  const pts = [];
+  for (const s of d.sats || []) {
+    if (s[3] < 0 || s[3] > 90) continue;
+    const r = R * (90 - s[3]) / 90, rad = s[4] * Math.PI / 180, x = cx + r * Math.sin(rad), y = cy - r * Math.cos(rad);
+    const c = cnoColor(s[8] != null ? s[8] : s[2]);
+    g.beginPath(); g.arc(x, y, 6, 0, 7); g.fillStyle = css.panel; g.fill();  // 2px surface ring
+    g.beginPath(); g.arc(x, y, 5, 0, 7);
+    if (s[5]) { g.fillStyle = c; g.fill(); } else { g.strokeStyle = c; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 4, 0, 7); g.stroke(); }
+    pts.push([x, y, s]);
+  }
+  G.hit.sky = pts;
+  const steps = [["< 30", 1], ["30", 2], ["35", 3], ["40", 4], ["45+", 5]];
+  $("gps-sky-legend").replaceChildren(...steps.map(([t, i]) => legendItem(css["cno" + i], t, true)),
+    el("span", null, "dB-Hz · filled = used, ring = not used"));
+}
+function satLines(s) {
+  const l = [svName(s) + " · " + (GNSS_NAME[s[0]] || "?")];
+  l.push(s[8] != null ? "L1 " + (s[8] || "–") + " · L2 " + (s[9] || "–") + " dB-Hz" : s[2] + " dB-Hz");
+  if (s[3] >= -90 && s[3] <= 90) l.push("elevation " + s[3] + "° · azimuth " + s[4] + "°");
+  l.push((s[5] ? "used" : "not used") + (s[10] ? " · carrier (RTK)" : "") + (s[6] ? " · corrections" : " · no corrections"));
+  return l;
+}
+$("gps-sky").addEventListener("pointermove", (e) => {
+  const r = e.currentTarget.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  let best = null, bd = 14;
+  for (const p of G.hit.sky || []) { const dd = Math.hypot(p[0] - x, p[1] - y); if (dd < bd) { bd = dd; best = p[2]; } }
+  best ? showTip(e, satLines(best)) : hideTip();
+});
+$("gps-sky").addEventListener("pointerleave", hideTip);
+
+function renderGpsBars(d) {
+  const { g, w, h } = gcv("gps-bars"), sats = (d.sats || []).filter((s) => s[2] > 0 || (s[8] || 0) > 0);
+  const sig = sats.some((s) => s[8] != null), lo = 0, hi = 55, base = h - 4, left = 22;
+  const Yv = (v) => base - (v - lo) / (hi - lo) * (base - 4);
+  g.font = "11px system-ui, sans-serif"; g.textBaseline = "middle";
+  for (const v of [20, 30, 40, 50]) {
+    const y = Math.round(Yv(v)) + 0.5;
+    g.strokeStyle = css.grid; g.lineWidth = 1; g.beginPath(); g.moveTo(left, y); g.lineTo(w, y); g.stroke();
+    g.fillStyle = css.muted; g.fillText(v, 0, y);
+  }
+  const key = (s) => sig ? Math.max(s[8] || 0, s[9] || 0) : s[2];
+  sats.sort((a, b) => key(b) - key(a));
+  const slot = (w - left) / Math.max(sats.length, 1), per = sig ? 2 : 1, bw = Math.max(1, Math.min(10, (slot - 2) / per));
+  const hits = [];
+  sats.forEach((s, i) => {
+    const x0 = left + i * slot + (slot - bw * per) / 2;
+    const vals = sig ? [[s[8], css.s1], [s[9], css.s2]] : [[s[2], css.s1]];
+    vals.forEach(([v, c], k) => {
+      if (!v) return;
+      const y = Yv(Math.min(hi, v));
+      g.globalAlpha = s[5] ? 1 : 0.35; g.fillStyle = c; g.beginPath();
+      g.roundRect(x0 + k * bw, y, Math.max(1, bw - (per > 1 ? 1 : 0)), base - y, [Math.min(2, bw / 2), Math.min(2, bw / 2), 0, 0]);
+      g.fill();
+    });
+    hits.push([left + i * slot, left + (i + 1) * slot, s]);
+  });
+  g.globalAlpha = 1;
+  g.strokeStyle = css.line; g.beginPath(); g.moveTo(left, base + 0.5); g.lineTo(w, base + 0.5); g.stroke();
+  G.hit.bars = hits;
+  $("gps-bars-legend").replaceChildren(...(sig ? [legendItem(css.s1, "L1"), legendItem(css.s2, "L2 / E5b")] : []),
+    el("span", null, sats.length + " tracked, strongest first · faded = not used · dB-Hz"));
+}
+$("gps-bars").addEventListener("pointermove", (e) => {
+  const x = e.clientX - e.currentTarget.getBoundingClientRect().left, hit = (G.hit.bars || []).find((b) => x >= b[0] && x < b[1]);
+  hit ? showTip(e, satLines(hit[2])) : hideTip();
+});
+$("gps-bars").addEventListener("pointerleave", hideTip);
+
+function hint(text) { return el("div", "muted", text); }
+function renderGpsRf(d) {
+  if (!d.rf) { $("gps-rf").replaceChildren(hint("Not received: enable UBX-MON-RF on the receiver (antenna status, noise, jamming).")); return; }
+  const ANT = ["starting", "unknown", "OK", "short circuit", "open (not connected)"], POW = ["off", "on", "unknown"];
+  const JAM = ["unknown", "none", "warning", "critical"];
+  const t = el("table", "g"), hr = el("tr");
+  ["Band", "Antenna", "Power", "Noise", "AGC", "Jamming"].forEach((x, i) => hr.append(el("th", i > 2 ? "n" : null, x)));
+  t.append(hr);
+  for (const b of d.rf) {
+    const tr = el("tr");
+    tr.append(el("td", null, b.band), el("td", b.ant === 2 ? null : b.ant >= 3 ? "gbad" : null, ANT[b.ant] || b.ant),
+      el("td", null, POW[b.power] || b.power), el("td", "n", b.noise), el("td", "n", Math.round(b.agc / 81.91) + " %"),
+      el("td", "n" + (b.jamming >= 2 ? " gwarn" : ""), JAM[b.jamming] + " · " + b.jam_ind));
+    t.append(tr);
+  }
+  $("gps-rf").replaceChildren(t, hint("Antenna status needs the receiver's antenna supervisor; \"unknown\" is normal without it."));
+}
+function renderGpsCorrections(d) {
+  const out = [];
+  if (d.base) {
+    const b = d.base, dist = b.length >= 1000 ? (b.length / 1000).toFixed(2) + " km" : b.length.toFixed(0) + " m";
+    out.push(el("div", "glines", "Base station " + b.ref + ": " + dist + " away" + (b.valid ? "" : " (not valid)")));
+    if (b.pos_miss) out.push(el("div", "gbad", "Base position missing (no RTCM 1005/1006)"));
+    if (b.obs_miss) out.push(el("div", "gbad", "Base observations missing"));
+  } else out.push(hint("Distance to the base: enable UBX-NAV-RELPOSNED."));
+  $("gps-base").replaceChildren(...out);
+  if (!d.rtcm) { $("gps-rtcm").replaceChildren(hint("RTCM input: enable UBX-RXM-RTCM (which messages arrive, CRC errors, used or not).")); return; }
+  const USED = ["?", "no", "yes"], t = el("table", "g"), hr = el("tr");
+  ["RTCM", "", "/min", "total", "CRC bad", "used", "last"].forEach((x, i) => hr.append(el("th", i > 1 ? "n" : null, x)));
+  t.append(hr);
+  for (const [type, perMin, total, crc, used, age] of d.rtcm) {
+    const tr = el("tr");
+    tr.append(el("td", null, type), el("td", null, RTCM_NAME[type] || ""), el("td", "n", perMin), el("td", "n", total),
+      el("td", "n" + (crc ? " gbad" : ""), crc), el("td", "n" + (used === 1 ? " gwarn" : ""), USED[used]),
+      el("td", "n" + (age > 10 ? " gwarn" : ""), dur(age)));
+    t.append(tr);
+  }
+  $("gps-rtcm").replaceChildren(t);
+}
+function renderGpsEvents(d) {
+  const ev = (d.events || []).slice().reverse();
+  if (!ev.length) { $("gps-events").replaceChildren(hint("Nothing yet.")); return; }
+  $("gps-events").replaceChildren(...ev.map((e) => {
+    const row = el("div"), t = el("time", null, new Date(e.wall * 1000).toLocaleTimeString());
+    let text, cls = null;
+    if (e.kind === "refix") {
+      text = "lost " + dur(e.lost) + " (down to " + Q_NAME[e.worst] + "), back " + e.offset.toFixed(2) + " m from the last fix, drove " +
+        e.moved.toFixed(2) + " m";
+      if (e.suspect) { text = "⚠ " + text; cls = "gwarn"; }
+    } else {
+      text = "⚠ jump while fixed: " + e.offset.toFixed(2) + " m (driving explains " + e.moved.toFixed(2) + " m)"; cls = "gwarn";
+    }
+    const s = el("span", cls, text); row.append(t, s); return row;
+  }));
+}
+new ResizeObserver(() => { if (S.tab === "gps") renderGps(); }).observe($("t-gps"));
 
 // ---- start ------------------------------------------------------------------
 renderFelt();

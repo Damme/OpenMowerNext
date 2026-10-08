@@ -2,7 +2,8 @@
 //
 // One page (index.html, compiled into the library) talks JSON over a WebSocket:
 //   robot -> page  {"t":"state"} 2 Hz, {"t":"pose"} 5 Hz, {"t":"map"} on change, {"t":"log"} results/events,
-//                  {"t":"obs"} on change: what mower_logic felt by bumping (obstacles, edge corrections)
+//                  {"t":"obs"} on change: what mower_logic felt by bumping (obstacles, edge corrections),
+//                  {"t":"gps","d":...} 1 Hz: ubx_gps's receiver statistics (GPS tab), passed through as they are
 //   page -> robot  {"c":"<command>", ...}, see handle()
 // Commands use what already exists: mower_logic's services, worx_hardware's motor enable,
 // map_recorder's actions/services and map_server's save_area/remove_area. Manual driving publishes
@@ -267,6 +268,11 @@ private:
         gps_acc_ = std::sqrt(std::max(0.0, m->position_covariance[0]));
         gps_time_ = now();
       });
+    gps_stats_sub_ = create_subscription<std_msgs::msg::String>(
+      "/gps/stats", rclcpp::QoS(1).transient_local(), [this](std_msgs::msg::String::ConstSharedPtr m) {
+        gps_stats_ = R"({"t":"gps","d":)" + m->data + "}";
+        send(0, gps_stats_);
+      });
     ina_sub_ = create_subscription<sensor_msgs::msg::BatteryState>(
       "/power/ina226", rclcpp::SensorDataQoS(), [this](sensor_msgs::msg::BatteryState::ConstSharedPtr m) {
         ina_ = {{"v", r3(m->voltage)}, {"a", r3(m->current)}};
@@ -313,6 +319,8 @@ private:
     logic_sub_.reset();
     worx_sub_.reset();
     gps_sub_.reset();
+    gps_stats_sub_.reset();
+    gps_stats_.clear();
     ina_sub_.reset();
     odom_sub_.reset();
     map_sub_.reset();
@@ -403,6 +411,7 @@ private:
     for (const auto & line : log_) server_->send(client, line);
     if (!rec_points_.empty()) server_->send(client, Json{{"t", "rec"}, {"pts", rec_points_}}.dump());
     if (!obstacles_.empty()) server_->send(client, obstacles_);
+    if (!gps_stats_.empty()) server_->send(client, gps_stats_);
   }
 
   void send(uint64_t client, const std::string & text)
@@ -1213,6 +1222,8 @@ private:
   rclcpp::Subscription<msg::Map>::SharedPtr map_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr obstacles_sub_;
   std::string obstacles_;  // last {"t":"obs"} message
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gps_stats_sub_;
+  std::string gps_stats_;  // last {"t":"gps"} message
   rclcpp::Client<srv::ForgetObstacle>::SharedPtr forget_client_;
   Json logic_, worx_, ina_;  // ina_: INA226 battery monitor {"v", "a"}
   rclcpp::Time logic_time_{0, 0, RCL_ROS_TIME}, worx_time_{0, 0, RCL_ROS_TIME}, gps_time_{0, 0, RCL_ROS_TIME};
