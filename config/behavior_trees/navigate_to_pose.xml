@@ -9,6 +9,12 @@
   in the costmap, e.g. by a bump obstacle). With the Smac lattice planner
   (16 heading bins) every fresh plan takes a slightly different route: Nav2's
   1 Hz replanning gave a wiggly track, even a 10 s refresh a kink each time.
+
+  No Spin / BackUp recovery (Daniel 2026-10-09): they move the robot by
+  Nav2's costmap check alone, which lets the body over the edge that
+  mower_logic's footprint check doesn't. A 90 deg spin at a sharp corner of
+  mow_2 turned it 32 deg before "Collision Ahead", then nothing fitted any
+  more. mower_logic frees the footprint itself with checked moves.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -49,9 +55,7 @@
               <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
               <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
             </Sequence>
-            <Spin spin_dist="1.57" error_code_id="{spin_error_code}"/>
             <Wait wait_duration="5.0"/>
-            <BackUp backup_dist="0.30" backup_speed="0.15" error_code_id="{backup_code_id}"/>
           </RoundRobin>
         </ReactiveFallback>
       </Sequence>

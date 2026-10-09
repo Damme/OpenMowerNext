@@ -8,6 +8,11 @@
   - One Nav2 recovery round only: mower_logic decides what to do next (skip
     further along the pass, retry, skip the pass). Six rounds of spin/wait/
     backup took ~35 s per unreachable goal.
+  - No Spin / BackUp recovery (Daniel 2026-10-09): they move the robot by
+    Nav2's costmap check alone, which lets the body over the edge that
+    mower_logic's footprint check doesn't. A 90 deg spin at a sharp corner of
+    mow_2 turned it 32 deg before "Collision Ahead", then nothing fitted any
+    more. mower_logic frees the footprint itself with checked moves.
   - Replans only when the goals change or the path becomes invalid (blocked in
     the costmap, e.g. by a bump obstacle). With the Smac lattice planner every
     fresh plan takes a slightly different route, so periodic replanning gave a
@@ -57,9 +62,7 @@
               <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
               <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
             </Sequence>
-            <Spin spin_dist="1.57" error_code_id="{spin_error_code}"/>
             <Wait wait_duration="5.0"/>
-            <BackUp backup_dist="0.30" backup_speed="0.15" error_code_id="{backup_error_code}"/>
           </RoundRobin>
         </ReactiveFallback>
       </Sequence>
