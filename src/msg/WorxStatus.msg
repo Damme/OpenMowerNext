@@ -7,6 +7,8 @@ bool motors_enabled          # /worx/motors_enabled (motor_state below is the fi
 bool collision               # bump latched: forward blocked, blade off (see worx-hardware docs)
 bool lift                    # Lift input active (last Digital report)
 uint32 bumps                 # bumps detected since start; a change = new bump
+uint32 reverse_bumps         # firmware bumper presses (front/sides) while both wheels were commanded backwards:
+                             # the body swung into something. No bump (forward stays free); there is no rear bumper.
 string motor_state           # firmware motorState (MOTORREQ_ENABLE / _DISABLE / _SETSPEED)
 string power_state           # firmware powerState (e.g. Charging)
 

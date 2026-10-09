@@ -89,6 +89,9 @@ the `worx_hardware` node when it exists. That node ignores the process' own argu
 - A `Collision` in `Digital` or a new `Bumps` count while driving forward is a bump: forward motion blocked, blade off.
   Lift is a bump too (any direction), except in docking mode or while charging. `lift_emergency: true` makes it a
   latched emergency again.
+- A new `Bumps` count while both wheels are commanded backwards is no bump (there is no rear bumper; the front or a
+  side touched something while the body swung): it only counts `WorxStatus.reverse_bumps`, which stops mower_logic's
+  own reverse moves.
 - The blade stays off after an emergency, link loss or motor disable until its command has been 0 once, so a held
   command can't restart it.
 - The blade stops after `blade_idle_timeout` (25 s) without drive commands.

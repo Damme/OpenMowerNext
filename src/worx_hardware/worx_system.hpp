@@ -148,6 +148,7 @@ private:
   // (STOP key, lift) is still there, and then latches us again after the grace.
   std::chrono::steady_clock::time_point emergency_cleared_at_{};  // mutex_
   std::optional<uint32_t> last_board_bumps_, last_board_ms_;       // mutex_
+  uint32_t reverse_bumps_ = 0;  // board bumper presses while reversing (mutex_)
   std::atomic<bool> motors_enabled_{true};
   // Final docking approach (/worx/docking_mode, set by docking_helper): the dock
   // presses the bumper, the firmware then blocks forward PWM until it gets a zero

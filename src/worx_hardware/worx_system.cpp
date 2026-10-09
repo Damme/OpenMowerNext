@@ -668,6 +668,10 @@ void WorxSystem::onBoardMessage(const std::string & msg)
       {
         registerBump("Bumper");
       }
+      if (last_board_bumps_ && b > *last_board_bumps_ && !docking_mode_ && last_pwm_l_ < 0 && last_pwm_r_ < 0) {
+        reverse_bumps_ += b - *last_board_bumps_;
+        RCLCPP_WARN(get_logger(), "Bumper pressed while reversing (%u)", reverse_bumps_);
+      }
       last_board_bumps_ = b;  // a board reset (smaller count) just re-baselines
     }
     if (m.motor_pulse->emergency && *m.motor_pulse->emergency == 1 && !emergency_ &&
@@ -798,6 +802,7 @@ void WorxSystem::publishStatus()
     st.collision = collision_;
     st.lift = lift_;
     st.bumps = bumps_;
+    st.reverse_bumps = reverse_bumps_;
     st.motor_state = motor_state = last_.motor_state.value_or("");
     st.power_state = last_.power_state.value_or("");
     st.left_pwm_cmd = last_pwm_l_;
