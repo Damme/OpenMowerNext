@@ -4,6 +4,7 @@
 // handles the behaviour tree nodes use.
 
 #include "mower_logic/felt_obstacles.hpp"
+#include "mower_logic/footprint.hpp"
 #include "mower_logic/mission.hpp"
 #include "mower_logic/mowed_area.hpp"
 
@@ -234,19 +235,19 @@ public:
   // (the areas plus the rim, map_server grid.edge_band). A recorded line can
   // turn more sharply than the 0.58 m body: the front swings out when turning.
   bool footprintFits(double x, double y, double yaw) const;
+  // 0: fits; else how badly not (FootprintCheck::misfit).
+  int footprintMisfit(double x, double y, double yaw) const;
+  // How far the mower can drive straight from (x, y, yaw) - forwards dir > 0,
+  // else backwards - up to max, no pose on the way worse than the start.
+  double straightRoom(double x, double y, double yaw, int dir, double max) const;
   // Distance to reverse straight back from (x, y, yaw) so the mower can turn in
   // place to target_yaw with its whole footprint inside line + rim (checked
   // every 5 deg). nullopt: not possible within max_reverse.
   std::optional<double> reverseForTurn(double x, double y, double yaw, double target_yaw, double max_reverse) const;
   // The robot's footprint left line + rim (FTC overshot a cut corner): the
-  // shortest straight back-up (<= max_reverse), else the smallest turn in place,
-  // after which it fits again. Nav2 plans nothing from there ("Start occupied").
-  struct Escape
-  {
-    double reverse = 0.0;  // m
-    double turn = 0.0;     // rad
-  };
-  std::optional<Escape> escapeFootprint(double x, double y, double yaw, double max_reverse) const;
+  // smallest checked move after which it fits again (FootprintCheck::escape).
+  // Nav2 plans nothing from there ("Start occupied").
+  std::optional<Move> escapeFootprint(double x, double y, double yaw, double max_drive) const;
   // Perimeter bump at robot pose (x, y, yaw) on an outline pass: records or
   // grows the edge correction there and shifts the current plan by the
   // increase. nullopt: not at an edge, or the correction is at its maximum.
@@ -269,6 +270,9 @@ public:
   };
   std::optional<Bump> lastBump() const;
   bool bumpedSince(Clock::time_point t) const;
+  // The front/side bumper was pressed while reversing (WorxStatus.reverse_bumps):
+  // the body swung into something. Not a bump (no mark, forward stays free).
+  bool reverseBumpedSince(Clock::time_point t) const;
   // The bump a recovery has to handle (newer than the last one handled).
   std::optional<Bump> takeBump();
   void clearBumpObstacles();
@@ -310,19 +314,19 @@ public:
   std::atomic<bool> bump_on_pass{false};  // the last interrupted action was FollowPass
   std::atomic<bool> pass_is_outline{false};  // the pass GetPass handed out last
   size_t pass_area = SIZE_MAX;                // its area index (tick thread)
-  // Behaviour tree thread only: the last reversal (bump recovery or a blind
-  // FreeFootprint back-up). Daniel 2026-09-28: after a bump it backed up three
-  // times where one was enough - a blind back-up isn't repeated near the last one.
-  struct Reversal
+  // Behaviour tree thread only: where a checked move of FreeFootprint /
+  // ReverseAlongTrack had to stop (the robot didn't follow, the body touched
+  // something, the footprint got worse). FreeFootprint doesn't try again within
+  // 1 m of it (robot 2026-10-09: reversed into the bushes three more times, the
+  // wheels spinning 20 s each) until a new mission starts.
+  struct Spot
   {
-    Clock::time_point time;
     double x, y;
   };
-  std::optional<Reversal> last_reversal;
-  bool reversedNear(double x, double y) const
+  std::optional<Spot> stuck_spot;
+  bool stuckNear(double x, double y) const
   {
-    return last_reversal && Clock::now() - last_reversal->time < std::chrono::seconds(60) &&
-           std::hypot(x - last_reversal->x, y - last_reversal->y) < 1.0;
+    return stuck_spot && std::hypot(x - stuck_spot->x, y - stuck_spot->y) < 1.0;
   }
   // Behaviour tree thread only: where SkipPastBump continues the pass.
   std::optional<Bump> skip_target;
@@ -379,7 +383,8 @@ private:
   uint64_t map_version_ = 0;
   nav_msgs::msg::OccupancyGrid grid_;
   std::string branch_;
-  std::optional<uint32_t> bumps_seen_;
+  std::optional<uint32_t> bumps_seen_, reverse_bumps_seen_;
+  std::optional<Clock::time_point> last_reverse_bump_;
   std::mt19937 rng_{std::random_device{}()};
   std::optional<Bump> last_bump_;
   Clock::time_point handled_bump_{};
@@ -388,6 +393,7 @@ private:
   uint64_t next_contact_id_ = 1;
   unsigned markers_version_ = 1, markers_published_ = 0;  // mutex_
   MarkShape markShape() const;
+  FootprintCheck footprintCheck() const;  // mutex_ held while it is used
   struct EdgeCorrection
   {
     double x = 0, y = 0, offset = 0;  // spot in map, inward shift (m)

@@ -1,4 +1,5 @@
 #include "mower_logic/context.hpp"
+#include "mower_logic/footprint.hpp"
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2/LinearMath/Quaternion.h>
@@ -15,16 +16,6 @@ namespace open_mower_next::mower_logic
 
 namespace
 {
-bool insidePolygon(double x, double y, const geometry_msgs::msg::Polygon & poly)
-{
-  bool c = false;
-  const auto & p = poly.points;
-  for (size_t i = 0, j = p.size() - 1; i < p.size(); j = i++) {
-    if ((p[i].y > y) != (p[j].y > y) && x < (p[j].x - p[i].x) * (y - p[i].y) / (p[j].y - p[i].y) + p[i].x) c = !c;
-  }
-  return c;
-}
-
 double distanceToEdges(double x, double y, const geometry_msgs::msg::Polygon & poly)
 {
   double best = 1e9;
@@ -72,6 +63,8 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
         std::lock_guard<std::mutex> l(mutex_);
         bumped = bumps_seen_ && m->bumps != *bumps_seen_;
         bumps_seen_ = m->bumps;
+        if (reverse_bumps_seen_ && m->reverse_bumps != *reverse_bumps_seen_) last_reverse_bump_ = Clock::now();
+        reverse_bumps_seen_ = m->reverse_bumps;
       }
       if (bumped) onBump();
       std::lock_guard<std::mutex> l(mutex_);
@@ -865,6 +858,12 @@ bool Context::bumpedSince(Clock::time_point t) const
   return last_bump_ && last_bump_->time > t;
 }
 
+bool Context::reverseBumpedSince(Clock::time_point t) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  return last_reverse_bump_ && *last_reverse_bump_ > t;
+}
+
 std::optional<Context::Bump> Context::takeBump()
 {
   std::lock_guard<std::mutex> l(mutex_);
@@ -1079,42 +1078,33 @@ void Context::publishMarkers()
   markers_pub_->publish(m);
 }
 
+FootprintCheck Context::footprintCheck() const
+{
+  Body body;
+  body.front = params.footprint_front;
+  body.rear = params.footprint_rear;
+  body.half_width = params.footprint_half_width;
+  body.chamfer = params.footprint_front_chamfer;
+  return FootprintCheck(map_, grid_, body);
+}
+
 bool Context::footprintFits(double x, double y, double yaw) const
 {
   std::lock_guard<std::mutex> l(mutex_);
-  // Centre: inside an operation/navigation area, not in an exclusion.
-  bool in_area = false;
-  for (const auto & a : map_.areas) {
-    if (a.area.polygon.points.size() < 3 || !insidePolygon(x, y, a.area.polygon)) continue;
-    if (a.type == open_mower_next::msg::Area::TYPE_EXCLUSION) return false;
-    in_area = true;
-  }
-  if (!in_area) return false;
-  const auto & info = grid_.info;
-  if (grid_.data.empty() || info.resolution <= 0.0) return true;  // no grid yet: centre check only
-  auto cell_ok = [&](double px, double py) {
-    const int cx = static_cast<int>(std::floor((px - info.origin.position.x) / info.resolution));
-    const int cy = static_cast<int>(std::floor((py - info.origin.position.y) / info.resolution));
-    if (cx < 0 || cy < 0 || cx >= static_cast<int>(info.width) || cy >= static_cast<int>(info.height)) return false;
-    const int8_t v = grid_.data[static_cast<size_t>(cy) * info.width + static_cast<size_t>(cx)];
-    return v >= 0 && v < 100;  // free, rim or blurred edge; not unknown, not lethal
-  };
-  // The footprint's outline (front corners cut at 45 deg), every 5 cm.
-  const double c = std::cos(yaw), s = std::sin(yaw);
-  const double f = params.footprint_front, r = -params.footprint_rear, w = params.footprint_half_width;
-  const double ch = std::clamp(params.footprint_front_chamfer, 0.0, std::min(w, f - r));
-  const double outline[][2] = {{f, w - ch}, {f - ch, w}, {r, w}, {r, -w}, {f - ch, -w}, {f, -w + ch}};
-  constexpr size_t n_pts = sizeof(outline) / sizeof(outline[0]);
-  for (size_t i = 0; i < n_pts; ++i) {
-    const double u0 = outline[i][0], v0 = outline[i][1];
-    const double u1 = outline[(i + 1) % n_pts][0], v1 = outline[(i + 1) % n_pts][1];
-    const int n = std::max(1, static_cast<int>(std::ceil(std::hypot(u1 - u0, v1 - v0) / 0.05)));
-    for (int k = 0; k <= n; ++k) {
-      const double u = u0 + (u1 - u0) * k / n, v = v0 + (v1 - v0) * k / n;
-      if (!cell_ok(x + u * c - v * s, y + u * s + v * c)) return false;
-    }
-  }
-  return true;
+  return footprintCheck().fits(x, y, yaw);
+}
+
+int Context::footprintMisfit(double x, double y, double yaw) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  return footprintCheck().misfit(x, y, yaw);
+}
+
+double Context::straightRoom(double x, double y, double yaw, int dir, double max) const
+{
+  std::lock_guard<std::mutex> l(mutex_);
+  const auto check = footprintCheck();
+  return check.straightRoom(x, y, yaw, dir, max, check.misfit(x, y, yaw));
 }
 
 std::optional<double> Context::reverseForTurn(double x, double y, double yaw, double target_yaw, double max_reverse) const
@@ -1132,18 +1122,10 @@ std::optional<double> Context::reverseForTurn(double x, double y, double yaw, do
   return std::nullopt;
 }
 
-std::optional<Context::Escape> Context::escapeFootprint(double x, double y, double yaw, double max_reverse) const
+std::optional<Move> Context::escapeFootprint(double x, double y, double yaw, double max_drive) const
 {
-  for (double d = 0.05; d <= max_reverse + 1e-9; d += 0.05) {
-    if (footprintFits(x - d * std::cos(yaw), y - d * std::sin(yaw), yaw)) return Escape{d, 0.0};
-  }
-  for (int deg = 10; deg <= 180; deg += 10) {
-    for (const int sign : {1, -1}) {
-      const double turn = sign * deg * M_PI / 180.0;
-      if (footprintFits(x, y, yaw + turn)) return Escape{0.0, turn};
-    }
-  }
-  return std::nullopt;
+  std::lock_guard<std::mutex> l(mutex_);
+  return footprintCheck().escape(x, y, yaw, max_drive);
 }
 
 std::optional<geometry_msgs::msg::PoseStamped> Context::transitVia(const geometry_msgs::msg::PoseStamped & goal)

@@ -426,24 +426,6 @@ private:
   std::optional<std::chrono::steady_clock::time_point> blade_since_;
 };
 
-// Reverses a little after a bump (the local costmap checks behind the robot).
-class BackUp : public RosAction<nav2_msgs::action::BackUp>
-{
-public:
-  BackUp(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx)
-  : RosAction(n, c, std::move(ctx), "backup") {}
-  static BT::PortsList providedPorts() { return {}; }
-
-protected:
-  bool makeGoal(Goal & g) override
-  {
-    g.target.x = ctx_->params.bump_backup;
-    g.speed = ctx_->params.bump_backup_speed;
-    g.time_allowance = rclcpp::Duration::from_seconds(3.0 * ctx_->params.bump_backup / ctx_->params.bump_backup_speed);
-    return true;
-  }
-};
-
 class Undock : public RosAction<nav2_msgs::action::UndockRobot>
 {
 public:

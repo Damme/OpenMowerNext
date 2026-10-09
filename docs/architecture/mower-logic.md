@@ -80,6 +80,19 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
 - If the robot is already within `resume_direct_distance` (0.3 m) of the pass (after a GPS or emergency pause, or when
   the next pass starts where the last one ended), it skips the transit and starts from the pose next to it.
   FTC aligns in place. The backtracked start can't be used then: it lies behind the robot and FTC is forward-only.
+- **No blind moves** (robot 2026-10-09: a straight reverse "the way it came" after a Nav2 spin had turned it took
+  the mower out of mow_2, then three more reverses spun the wheels 20 s each in the bushes). Every move mower_logic
+  drives itself (`FreeFootprint`, `ReverseAlongTrack`, the back-offs of `TryAgain`/`FeelAround`, `CornerTurn`) is
+  checked first pose by pose (5 cm / 5°) against the same footprint rule as the planner (`footprint.hpp`: centre in
+  an area and out of exclusions, outline on line + rim), and no pose on the way may be worse than where the robot
+  stands. Back-offs only go as far as that allows. While moving, `MoveGuard` stops it when the pose doesn't follow
+  the wheels (stuck), on a bump, on a bumper press while reversing (`WorxStatus.reverse_bumps`) or when the footprint
+  gets worse than checked. Only the reverse out of the dock entrance isn't map-checked (it lies outside the areas).
+  Nav2's own Spin/BackUp recoveries are not used (transit and docking trees).
+- **Freeing the footprint** (`FreeFootprint`, before every transit and docking): when the footprint left line + rim,
+  the smallest checked move that fits again - straight back or forward, a turn in place, or a turn and a straight
+  drive (up to `corner_max_reverse`, 1 m). With none, or after one had to stop there (`stuck_spot`, 1 m, until a new
+  mission), the robot doesn't move and needs help: a pass is skipped, going home gives up (IDLE).
 - A pass that fails `max_pass_attempts` times is skipped (2 s between attempts). After `max_skipped_passes_in_row`
   (3) skipped passes the mission stops and the mower goes home: something beyond one pass is wrong.
 

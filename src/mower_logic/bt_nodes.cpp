@@ -122,6 +122,7 @@ public:
   {
     ctx_->setBranch("MOWING");
     if (ctx_->mission.active()) return NodeStatus::SUCCESS;
+    ctx_->stuck_spot.reset();  // the operator started anew: FreeFootprint may try again there
     const auto areas = ctx_->operationAreas();
     if (areas.empty()) {
       RCLCPP_ERROR(ctx_->node->get_logger(), "No operation areas to mow (map, areas, disabled_areas_file)");
@@ -378,10 +379,83 @@ private:
   CtxPtr ctx_;
 };
 
-// Last resort after a refused BackUp (the footprint check at the rim, or the
-// planner's heading bins clipping it, left the robot wedged against an
-// obstacle): reverse straight back bump_backup m without costmap checks. FTC /
-// the transit just drove forward along that line, so it is the way it came.
+// Watches a move mower_logic drives itself (Context::drive). Stops it when
+// the robot doesn't follow (wheels spinning, stuck: with RTK fixed the pose is
+// real), when the body touches something (a bump forward; reversing: the
+// front/side bumper pressed while the body swings - there is no rear bumper),
+// or when the footprint gets worse than checked beforehand. Robot 2026-10-09:
+// a blind reverse ran its full 20 s into the bushes, ~1.7 m of wheel travel for
+// 0.16 m of movement and a 38 deg twist.
+class MoveGuard
+{
+public:
+  // allowed: misfit the move was checked against (INT_MAX: not checked);
+  // expected: s the move takes when the robot follows.
+  void start(int allowed, double expected)
+  {
+    start_ = Context::Clock::now();
+    wait_until_ = start_ + std::chrono::seconds(5);
+    allowed_ = allowed;
+    timeout_ = 1.5 * expected + 3.0;
+    driving_ = false;
+  }
+  // A straight drive at speed (m/s) starts here: the pose has to follow.
+  void drive(double x, double y, double speed)
+  {
+    drive_start_ = Context::Clock::now();
+    drive_x_ = x;
+    drive_y_ = y;
+    speed_ = speed;
+    driving_ = true;
+  }
+  // The motors were just switched on (auto_motors): hold still until they
+  // answer (at most 5 s), the clock starts then. True: don't drive yet.
+  bool waiting(const Context & ctx)
+  {
+    const auto now = Context::Clock::now();
+    if (now >= wait_until_ || ctx.motorsReady()) return false;
+    const auto shift = now - start_;
+    start_ = now;
+    drive_start_ += shift;
+    return true;
+  }
+  // Why to stop; nullptr while all is well.
+  const char * check(const Context & ctx, double x, double y, double yaw) const
+  {
+    const auto now = Context::Clock::now();
+    if (ctx.reverseBumpedSince(start_)) return "bumper pressed while reversing - the body touched something";
+    if (ctx.bumpedSince(start_)) return "bumped";
+    if (std::chrono::duration<double>(now - start_).count() > timeout_) return "took too long - the robot doesn't follow";
+    if (driving_) {
+      const double t = std::chrono::duration<double>(now - drive_start_).count();
+      if (t > 2.0 && std::hypot(x - drive_x_, y - drive_y_) < 0.3 * speed_ * (t - 1.0)) {
+        return "the robot doesn't follow the wheels (stuck?)";
+      }
+    }
+    // A few outline points of slack: the real track wanders a little.
+    if (allowed_ != INT_MAX && ctx.footprintMisfit(x, y, yaw) > allowed_ + 3) return "the footprint got worse than checked";
+    return nullptr;
+  }
+
+private:
+  Context::Clock::time_point start_{}, drive_start_{}, wait_until_{};
+  int allowed_ = INT_MAX;
+  double timeout_ = 0.0, drive_x_ = 0.0, drive_y_ = 0.0, speed_ = 0.0;
+  bool driving_ = false;
+};
+
+double yawOfPose(const geometry_msgs::msg::PoseStamped & p)
+{
+  const auto & q = p.pose.orientation;
+  return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+}
+
+// Straight back: after a bump (the end of the bump recovery), or out of the
+// dock entrance after an aborted undock. Never blind
+// (Daniel 2026-10-09): only as far as no pose on the way leaves line + rim or
+// gets worse than now. At the dock (IsAtDock: on the dock's line, facing in)
+// the line it docked along lies outside the areas - the only place the map
+// isn't checked; MoveGuard still is.
 class ReverseAlongTrack : public BT::StatefulActionNode
 {
 public:
@@ -390,20 +464,58 @@ public:
   static BT::PortsList providedPorts() { return {BT::InputPort<double>("distance", "m, default bump_backup")}; }
   NodeStatus onStart() override
   {
-    const double d = getInput<double>("distance").value_or(ctx_->params.bump_backup);
-    RCLCPP_WARN(ctx_->node->get_logger(), "Reversing %.2f m straight back the way the robot came", d);
-    if (const auto pose = ctx_->robotPose()) {
-      ctx_->last_reversal = Context::Reversal{Context::Clock::now(), pose->pose.position.x, pose->pose.position.y};
+    double d = getInput<double>("distance").value_or(ctx_->params.bump_backup);
+    const auto pose = ctx_->robotPose();
+    if (!pose) {
+      RCLCPP_WARN(ctx_->node->get_logger(), "No robot pose - not reversing");
+      return NodeStatus::FAILURE;
     }
-    until_ = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                                                   std::chrono::duration<double>(d / ctx_->params.bump_backup_speed));
+    start_x_ = pose->pose.position.x;
+    start_y_ = pose->pose.position.y;
+    const double yaw = yawOfPose(*pose);
+    const bool dock = ctx_->atDock();
+    if (!dock) {
+      const double room = ctx_->straightRoom(start_x_, start_y_, yaw, -1, d);
+      if (room < 0.05) {
+        RCLCPP_WARN(ctx_->node->get_logger(), "Not reversing at (%.2f, %.2f): the footprint would leave line + rim",
+                    start_x_, start_y_);
+        return NodeStatus::FAILURE;
+      }
+      if (room < d - 1e-6) {
+        RCLCPP_WARN(ctx_->node->get_logger(), "Reversing only %.2f of %.2f m: further back the footprint leaves line + rim",
+                    room, d);
+      }
+      d = room;
+    }
+    distance_ = d;
+    const double speed = ctx_->params.bump_backup_speed;
+    RCLCPP_WARN(ctx_->node->get_logger(), "Reversing %.2f m straight back%s", d,
+                dock ? " out of the dock entrance" : " (checked)");
+    guard_.start(dock ? INT_MAX : ctx_->footprintMisfit(start_x_, start_y_, yaw), d / speed);
+    guard_.drive(start_x_, start_y_, speed);
     return onRunning();
   }
   NodeStatus onRunning() override
   {
-    if (std::chrono::steady_clock::now() >= until_) {
+    const auto pose = ctx_->robotPose();
+    if (!pose) {
+      ctx_->drive(0.0, 0.0);
+      return NodeStatus::FAILURE;
+    }
+    const double x = pose->pose.position.x, y = pose->pose.position.y;
+    if (std::hypot(x - start_x_, y - start_y_) >= distance_) {
       ctx_->drive(0.0, 0.0);
       return NodeStatus::SUCCESS;
+    }
+    if (guard_.waiting(*ctx_)) {
+      ctx_->drive(0.0, 0.0);
+      return NodeStatus::RUNNING;
+    }
+    if (const char * why = guard_.check(*ctx_, x, y, yawOfPose(*pose))) {
+      ctx_->drive(0.0, 0.0);
+      RCLCPP_WARN(ctx_->node->get_logger(), "Reversing stopped at (%.2f, %.2f): %s", x, y, why);
+      ctx_->stuck_spot = Context::Spot{x, y};
+      return NodeStatus::FAILURE;
     }
     ctx_->drive(-ctx_->params.bump_backup_speed, 0.0);
     return NodeStatus::RUNNING;
@@ -412,7 +524,8 @@ public:
 
 private:
   CtxPtr ctx_;
-  std::chrono::steady_clock::time_point until_{};
+  MoveGuard guard_;
+  double start_x_ = 0.0, start_y_ = 0.0, distance_ = 0.0;
 };
 
 // After a segment cut before a corner the body can't take: back up as little
@@ -466,15 +579,19 @@ public:
     start_y_ = pose->pose.position.y;
     reverse_ = *d;
     phase_ = reverse_ > 0.0 ? Phase::REVERSE : Phase::TURN;
-    deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    // reverseForTurn checked every pose of it: the start fits (misfit 0).
+    guard_.start(0, reverse_ / ctx_->params.bump_backup_speed + std::abs(std::remainder(target_ - yaw, 2.0 * M_PI)) / 0.3);
+    if (reverse_ > 0.0) guard_.drive(start_x_, start_y_, ctx_->params.bump_backup_speed);
     return onRunning();
   }
   NodeStatus onRunning() override
   {
     ctx_->keepCarriedBlade();
     const auto pose = ctx_->robotPose();
-    if (!pose || std::chrono::steady_clock::now() > deadline_) {
+    const char * why = pose ? guard_.check(*ctx_, pose->pose.position.x, pose->pose.position.y, yawOf(*pose)) : "no pose";
+    if (why) {
       ctx_->drive(0.0, 0.0);
+      RCLCPP_WARN(ctx_->node->get_logger(), "%s turn stopped: %s", align_ ? "Pass start" : "Corner", why);
       if (!align_) ctx_->force_transit = true;
       return NodeStatus::SUCCESS;
     }
@@ -508,14 +625,18 @@ private:
   Phase phase_ = Phase::TURN;
   bool align_ = false;
   double target_ = 0.0, start_x_ = 0.0, start_y_ = 0.0, reverse_ = 0.0;
-  std::chrono::steady_clock::time_point deadline_{};
+  MoveGuard guard_;
 };
 
 // Before a transit or docking: when the footprint left line + rim (FTC
 // overshot the end of a cut corner), Nav2 refuses every plan ("Start
-// occupied") and the mission and docking die on the lawn. Back up straight
-// (the way FTC came), else turn in place, until the footprint fits again.
-// Always SUCCESS: the transit reports whatever is still wrong.
+// occupied") and the mission and docking die on the lawn. Free it with the
+// smallest checked move (Context::escapeFootprint: a turn and/or a straight
+// drive, forward or back, no pose on the way worse than now). Never blind
+// (Daniel 2026-10-09: it reversed "the way it came" after a Nav2 spin had
+// turned it - out of mow_2 and into the bushes): with no such move, or after
+// one got stuck here, the robot stays put and needs help. FAILURE then; going
+// home gives up (IDLE), a mission skips the pass.
 class FreeFootprint : public BT::StatefulActionNode
 {
 public:
@@ -526,56 +647,79 @@ public:
   {
     const auto pose = ctx_->robotPose();
     if (!pose) return NodeStatus::SUCCESS;
-    const double x = pose->pose.position.x, y = pose->pose.position.y, yaw = yawOf(*pose);
-    if (ctx_->footprintFits(x, y, yaw)) return NodeStatus::SUCCESS;
+    const double x = pose->pose.position.x, y = pose->pose.position.y, yaw = yawOfPose(*pose);
+    const int misfit = ctx_->footprintMisfit(x, y, yaw);
+    if (misfit == 0) return NodeStatus::SUCCESS;
+    if (ctx_->stuckNear(x, y)) return needsHelp(x, y, "a checked move already got stuck here");
     const auto e = ctx_->escapeFootprint(x, y, yaw, ctx_->params.corner_max_reverse);
-    if (!e && ctx_->reversedNear(x, y)) {
-      RCLCPP_WARN(ctx_->node->get_logger(),
-                  "Footprint outside line + rim at (%.2f, %.2f): already reversed here, not backing up blindly again", x, y);
-      return NodeStatus::FAILURE;
-    }
-    // Nothing fits nearby: reverse blindly the way the robot came.
-    esc_ = e.value_or(Context::Escape{ctx_->params.bump_backup, 0.0});
-    if (!e) ctx_->last_reversal = Context::Reversal{Context::Clock::now(), x, y};
-    RCLCPP_WARN(ctx_->node->get_logger(), "Footprint outside line + rim at (%.2f, %.2f): back up %.2f m, turn %.0f deg%s",
-                x, y, esc_.reverse, esc_.turn * 180.0 / M_PI, e ? "" : " (no fitting pose found)");
-    start_x_ = x;
-    start_y_ = y;
-    target_ = yaw + esc_.turn;
-    deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    if (!e) return needsHelp(x, y, "no checked move frees it");
+    move_ = *e;
+    RCLCPP_WARN(ctx_->node->get_logger(), "Footprint outside line + rim at (%.2f, %.2f): turn %.0f deg, then %s %.2f m",
+                x, y, move_.turn * 180.0 / M_PI, move_.drive < 0.0 ? "back" : "forward", std::abs(move_.drive));
+    start_x_ = drive_x_ = x;
+    start_y_ = drive_y_ = y;
+    target_ = yaw + move_.turn;
+    const double speed = ctx_->params.bump_backup_speed;
+    guard_.start(misfit, std::abs(move_.drive) / speed + std::abs(move_.turn) / 0.3);
+    turning_ = move_.turn != 0.0;
+    if (!turning_) guard_.drive(x, y, speed);
     return onRunning();
   }
   NodeStatus onRunning() override
   {
     const auto pose = ctx_->robotPose();
-    if (!pose || std::chrono::steady_clock::now() > deadline_) {
+    if (!pose) {
       ctx_->drive(0.0, 0.0);
-      return NodeStatus::SUCCESS;
+      return NodeStatus::FAILURE;
     }
-    if (std::hypot(pose->pose.position.x - start_x_, pose->pose.position.y - start_y_) < esc_.reverse) {
-      ctx_->drive(-ctx_->params.bump_backup_speed, 0.0);
+    const double x = pose->pose.position.x, y = pose->pose.position.y, yaw = yawOfPose(*pose);
+    if (guard_.waiting(*ctx_)) {
+      ctx_->drive(0.0, 0.0);
       return NodeStatus::RUNNING;
     }
-    const double err = std::remainder(target_ - yawOf(*pose), 2.0 * M_PI);
-    if (esc_.turn == 0.0 || std::abs(err) < 0.05) {
+    if (const char * why = guard_.check(*ctx_, x, y, yaw)) {
       ctx_->drive(0.0, 0.0);
-      return NodeStatus::SUCCESS;
+      RCLCPP_WARN(ctx_->node->get_logger(), "Freeing the footprint stopped at (%.2f, %.2f): %s", x, y, why);
+      ctx_->stuck_spot = Context::Spot{start_x_, start_y_};
+      return NodeStatus::FAILURE;
     }
-    ctx_->drive(0.0, std::clamp(2.0 * err, -0.6, 0.6));
-    return NodeStatus::RUNNING;
+    if (turning_) {
+      const double err = std::remainder(target_ - yaw, 2.0 * M_PI);
+      if (std::abs(err) >= 0.05) {
+        ctx_->drive(0.0, std::clamp(2.0 * err, -0.6, 0.6));
+        return NodeStatus::RUNNING;
+      }
+      turning_ = false;
+      drive_x_ = x;
+      drive_y_ = y;
+      guard_.drive(x, y, ctx_->params.bump_backup_speed);
+    }
+    if (std::hypot(x - drive_x_, y - drive_y_) < std::abs(move_.drive)) {
+      ctx_->drive(std::copysign(ctx_->params.bump_backup_speed, move_.drive), 0.0);
+      return NodeStatus::RUNNING;
+    }
+    ctx_->drive(0.0, 0.0);
+    return NodeStatus::SUCCESS;
   }
   void onHalted() override { ctx_->drive(0.0, 0.0); }
 
 private:
-  static double yawOf(const geometry_msgs::msg::PoseStamped & p)
+  NodeStatus needsHelp(double x, double y, const char * why)
   {
-    const auto & q = p.pose.orientation;
-    return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    RCLCPP_ERROR_THROTTLE(ctx_->node->get_logger(), *ctx_->node->get_clock(), 60000,
+                          "Footprint outside line + rim at (%.2f, %.2f): %s - not moving, needs help (drive it back "
+                          "into the area by hand)", x, y, why);
+    if (ctx_->command == Command::HOME) {
+      RCLCPP_ERROR(ctx_->node->get_logger(), "Not going home from here; staying IDLE");
+      ctx_->command = Command::IDLE;
+    }
+    return NodeStatus::FAILURE;
   }
   CtxPtr ctx_;
-  Context::Escape esc_;
-  double start_x_ = 0.0, start_y_ = 0.0, target_ = 0.0;
-  std::chrono::steady_clock::time_point deadline_{};
+  Move move_;
+  MoveGuard guard_;
+  bool turning_ = false;
+  double start_x_ = 0.0, start_y_ = 0.0, drive_x_ = 0.0, drive_y_ = 0.0, target_ = 0.0;
 };
 
 // Try again after a bump on a pass (Daniel: bumps are often false detections,
@@ -622,6 +766,13 @@ public:
     backoff_ = req->first ? p.feel_retry_backoff : p.feel_sidestep_backoff;
     start_x_ = pose->pose.position.x;
     start_y_ = pose->pose.position.y;
+    // Only as far back as the footprint stays inside line + rim (never blind).
+    const double room = ctx_->straightRoom(start_x_, start_y_, yawOfPose(*pose), -1, backoff_);
+    if (room < backoff_ - 1e-6) {
+      RCLCPP_INFO(ctx_->node->get_logger(), "Backing off only %.2f of %.2f m: line + rim behind the robot", room,
+                  backoff_);
+      backoff_ = room;
+    }
     started_ = Context::Clock::now();
     return onRunning();
   }
@@ -632,9 +783,11 @@ public:
     const double t = std::chrono::duration<double>(Context::Clock::now() - started_).count();
     const double moved = pose ? std::hypot(pose->pose.position.x - start_x_, pose->pose.position.y - start_y_) : 1e9;
     // Reverse at least feel_retry_backoff and long enough for the bump latch
-    // (worx_hardware collision_hold: 1 s of non-forward commands).
-    if ((moved < backoff_ || t < 1.3) && t < 15.0) {
-      ctx_->drive(moved < backoff_ ? -p.feel_speed : 0.0, 0.0);
+    // (worx_hardware collision_hold: 1 s of non-forward commands). Stop backing
+    // off when the body touches something or it takes too long (stuck).
+    const bool back = moved < backoff_ && !ctx_->reverseBumpedSince(started_);
+    if ((back || t < 1.3) && t < 1.5 * backoff_ / p.feel_speed + 3.0) {
+      ctx_->drive(back ? -p.feel_speed : 0.0, 0.0);
       return NodeStatus::RUNNING;
     }
     ctx_->drive(0.0, 0.0);
@@ -722,7 +875,7 @@ public:
     ctx_->setBranch("FEELING_AROUND");
     RCLCPP_INFO(ctx_->node->get_logger(), "Feeling around obstacle %d on its %s", obstacle_,
                 side_ > 0 ? "left" : "right");
-    startBackoff(x0, y0);
+    startBackoff(x0, y0, yaw0);
     return NodeStatus::RUNNING;
   }
 
@@ -748,7 +901,7 @@ public:
       if (contacts_ >= p.feel_max_contacts) return giveUp("too many bumps");
       ctx_->drive(0.0, 0.0);
       if (p.feel_blade) ctx_->setBlade(false);
-      startBackoff(x, y);
+      startBackoff(x, y, yaw);
       return NodeStatus::RUNNING;
     }
     double off = 1e9;
@@ -757,10 +910,13 @@ public:
 
     switch (phase_) {
       case Phase::BACKOFF: {
-        // Reverse at least feel_backoff, and long enough for the bump latch
-        // (worx_hardware collision_hold 1 s of non-forward commands).
-        const bool far = std::hypot(x - phase_x_, y - phase_y_) >= p.feel_backoff;
-        const bool long_enough = std::chrono::duration<double>(now - phase_start_).count() >= 1.3;
+        // Reverse at least feel_backoff (as far as line + rim allow), and long
+        // enough for the bump latch (worx_hardware collision_hold 1 s of
+        // non-forward commands). Done early when the body touches something.
+        const double t = std::chrono::duration<double>(now - phase_start_).count();
+        if (t > 1.5 * p.feel_backoff / p.bump_backup_speed + 3.0) return giveUp("it doesn't back off (stuck?)");
+        const bool far = std::hypot(x - phase_x_, y - phase_y_) >= backoff_room_ || ctx_->reverseBumpedSince(phase_start_);
+        const bool long_enough = t >= 1.3;
         if (!far || !long_enough) {
           ctx_->drive(far ? 0.0 : -p.bump_backup_speed, 0.0);
           return NodeStatus::RUNNING;
@@ -846,12 +1002,13 @@ private:
     return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
   }
 
-  void startBackoff(double x, double y)
+  void startBackoff(double x, double y, double yaw)
   {
     ctx_->bump_side = 0;
     phase_ = Phase::BACKOFF;
     phase_x_ = x;
     phase_y_ = y;
+    backoff_room_ = ctx_->straightRoom(x, y, yaw, -1, ctx_->params.feel_backoff);
     phase_start_ = Clock::now();
   }
 
@@ -930,7 +1087,7 @@ private:
   std::vector<PassPose> pts_;
   std::vector<double> arc_;  // m along the pass
   Phase phase_ = Phase::BACKOFF;
-  double phase_x_ = 0, phase_y_ = 0, target_ = 0, travel_ = 0, last_x_ = 0, last_y_ = 0;
+  double phase_x_ = 0, phase_y_ = 0, target_ = 0, travel_ = 0, last_x_ = 0, last_y_ = 0, backoff_room_ = 0;
   double arc_turned_ = 0, arc_last_yaw_ = 0;
   Clock::time_point started_{}, phase_start_{};
 };
@@ -1094,7 +1251,6 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   add<ReverseAlongTrack>(factory, ctx, "ReverseAlongTrack");
   add<CornerTurn>(factory, ctx, "CornerTurn");
   add<FreeFootprint>(factory, ctx, "FreeFootprint");
-  add<BackUp>(factory, ctx, "BackUp");
   add<Transit>(factory, ctx, "Transit");
   add<FollowPass>(factory, ctx, "FollowPass");
   add<Undock>(factory, ctx, "Undock");

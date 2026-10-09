@@ -166,12 +166,9 @@
             <TryAgain/>
             <FeelAround/>
             <Sequence>
-              <ForceSuccess>
-                <Fallback>
-                  <BackUp/>
-                  <ReverseAlongTrack/>
-                </Fallback>
-              </ForceSuccess>
+              <!-- Checked against line + rim (no blind reversing); Nav2's BackUp only
+                   checks its costmap, which lets the body over the edge. -->
+              <ForceSuccess><ReverseAlongTrack/></ForceSuccess>
               <SkipPastBump/>
             </Sequence>
           </Fallback>
