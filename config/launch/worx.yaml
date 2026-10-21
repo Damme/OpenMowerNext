@@ -96,6 +96,10 @@ processes:
         name: lsm6dsv_imu
         params:
           - i2c_device: $(env OM_IMU_I2C_DEVICE /dev/i2c-1)
+          # Until mount_up is measured (scripts/worx_imu_mount.py, 180 deg method):
+          # level from wherever it starts (the dock: 12.6-14.1 deg, once 19.1).
+          # Then: mount_up: [x, y, z] and auto_level false.
+          - auto_level: true
       # Battery current/voltage from the INA226 on I2C0 (0x45, 20 mOhm shunt): /power/ina226.
       - plugin: open_mower_next::ina226::Ina226Node
         name: ina226
