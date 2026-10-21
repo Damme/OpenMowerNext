@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <future>
+#include <optional>
 #include <utility>
 
 namespace open_mower_next::mower_logic
@@ -1210,6 +1211,83 @@ private:
   CtxPtr ctx_;
 };
 
+// Gyro bias calibration standing still (lsm6dsv_imu's imu/calibrate, ~3 s; it
+// refuses while the gyro moves). Blade off, then settle 1.5 s after the stop.
+// required: retried every 5 s until it worked (after an IMU error - the heading
+// isn't trusted). Not required (on the dock before undocking): one try, the old
+// bias stays when it fails or no IMU node answers (sim).
+class CalibrateImu : public BT::StatefulActionNode
+{
+public:
+  CalibrateImu(const std::string & n, const BT::NodeConfig & c, CtxPtr ctx) : BT::StatefulActionNode(n, c), ctx_(std::move(ctx)) {}
+  static BT::PortsList providedPorts() { return {BT::InputPort<bool>("required", true, "keep trying until it worked")}; }
+  NodeStatus onStart() override
+  {
+    if (!ctx_->params.imu_calibration) return NodeStatus::SUCCESS;
+    required_ = getInput<bool>("required").value_or(true);
+    ctx_->setBlade(false);
+    if (required_) ctx_->setBranch("IMU_CALIBRATION");
+    next_try_ = Clock::now() + std::chrono::milliseconds(1500);
+    pending_.reset();
+    return NodeStatus::RUNNING;
+  }
+  NodeStatus onRunning() override
+  {
+    const auto log = ctx_->node->get_logger();
+    if (!pending_) {
+      if (Clock::now() < next_try_) return NodeStatus::RUNNING;
+      if (!ctx_->imu_calibrate_client->service_is_ready()) {
+        if (!required_) {
+          RCLCPP_WARN(log, "Gyro calibration: /imu/calibrate not available - keeping the bias");
+          return NodeStatus::SUCCESS;
+        }
+        RCLCPP_WARN_THROTTLE(log, *ctx_->node->get_clock(), 30000, "Gyro calibration: waiting for /imu/calibrate");
+        next_try_ = Clock::now() + std::chrono::seconds(5);
+        return NodeStatus::RUNNING;
+      }
+      RCLCPP_INFO(log, "Gyro calibration (standing still)");
+      pending_.emplace(ctx_->imu_calibrate_client->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>()));
+      sent_ = Clock::now();
+      return NodeStatus::RUNNING;
+    }
+    if (pending_->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      if (Clock::now() - sent_ < std::chrono::seconds(15)) return NodeStatus::RUNNING;
+      ctx_->imu_calibrate_client->remove_pending_request(*pending_);
+      pending_.reset();
+      return failed("no answer within 15 s");
+    }
+    const auto res = pending_->future.get();
+    pending_.reset();
+    if (!res->success) return failed(res->message);
+    RCLCPP_INFO(log, "Gyro calibrated: %s", res->message.c_str());
+    ctx_->imuCalibrated();
+    return NodeStatus::SUCCESS;
+  }
+  void onHalted() override
+  {
+    if (pending_) ctx_->imu_calibrate_client->remove_pending_request(*pending_);
+    pending_.reset();
+  }
+
+private:
+  using Clock = std::chrono::steady_clock;
+  NodeStatus failed(const std::string & why)
+  {
+    if (!required_) {
+      RCLCPP_WARN(ctx_->node->get_logger(), "Gyro calibration failed (%s) - keeping the bias", why.c_str());
+      return NodeStatus::SUCCESS;
+    }
+    RCLCPP_WARN(ctx_->node->get_logger(), "Gyro calibration failed (%s) - trying again in 5 s", why.c_str());
+    next_try_ = Clock::now() + std::chrono::seconds(5);
+    return NodeStatus::RUNNING;
+  }
+
+  CtxPtr ctx_;
+  bool required_ = true;
+  Clock::time_point next_try_, sent_;
+  std::optional<rclcpp::Client<std_srvs::srv::Trigger>::FutureAndRequestId> pending_;
+};
+
 template <class T>
 void add(BT::BehaviorTreeFactory & f, const CtxPtr & ctx, const std::string & id)
 {
@@ -1234,11 +1312,13 @@ void registerNodes(BT::BehaviorTreeFactory & factory, const CtxPtr & ctx)
   addCheck(factory, "IsDocked", [ctx]() { return ctx->charging(); });
   addCheck(factory, "IsAtDock", [ctx]() { return ctx->atDock(); });
   addCheck(factory, "GpsOK", [ctx]() { return ctx->gpsOk(); });
+  addCheck(factory, "ImuOK", [ctx]() { return ctx->imuOk(); });
   factory.registerNodeType<IsTrue>("IsTrue");
   add<CommandIs>(factory, ctx, "CommandIs");
   add<SetCommand>(factory, ctx, "SetCommand");
   add<EndMowingUnlessAutoResume>(factory, ctx, "EndMowingUnlessAutoResume");
   add<Hold>(factory, ctx, "Hold");
+  add<CalibrateImu>(factory, ctx, "CalibrateImu");
   add<BeginMission>(factory, ctx, "BeginMission");
   add<GetPass>(factory, ctx, "GetPass");
   add<PassFailed>(factory, ctx, "PassFailed");

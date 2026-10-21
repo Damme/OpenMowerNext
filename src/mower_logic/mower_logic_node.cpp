@@ -41,6 +41,7 @@ MowerLogicNode::MowerLogicNode(const rclcpp::NodeOptions & options)
   p.gps_timeout = node->declare_parameter("gps_timeout", p.gps_timeout);
   p.gps_require_rtk_fixed = node->declare_parameter("gps_require_rtk_fixed", p.gps_require_rtk_fixed);
   p.gps_settle = node->declare_parameter("gps_settle", p.gps_settle);
+  p.imu_calibration = node->declare_parameter("imu_calibration", p.imu_calibration);
   p.dock_on_rain = node->declare_parameter("dock_on_rain", p.dock_on_rain);
   p.rain_clear_delay = node->declare_parameter("rain_clear_delay", p.rain_clear_delay);
   p.rain_pause_time = node->declare_parameter("rain_pause_time", p.rain_pause_time);

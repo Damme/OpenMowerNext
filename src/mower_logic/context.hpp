@@ -23,6 +23,7 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
@@ -61,6 +62,11 @@ struct Params
   double gps_timeout = 4.0;          // s without a good fix -> pause (Daniel: ~4 s on IMU + ticks)
   bool gps_require_rtk_fixed = true; // only RTK fixed is a good fix (float = dead reckoning)
   double gps_settle = 10.0;          // s of good fixes before continuing (OM_GPS_WAIT_TIME_SEC)
+  // Gyro bias (Daniel 2026-10-21: calibrate only standing still, stop and calibrate
+  // after an IMU error). /imu/needs_calibration (lsm6dsv_imu, after the chip was
+  // re-initialized) pauses mowing for CalibrateImu; it also runs on the dock before
+  // each undock. Off, or no IMU node: nothing waits.
+  bool imu_calibration = true;
   bool dock_on_rain = true;
   double rain_clear_delay = 1800.0;  // s without rain before mowing again
   // Rain while out mowing (Daniel 2026-10-05): stop on the lawn first, blade off.
@@ -225,6 +231,10 @@ public:
   // false once it gave up (dock) or isn't out mowing.
   bool rainPause();
   bool gpsOk();            // good fixes for gps_settle, none missing for gps_timeout
+  // False while the IMU asks for a gyro calibration (imu_calibration on).
+  bool imuOk() const { return !params.imu_calibration || !imu_needs_calibration_; }
+  void imuCalibrated() { imu_needs_calibration_ = false; }
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr imu_calibrate_client;
   bool needsCharging();    // latched: set below battery_low, cleared at battery_resume
   std::vector<std::string> operationAreas() const;
   // Counts /mowing_map messages (0: no map yet).
@@ -419,6 +429,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr charger_sub_;
   rclcpp::Subscription<open_mower_next::msg::WorxStatus>::SharedPtr worx_sub_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr imu_needs_sub_;
+  std::atomic<bool> imu_needs_calibration_{false};
   rclcpp::Subscription<open_mower_next::msg::Map>::SharedPtr map_sub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr blade_pub_;

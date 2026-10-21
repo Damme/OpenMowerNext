@@ -37,6 +37,7 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
   coverage_client = node->create_client<open_mower_next::srv::AreaCoverage>("/area_coverage");
   emergency_client_ = node->create_client<std_srvs::srv::SetBool>("/worx/emergency");
   motors_client_ = node->create_client<std_srvs::srv::SetBool>("/worx/motors_enabled");
+  imu_calibrate_client = node->create_client<std_srvs::srv::Trigger>("/imu/calibrate");
   blade_pub_ = node->create_publisher<std_msgs::msg::Float64MultiArray>("/mower_controller/commands", 10);
   drive_pub_ = node->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel_nav", 10);
 
@@ -77,6 +78,15 @@ Context::Context(rclcpp::Node::SharedPtr n, Params p) : node(std::move(n)), para
         if (m->digital_names[i] == "Rain" && m->digital_active[i]) last_rain_ = Clock::now();
       }
     });
+  if (params.imu_calibration) {
+    imu_needs_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+      "/imu/needs_calibration", rclcpp::QoS(1).transient_local(), [this](std_msgs::msg::Bool::ConstSharedPtr m) {
+        if (m->data && !imu_needs_calibration_) {
+          RCLCPP_WARN(node->get_logger(), "IMU was re-initialized: stopping for a gyro calibration");
+        }
+        imu_needs_calibration_ = m->data;
+      });
+  }
   if (params.require_gps) {
     gps_sub_ = node->create_subscription<sensor_msgs::msg::NavSatFix>(
       params.gps_fix_topic, rclcpp::SensorDataQoS(), [this](sensor_msgs::msg::NavSatFix::ConstSharedPtr m) {
