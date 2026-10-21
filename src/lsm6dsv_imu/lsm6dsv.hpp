@@ -5,7 +5,10 @@
 //
 // Settings: gyro 120 Hz +-500 dps LPF1 24 Hz, accel 120 Hz +-2 g LPF2 12 Hz
 // (high-performance mode, as ST's SFLP example). Static gyro-bias calibration
-// and an auto-level rotation (gravity -> +Z) at startup.
+// (standing still, checked: the gyro must not move) at startup and on request;
+// the level rotation (gravity -> +Z) from a fixed mount calibration (setLevel)
+// or measured at startup (calibrateLevel: whatever the robot stands on is
+// taken as level - the dock slope gave 12.6-19.1 deg for the same mount).
 //
 // FIFO mode (enableFifo): the chip batches every gyro sample (60 Hz) and accel
 // sample (15 Hz) and, from its SFLP sensor fusion, its running gyro-bias
@@ -16,6 +19,9 @@
 // change is used: bias = startup calibration + (SFLP - SFLP reference), the
 // reference taken once SFLP agreed with the startup calibration (convergence,
 // axes, sign) and settled; within a band, else the startup bias.
+// SFLP tracking is off by default: on the robot it wandered only while mowing
+// (2026-10-01..20: Z up to 0.30 dps off, held for half an hour; docked it stays
+// within 0.006 dps), and every error turns straight into heading drift.
 
 #include <array>
 #include <cstdint>
@@ -55,7 +61,7 @@ Mat3 levelRotation(const Vec3 & up, double & tilt_deg, bool & ok);
 
 struct FifoOptions
 {
-  bool sflp_bias = true;        // track SFLP's gyro-bias estimate
+  bool sflp_bias = false;       // track SFLP's gyro-bias estimate (see above)
   double bias_agree_dps = 0.05; // SFLP must once come this close to the startup bias (all axes)
   double bias_band_dps = 0.5;   // max change of SFLP's bias from its reference (all axes)
   double bias_tau = 30.0;       // s: low-pass on SFLP's bias (4.375 mdps steps -> sub-step resolution)
@@ -78,8 +84,17 @@ public:
   Lsm6dsv(std::unique_ptr<I2cBus> bus, Log log);
 
   bool init();                 // WHO_AM_I, reset, configure
-  bool calibrateGyroBias(int samples = 256);
+  // Mean of the gyro output registers (256 samples ~2.1 s). Refused, keeping the
+  // old bias, when the robot moves: any axis' standard deviation above
+  // max_std_dps, or (after a first calibration) any axis' mean more than
+  // max_change_dps from the current bias - a slow steady turn. 0 = no check.
+  // In FIFO mode the FIFO is emptied afterwards. Clears needsCalibration().
+  bool calibrateGyroBias(int samples = 256, double max_std_dps = 0.0, double max_change_dps = 0.0);
   bool calibrateLevel(bool enabled, int samples = 128);
+  // Mean accel (body frame, NOT levelled) - "up" for setLevel - while standing still.
+  bool measureUp(Vec3 & up, int samples = 128);
+  // Fixed level rotation from a measured mount "up" (body frame, any length).
+  bool setLevel(const Vec3 & up);
   // After the calibrations: FIFO stream mode (+ SFLP gyro bias). Without it
   // read() takes single samples from the output registers.
   bool enableFifo(const FifoOptions & options);
@@ -95,6 +110,11 @@ public:
   bool sflpBiasInUse() const { return sflp_in_use_; }
   bool hasSflpBias() const { return sflp_seen_; }
   Vec3 sflpBiasDps() const;      // SFLP's latest estimate (sensor frame)
+  // The chip stopped delivering and was re-initialized: the mower should stop and
+  // calibrate the gyro again before it trusts the heading.
+  bool needsCalibration() const { return needs_calibration_; }
+  int resets() const { return resets_; }
+  const std::string & lastError() const { return last_error_; }
 
 private:
   bool waitGyroReady(int polls, int poll_us);
@@ -120,6 +140,9 @@ private:
   Mat3 level_ = identity();
   Vec3 last_accel_;
   int timeouts_ = 0;
+  bool calibrated_ = false, needs_calibration_ = false;
+  int resets_ = 0;
+  std::string last_error_;
 };
 
 }  // namespace open_mower_next::lsm6dsv_imu

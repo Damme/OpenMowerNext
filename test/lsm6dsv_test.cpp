@@ -1,4 +1,5 @@
-// LSM6DSV driver against a fake chip: bias calibration, axis remap, auto-level.
+// LSM6DSV driver against a fake chip: bias calibration (and its motion check),
+// axis remap, levelling, FIFO/SFLP, re-init after the chip stopped delivering.
 #include "lsm6dsv_imu/lsm6dsv.hpp"
 
 #include <gtest/gtest.h>
@@ -7,6 +8,8 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <string>
+#include <vector>
 
 using namespace open_mower_next::lsm6dsv_imu;
 
@@ -22,6 +25,8 @@ struct FakeChip : I2cBus
   int16_t accel[3] = {0, 0, 0};
   std::deque<std::array<uint8_t, 7>> fifo;  // tag byte + 3 x int16
   bool no_rollover = false;
+  int16_t wobble = 0;  // gyro register reads alternate +-wobble (vibration / moving)
+  int gyro_reads = 0;
   void push(uint8_t tag, int16_t x, int16_t y, int16_t z)
   {
     fifo.push_back({static_cast<uint8_t>(tag << 3), static_cast<uint8_t>(x & 0xFF), static_cast<uint8_t>(x >> 8 & 0xFF),
@@ -38,6 +43,7 @@ struct FakeChip : I2cBus
   bool writeReg8(uint8_t reg, uint8_t v) override
   {
     regs[reg] = v;
+    if (reg == 0x0A && v == 0x00) fifo.clear();  // bypass mode empties the FIFO
     return true;
   }
   bool burstRead(uint8_t reg, uint8_t * buf, int len) override
@@ -53,7 +59,12 @@ struct FakeChip : I2cBus
       }
       return true;
     }
-    const int16_t * src = reg == 0x22 ? gyro : reg == 0x28 ? accel : nullptr;
+    int16_t moved[3];
+    if (reg == 0x22 && wobble) {
+      const int16_t w = gyro_reads++ % 2 ? wobble : static_cast<int16_t>(-wobble);
+      for (int i = 0; i < 3; i++) moved[i] = static_cast<int16_t>(gyro[i] + w);
+    }
+    const int16_t * src = reg == 0x22 ? (wobble ? moved : gyro) : reg == 0x28 ? accel : nullptr;
     if (!src) {
       std::memset(buf, 0, len);
       return true;
@@ -149,6 +160,7 @@ TEST(Lsm6dsv, FifoAveragesAndTracksSflpBias)
   ASSERT_TRUE(imu.calibrateGyroBias(16));  // bias = (10, -20, 5) LSB
   ASSERT_TRUE(imu.calibrateLevel(true, 8));
   FifoOptions opt;
+  opt.sflp_bias = true;
   opt.bias_tau = 0.0;  // follow every SFLP value (smoothing: own test)
   ASSERT_TRUE(imu.enableFifo(opt));
   EXPECT_EQ(c->regs[0x0A], 0x06);  // stream mode
@@ -231,7 +243,9 @@ TEST(Lsm6dsv, SflpBiasSmoothedBetweenSteps)
   ASSERT_TRUE(imu.init());
   ASSERT_TRUE(imu.calibrateGyroBias(16));  // Z bias sensor -Y = -20 LSB = -80 SFLP LSB
   ASSERT_TRUE(imu.calibrateLevel(true, 8));
-  ASSERT_TRUE(imu.enableFifo(FifoOptions{}));  // tau 30 s
+  FifoOptions opt;
+  opt.sflp_bias = true;  // tau 30 s
+  ASSERT_TRUE(imu.enableFifo(opt));
   Sample s;
   // SFLP flips between two steps around the true bias (-80 +- 2): the used bias converges to the middle.
   for (int i = 0; i < 15 * 120; i++) {
@@ -242,4 +256,110 @@ TEST(Lsm6dsv, SflpBiasSmoothedBetweenSteps)
   EXPECT_TRUE(imu.sflpBiasInUse());
   EXPECT_NEAR(imu.activeBiasDps().y, -20 * 17.5e-3, 0.0005);
   EXPECT_NEAR(s.gyro.z, 0.0, 1e-4);
+}
+
+TEST(Lsm6dsv, SflpOffByDefault)
+{
+  auto chip = std::make_unique<FakeChip>();
+  FakeChip * c = chip.get();
+  setBodyAccel(*c, 0.0, 0.0, 9.8);
+  // Left on by an earlier run (the embedded bank survives the software reset).
+  c->regs[0x44] = 0x20;
+  c->regs[0x04] = 0x02;
+  Lsm6dsv imu(std::move(chip), [](int, const std::string &) {});
+  ASSERT_TRUE(imu.init());
+  ASSERT_TRUE(imu.calibrateGyroBias(16));
+  ASSERT_TRUE(imu.enableFifo(FifoOptions{}));
+  EXPECT_EQ(c->regs[0x44], 0x00);  // no SFLP output in the FIFO
+  EXPECT_EQ(c->regs[0x04], 0x00);  // SFLP off
+  // Even an SFLP word that would agree is never used.
+  c->push(0x16, 40, -100, 20);
+  c->push(0x01, 10, -20, 5);
+  Sample s;
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_FALSE(imu.sflpBiasInUse());
+}
+
+TEST(Lsm6dsv, CalibrationRefusedWhileMoving)
+{
+  auto chip = std::make_unique<FakeChip>();
+  FakeChip * c = chip.get();
+  setBodyAccel(*c, 0.0, 0.0, 9.8);
+  Lsm6dsv imu(std::move(chip), [](int, const std::string &) {});
+  ASSERT_TRUE(imu.init());
+
+  c->wobble = 20;  // 0.35 dps std: vibrating / rocking
+  EXPECT_FALSE(imu.calibrateGyroBias(16, 0.1, 0.5));
+  EXPECT_NE(imu.lastError().find("moving"), std::string::npos);
+  c->wobble = 0;
+  ASSERT_TRUE(imu.calibrateGyroBias(16, 0.1, 0.5));
+  EXPECT_NEAR(imu.gyroBiasDps().y, -20 * 17.5e-3, 1e-9);
+
+  // A slow steady turn: no spread, but the mean moved 0.875 dps - refused, old bias kept.
+  c->gyro[1] = -70;
+  EXPECT_FALSE(imu.calibrateGyroBias(16, 0.1, 0.5));
+  EXPECT_NEAR(imu.gyroBiasDps().y, -20 * 17.5e-3, 1e-9);
+  // A real drift of 0.175 dps standing still: accepted.
+  c->gyro[1] = -30;
+  ASSERT_TRUE(imu.calibrateGyroBias(16, 0.1, 0.5));
+  EXPECT_NEAR(imu.gyroBiasDps().y, -30 * 17.5e-3, 1e-9);
+  EXPECT_TRUE(imu.lastError().empty());
+}
+
+TEST(Lsm6dsv, ResetNeedsCalibrationAndLogsRegisters)
+{
+  auto chip = std::make_unique<FakeChip>();
+  FakeChip * c = chip.get();
+  setBodyAccel(*c, 0.0, 0.0, 9.8);
+  std::vector<std::string> errors;
+  Lsm6dsv imu(std::move(chip), [&errors](int level, const std::string & m) {
+    if (level == 2) errors.push_back(m);
+  });
+  ASSERT_TRUE(imu.init());
+  ASSERT_TRUE(imu.calibrateGyroBias(16));
+  ASSERT_TRUE(imu.enableFifo(FifoOptions{}));
+  EXPECT_FALSE(imu.needsCalibration());
+
+  // Power loss: registers back at 0, nothing in the FIFO. Three empty reads -> re-init.
+  c->regs[0x10] = c->regs[0x11] = c->regs[0x0A] = 0;
+  Sample s;
+  for (int i = 0; i < 3; i++) EXPECT_FALSE(imu.read(s));
+  ASSERT_EQ(errors.size(), 1u);
+  EXPECT_NE(errors[0].find("CTRL1 0 CTRL2 0 FIFO_CTRL4 0"), std::string::npos) << errors[0];
+  EXPECT_TRUE(imu.needsCalibration());
+  EXPECT_EQ(imu.resets(), 1);
+  EXPECT_EQ(c->regs[0x11], 0x06);  // configured again
+  EXPECT_EQ(c->regs[0x0A], 0x06);
+
+  // Still flagged while it delivers again; a calibration clears it and empties the FIFO.
+  c->push(0x01, 10, -20, 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_TRUE(imu.needsCalibration());
+  c->push(0x01, 10, -20, 5);
+  ASSERT_TRUE(imu.calibrateGyroBias(16, 0.1, 0.5));
+  EXPECT_FALSE(imu.needsCalibration());
+  EXPECT_TRUE(c->fifo.empty());
+}
+
+TEST(Lsm6dsv, FixedMountLevel)
+{
+  auto chip = std::make_unique<FakeChip>();
+  FakeChip * c = chip.get();
+  // Measured on flat ground: mount tilted 13 deg about body Y.
+  const double t = 13.0 * M_PI / 180.0;
+  const Vec3 mount{-9.8 * std::sin(t), 0.0, 9.8 * std::cos(t)};
+  // Now standing on the dock, which slopes another 5 deg: the fixed level leaves the slope.
+  const double d = 18.0 * M_PI / 180.0;
+  setBodyAccel(*c, -9.8 * std::sin(d), 0.0, 9.8 * std::cos(d));
+  Lsm6dsv imu(std::move(chip), [](int, const std::string &) {});
+  ASSERT_TRUE(imu.init());
+  ASSERT_TRUE(imu.calibrateGyroBias(16));
+  ASSERT_TRUE(imu.setLevel(mount));
+  Vec3 up;
+  ASSERT_TRUE(imu.measureUp(up, 4));  // raw, not levelled
+  EXPECT_NEAR(up.x, -9.8 * std::sin(d), 0.01);
+  Sample s;
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_NEAR(s.accel.x, -9.8 * std::sin(5.0 * M_PI / 180.0), 0.01);
+  EXPECT_NEAR(s.accel.y, 0.0, 0.01);
 }

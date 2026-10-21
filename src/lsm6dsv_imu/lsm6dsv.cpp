@@ -209,6 +209,17 @@ bool Lsm6dsv::configureFifo()
     ok = ok && en >= 0 && bus_->writeReg8(EMB_FUNC_EN_A, static_cast<uint8_t>(en | 0x02));  // SFLP_GAME_EN
     bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x00);
     usleep(200);
+  } else if (ok) {
+    // Off explicitly: the embedded-functions bank survives the software reset, so a
+    // previous run's SFLP kept filling the FIFO (robot 2026-10-21).
+    ok = bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x80);
+    usleep(200);
+    const int fen = bus_->readReg8(EMB_FUNC_FIFO_EN_A), en = bus_->readReg8(EMB_FUNC_EN_A);
+    ok = ok && fen >= 0 && en >= 0;
+    ok = ok && bus_->writeReg8(EMB_FUNC_FIFO_EN_A, static_cast<uint8_t>(fen & ~0x20));
+    ok = ok && bus_->writeReg8(EMB_FUNC_EN_A, static_cast<uint8_t>(en & ~0x02));
+    bus_->writeReg8(REG_FUNC_CFG_ACCESS, 0x00);
+    usleep(200);
   }
   ok = ok && bus_->writeReg8(REG_FIFO_CTRL4, 0x06);  // continuous (stream) mode
   if (!ok) log_(2, "FIFO/SFLP configuration failed (I2C write)");
@@ -285,33 +296,100 @@ bool Lsm6dsv::waitGyroReady(int polls, int poll_us)
   return false;
 }
 
-bool Lsm6dsv::calibrateGyroBias(int samples)
+bool Lsm6dsv::calibrateGyroBias(int samples, double max_std_dps, double max_change_dps)
 {
   log_(0, "Gyro bias calibration - keep the mower still...");
-  double s[3] = {0, 0, 0};
+  double s[3] = {0, 0, 0}, q[3] = {0, 0, 0};
   uint8_t buf[6];
   for (int n = 0; n < samples; ++n) {
     if (!waitGyroReady(5000, 200)) {
-      log_(2, fmt("Gyro calibration: data-ready timeout at sample %.0f", n));
+      last_error_ = fmt("Gyro calibration: data-ready timeout at sample %.0f", n);
+      log_(2, last_error_);
       return false;
     }
     if (!bus_->burstRead(REG_OUTX_L_G, buf, 6)) {
-      log_(2, fmt("Gyro calibration: read error at sample %.0f", n));
+      last_error_ = fmt("Gyro calibration: read error at sample %.0f", n);
+      log_(2, last_error_);
       return false;
     }
-    s[0] += le16(buf + 0);
-    s[1] += le16(buf + 2);
-    s[2] += le16(buf + 4);
+    for (int i = 0; i < 3; i++) {
+      const double v = le16(buf + 2 * i);
+      s[i] += v;
+      q[i] += v * v;
+    }
   }
-  for (int i = 0; i < 3; i++) active_bias_[i] = bias_[i] = s[i] / samples;
+  double mean[3], sd[3], change = 0.0, spread = 0.0;
+  for (int i = 0; i < 3; i++) {
+    mean[i] = s[i] / samples;
+    sd[i] = std::sqrt(std::max(0.0, q[i] / samples - mean[i] * mean[i])) * GYRO_DEG_PER_LSB;
+    spread = std::max(spread, sd[i]);
+    change = std::max(change, std::abs(mean[i] - bias_[i]) * GYRO_DEG_PER_LSB);
+  }
+  if (fifo_) configureFifo();  // drop what queued up meanwhile
+  if (max_std_dps > 0.0 && spread > max_std_dps) {
+    last_error_ = fmt("Gyro calibration refused: moving (std %.3f %.3f %.3f dps)", sd[0], sd[1], sd[2]);
+    log_(1, last_error_);
+    return false;
+  }
+  if (calibrated_ && max_change_dps > 0.0 && change > max_change_dps) {
+    last_error_ = fmt("Gyro calibration refused: bias would change by %.3f dps (turning?) - limit %.3f", change,
+                      max_change_dps);
+    log_(1, last_error_);
+    return false;
+  }
+  const bool first = !calibrated_;
+  for (int i = 0; i < 3; i++) active_bias_[i] = bias_[i] = mean[i];
+  // SFLP (if on) starts over from the new calibration.
+  sflp_agreed_ = sflp_ref_set_ = sflp_in_use_ = sflp_band_left_ = false;
+  sflp_sum_n_ = 0;
+  for (double & v : sflp_sum_) v = 0.0;
+  calibrated_ = true;
+  needs_calibration_ = false;
+  last_error_.clear();
   const auto b = gyroBiasDps();
-  log_(0, fmt("Gyro bias (dps): X=%+.4f  Y=%+.4f  Z=%+.4f", b.x, b.y, b.z));
+  log_(0, fmt("Gyro bias (dps): X=%+.4f  Y=%+.4f  Z=%+.4f", b.x, b.y, b.z) +
+            (first ? fmt(" (std %.3f dps)", spread) : fmt(" (std %.3f dps, changed by %.3f)", spread, change)));
   return true;
 }
 
 Vec3 Lsm6dsv::gyroBiasDps() const
 {
   return {bias_[0] * GYRO_DEG_PER_LSB, bias_[1] * GYRO_DEG_PER_LSB, bias_[2] * GYRO_DEG_PER_LSB};
+}
+
+bool Lsm6dsv::measureUp(Vec3 & up, int samples)
+{
+  Vec3 sum;
+  uint8_t buf[6];
+  for (int n = 0; n < samples; ++n) {
+    if (!bus_->burstRead(REG_OUTX_L_A, buf, 6)) {
+      last_error_ = fmt("Accel read error at sample %.0f", n);
+      log_(2, last_error_);
+      return false;
+    }
+    const Vec3 a = remapSensorToBody({le16(buf + 0) * ACCEL_SCALE, le16(buf + 2) * ACCEL_SCALE, le16(buf + 4) * ACCEL_SCALE});
+    sum.x += a.x;
+    sum.y += a.y;
+    sum.z += a.z;
+    usleep(8000);  // ~125 Hz
+  }
+  up = {sum.x / samples, sum.y / samples, sum.z / samples};
+  return true;
+}
+
+bool Lsm6dsv::setLevel(const Vec3 & up)
+{
+  double tilt = 0.0;
+  bool ok = false;
+  level_ = levelRotation(up, tilt, ok);
+  if (!ok) {
+    log_(1, "Level: |up| too low, leaving frame unrotated");
+  } else if (tilt > 90.0) {
+    log_(1, fmt("Level: up points down (tilt %.1f deg) - mounted upside down?", tilt));
+  } else {
+    log_(0, fmt("Level: mount tilt %.2f deg corrected (Z locked to vertical)", tilt));
+  }
+  return ok;
 }
 
 bool Lsm6dsv::calibrateLevel(bool enabled, int samples)
@@ -322,30 +400,10 @@ bool Lsm6dsv::calibrateLevel(bool enabled, int samples)
     return true;
   }
   log_(0, "Auto-level - keep the mower still...");
-  Vec3 sum;
-  uint8_t buf[6];
-  for (int n = 0; n < samples; ++n) {
-    if (!bus_->burstRead(REG_OUTX_L_A, buf, 6)) {
-      log_(2, fmt("Auto-level: accel read error at sample %.0f", n));
-      return false;
-    }
-    const Vec3 a = remapSensorToBody({le16(buf + 0) * ACCEL_SCALE, le16(buf + 2) * ACCEL_SCALE, le16(buf + 4) * ACCEL_SCALE});
-    sum.x += a.x;
-    sum.y += a.y;
-    sum.z += a.z;
-    usleep(8000);  // ~125 Hz
-  }
-  const Vec3 up{sum.x / samples, sum.y / samples, sum.z / samples};
-  double tilt = 0.0;
-  bool ok = false;
-  level_ = levelRotation(up, tilt, ok);
-  if (!ok) {
-    log_(1, "Auto-level: |accel| too low, leaving frame unrotated");
-  } else if (tilt > 90.0) {
-    log_(1, fmt("Auto-level: accel points down (tilt %.1f deg) - mounted upside down?", tilt));
-  } else {
-    log_(0, fmt("Auto-level: mount tilt %.2f deg corrected (Z locked to vertical)", tilt));
-  }
+  Vec3 up;
+  if (!measureUp(up, samples)) return false;
+  log_(0, fmt("Auto-level: up (body frame) %+.3f %+.3f %+.3f m/s^2", up.x, up.y, up.z));
+  setLevel(up);
   return true;
 }
 
@@ -357,9 +415,21 @@ bool Lsm6dsv::read(Sample & out)
 void Lsm6dsv::missed()
 {
   if (++timeouts_ >= 3) {
-    log_(2, "IMU unresponsive - re-initializing (bias/level kept)");
+    // What the chip looks like before it is reset again: configuration registers at
+    // their reset value 0x00 = it lost power / reset itself; still configured = it
+    // hung; -1 = no answer on the bus.
+    const int who = bus_->readReg8(REG_WHO_AM_I), c1 = bus_->readReg8(REG_CTRL1), c2 = bus_->readReg8(REG_CTRL2);
+    const int f4 = bus_->readReg8(REG_FIFO_CTRL4), st = bus_->readReg8(REG_STATUS);
+    char b[200];
+    std::snprintf(b, sizeof(b),
+                  "IMU unresponsive (WHO_AM_I %d CTRL1 %d CTRL2 %d FIFO_CTRL4 %d STATUS %d; configured: 112 6 6 %d) - "
+                  "re-initializing (bias/level kept), needs a gyro calibration",
+                  who, c1, c2, f4, st, fifo_ ? 6 : 0);
+    log_(2, b);
     if (init() && fifo_) configureFifo();
     timeouts_ = 0;
+    ++resets_;
+    needs_calibration_ = true;
   }
 }
 

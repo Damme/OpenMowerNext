@@ -1,19 +1,32 @@
 // ROS 2 publisher for the LSM6DSV on the Worx robot: sensor_msgs/Imu on
 // imu/data_raw (orientation not provided), 50 Hz by default. With use_fifo each
 // message is the mean of all chip samples since the previous one, and the gyro
-// bias tracks the chip's SFLP estimate (see lsm6dsv.hpp). A component
-// (open_mower_next::lsm6dsv_imu::Lsm6dsvImuNode) with its own sensor thread;
-// if the chip can't be set up it retries every 5 s.
+// bias can track the chip's SFLP estimate (see lsm6dsv.hpp; off by default). A
+// component (open_mower_next::lsm6dsv_imu::Lsm6dsvImuNode) with its own sensor
+// thread; if the chip can't be set up it retries every 5 s.
+//
+// Level: mount_up (body-frame gravity measured once, scripts/worx_imu_mount.py)
+// is a fixed rotation; without it auto_level measures whatever the robot stands
+// on at startup. Gyro bias: calibrated standing still at startup and on
+// imu/calibrate (std_srvs/Trigger, answered once done, ~3 s; the message has the
+// bias and the measured "up" for mount_up). After the chip stopped delivering
+// and was re-initialized imu/needs_calibration (latched) is true until a
+// calibration succeeded: mower_logic stops and calls imu/calibrate.
 #include "lsm6dsv_imu/lsm6dsv.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 namespace open_mower_next::lsm6dsv_imu
 {
@@ -31,7 +44,11 @@ public:
   {
     device_ = declare_parameter("i2c_device", std::string("/dev/i2c-1"));
     address_ = static_cast<uint8_t>(declare_parameter("i2c_address", 0x6B));
-    auto_level_ = declare_parameter("auto_level", true);
+    auto_level_ = declare_parameter("auto_level", false);
+    mount_up_ = declare_parameter<std::vector<double>>("mount_up", std::vector<double>{});
+    // Standing still: the 120 Hz gyro's std is ~1 LSB (0.0175 dps) on the dock.
+    calib_max_std_dps_ = declare_parameter("calibration_max_std_dps", 0.1);
+    calib_max_change_dps_ = declare_parameter("calibration_max_change_dps", 0.5);
     frame_id_ = declare_parameter("frame_id", std::string("imu"));
     rate_ = declare_parameter("rate", 50.0);
     use_fifo_ = declare_parameter("use_fifo", true);
@@ -40,6 +57,14 @@ public:
     fifo_opts_.bias_band_dps = declare_parameter("sflp_bias_band_dps", fifo_opts_.bias_band_dps);
     fifo_opts_.bias_tau = declare_parameter("sflp_bias_tau", fifo_opts_.bias_tau);
     pub_ = create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", rclcpp::SensorDataQoS());
+    needs_pub_ = create_publisher<std_msgs::msg::Bool>("imu/needs_calibration", rclcpp::QoS(1).transient_local());
+    calib_srv_ = create_service<std_srvs::srv::Trigger>(
+      "imu/calibrate", [this](std::shared_ptr<rclcpp::Service<std_srvs::srv::Trigger>> srv,
+                              std::shared_ptr<rmw_request_id_t> header, std::shared_ptr<std_srvs::srv::Trigger::Request>) {
+        std::lock_guard<std::mutex> l(calib_mutex_);
+        calib_srv_handle_ = srv;
+        calib_requests_.push_back(*header);
+      });
     thread_ = std::thread([this]() { run(); });
   }
 
@@ -83,16 +108,30 @@ private:
         waitRetry();
         continue;
       }
-      if (
-        !candidate->calibrateGyroBias() || !candidate->calibrateLevel(auto_level_) ||
-        (use_fifo_ && !candidate->enableFifo(fifo_opts_)))
-      {
+      if (!candidate->calibrateGyroBias(256, calib_max_std_dps_)) {
+        waitRetry();
+        continue;
+      }
+      if (mount_up_.size() == 3) {
+        candidate->setLevel({mount_up_[0], mount_up_[1], mount_up_[2]});
+      } else {
+        if (!mount_up_.empty()) RCLCPP_ERROR(get_logger(), "mount_up needs 3 values (x y z), got %zu", mount_up_.size());
+        if (!auto_level_) {
+          RCLCPP_WARN(get_logger(), "No mount_up and auto_level off: frame not levelled (yaw rate reads cos(tilt) low)");
+        }
+        if (!candidate->calibrateLevel(auto_level_)) {
+          waitRetry();
+          continue;
+        }
+      }
+      if (use_fifo_ && !candidate->enableFifo(fifo_opts_)) {
         waitRetry();
         continue;
       }
       imu = std::move(candidate);
     }
     if (!imu) return;
+    publishNeedsCalibration(false);
     RCLCPP_INFO(get_logger(), "LSM6DSV ready - publishing imu/data_raw at %.0f Hz", rate_);
 
     sensor_msgs::msg::Imu msg;
@@ -104,7 +143,13 @@ private:
     }
 
     rclcpp::WallRate loop(rate_);
+    int resets_seen = 0;
     while (running()) {
+      serveCalibration(*imu);
+      if (imu->resets() != resets_seen) {
+        resets_seen = imu->resets();
+        publishNeedsCalibration(true);
+      }
       Sample s;
       if (imu->read(s)) {
         msg.header.stamp = now();
@@ -129,14 +174,60 @@ private:
     }
   }
 
+  void publishNeedsCalibration(bool needed)
+  {
+    std_msgs::msg::Bool m;
+    m.data = needed;
+    needs_pub_->publish(m);
+  }
+
+  // Sensor thread: answer pending imu/calibrate requests (one calibration for all of them).
+  void serveCalibration(Lsm6dsv & imu)
+  {
+    std::vector<rmw_request_id_t> requests;
+    std::shared_ptr<rclcpp::Service<std_srvs::srv::Trigger>> srv;
+    {
+      std::lock_guard<std::mutex> l(calib_mutex_);
+      requests.swap(calib_requests_);
+      srv = calib_srv_handle_;
+    }
+    if (requests.empty()) return;
+    std_srvs::srv::Trigger::Response res;
+    res.success = imu.calibrateGyroBias(256, calib_max_std_dps_, calib_max_change_dps_);
+    Vec3 up;
+    const bool have_up = imu.measureUp(up, 64);
+    char b[200];
+    if (res.success) {
+      const auto bias = imu.gyroBiasDps();
+      std::snprintf(b, sizeof(b), "bias_dps %+.4f %+.4f %+.4f", bias.x, bias.y, bias.z);
+      res.message = b;
+      publishNeedsCalibration(imu.needsCalibration());
+    } else {
+      res.message = imu.lastError();
+    }
+    if (have_up) {
+      std::snprintf(b, sizeof(b), "; up %+.4f %+.4f %+.4f", up.x, up.y, up.z);
+      res.message += b;
+    }
+    RCLCPP_INFO(get_logger(), "imu/calibrate: %s: %s", res.success ? "done" : "failed", res.message.c_str());
+    for (auto & h : requests) srv->send_response(h, res);
+  }
+
   std::string device_;
   uint8_t address_;
   bool auto_level_;
+  std::vector<double> mount_up_;
+  double calib_max_std_dps_, calib_max_change_dps_;
   std::string frame_id_;
   double rate_;
   bool use_fifo_;
   FifoOptions fifo_opts_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr needs_pub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calib_srv_;
+  std::mutex calib_mutex_;
+  std::shared_ptr<rclcpp::Service<std_srvs::srv::Trigger>> calib_srv_handle_;
+  std::vector<rmw_request_id_t> calib_requests_;
   std::atomic<bool> stop_{false};
   std::thread thread_;
 };

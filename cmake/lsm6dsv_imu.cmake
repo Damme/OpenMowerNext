@@ -8,7 +8,7 @@ target_include_directories(lsm6dsv PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOUR
 set_target_properties(lsm6dsv PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(lsm6dsv_imu_component SHARED src/lsm6dsv_imu/lsm6dsv_imu_node.cpp)
 target_link_libraries(lsm6dsv_imu_component lsm6dsv)
-ament_target_dependencies(lsm6dsv_imu_component rclcpp rclcpp_components sensor_msgs)
+ament_target_dependencies(lsm6dsv_imu_component rclcpp rclcpp_components sensor_msgs std_msgs std_srvs)
 rclcpp_components_register_node(lsm6dsv_imu_component
   PLUGIN "open_mower_next::lsm6dsv_imu::Lsm6dsvImuNode"
   EXECUTABLE lsm6dsv_imu_node)

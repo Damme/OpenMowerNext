@@ -99,6 +99,24 @@ the `worx_hardware` node when it exists. That node ignores the process' own argu
   does: it has to be switched on again.
 - Without board messages for `link_timeout` all outputs are 0.
 
+## IMU (LSM6DSV)
+
+`lsm6dsv_imu` reads the LSM6DSV on the Pi's I2C1 (50 kHz, FIFO bursts) and publishes `imu/data_raw` at 50 Hz;
+the EKFs fuse only its yaw rate.
+
+- **Gyro bias** is calibrated only standing still: at startup, and on `imu/calibrate` (`std_srvs/Trigger`, ~3 s).
+  A calibration is refused while the gyro moves (std above `calibration_max_std_dps` 0.1, or the mean more than
+  `calibration_max_change_dps` 0.5 from the current bias: a slow turn). mower_logic calls it on the dock before each
+  undock. The chip's own running bias estimate (SFLP, `sflp_bias`) is off: on the robot it wandered by up to
+  0.3 dps while mowing, which is 18 deg of heading drift per minute.
+- **Level**: `mount_up` (the body-frame gravity of the mount, measured with `scripts/worx_imu_mount.py`: once,
+  then turned 180 deg on the same spot - the mean cancels the ground slope) is a fixed rotation. Without it,
+  `auto_level` takes whatever the robot stands on at startup as level.
+- **Chip resets**: three reads without a gyro sample re-initialize the chip. The log line shows WHO_AM_I and the
+  configuration registers as found: all 0 = it lost power, still configured = it hung, -1 = no answer on the bus.
+  `imu/needs_calibration` (latched) is then true until a calibration succeeded; mower_logic stops mowing for it
+  (`IMU_CALIBRATION`).
+
 ## Bench test and firmware emulator
 
 `worx_transport:=fake` replaces SPI with an emulator of the firmware (ticks follow the commanded PWM, battery charges
