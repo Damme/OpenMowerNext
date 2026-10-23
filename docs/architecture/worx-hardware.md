@@ -114,6 +114,9 @@ the EKFs fuse only its yaw rate.
   `auto_level` takes whatever the robot stands on at startup as level.
 - **Chip resets**: three reads without a gyro sample re-initialize the chip. The log line shows WHO_AM_I and the
   configuration registers as found: all 0 = it lost power, still configured = it hung, -1 = no answer on the bus.
+  A chip that stays away is re-initialized every 3 reads, logged in full once and then every 50th time.
+  On the robot (2026-10) the resets were power-on resets (all 0) under jolts and transients: a bad pin-header
+  connection; recovery is the fix until the hardware is opened.
   `imu/needs_calibration` (latched) is then true until a calibration succeeded; mower_logic stops mowing for it
   (`IMU_CALIBRATION`).
 

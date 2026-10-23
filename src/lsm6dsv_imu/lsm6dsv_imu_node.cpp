@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdio>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -131,7 +132,6 @@ private:
       imu = std::move(candidate);
     }
     if (!imu) return;
-    publishNeedsCalibration(false);
     RCLCPP_INFO(get_logger(), "LSM6DSV ready - publishing imu/data_raw at %.0f Hz", rate_);
 
     sensor_msgs::msg::Imu msg;
@@ -143,13 +143,9 @@ private:
     }
 
     rclcpp::WallRate loop(rate_);
-    int resets_seen = 0;
     while (running()) {
       serveCalibration(*imu);
-      if (imu->resets() != resets_seen) {
-        resets_seen = imu->resets();
-        publishNeedsCalibration(true);
-      }
+      publishNeedsCalibration(imu->needsCalibration());
       Sample s;
       if (imu->read(s)) {
         msg.header.stamp = now();
@@ -174,8 +170,11 @@ private:
     }
   }
 
+  // Latched; published when it changes (a chip that stays away re-inits every 3 reads).
   void publishNeedsCalibration(bool needed)
   {
+    if (needs_published_ && *needs_published_ == needed) return;
+    needs_published_ = needed;
     std_msgs::msg::Bool m;
     m.data = needed;
     needs_pub_->publish(m);
@@ -201,7 +200,7 @@ private:
       const auto bias = imu.gyroBiasDps();
       std::snprintf(b, sizeof(b), "bias_dps %+.4f %+.4f %+.4f", bias.x, bias.y, bias.z);
       res.message = b;
-      publishNeedsCalibration(imu.needsCalibration());
+      publishNeedsCalibration(imu.needsCalibration());  // before the answer: mower_logic then sees it cleared
     } else {
       res.message = imu.lastError();
     }
@@ -224,6 +223,7 @@ private:
   FifoOptions fifo_opts_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr needs_pub_;
+  std::optional<bool> needs_published_;  // sensor thread
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calib_srv_;
   std::mutex calib_mutex_;
   std::shared_ptr<rclcpp::Service<std_srvs::srv::Trigger>> calib_srv_handle_;

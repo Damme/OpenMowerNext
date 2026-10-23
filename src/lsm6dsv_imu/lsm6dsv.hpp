@@ -142,6 +142,8 @@ private:
   int timeouts_ = 0;
   bool calibrated_ = false, needs_calibration_ = false;
   int resets_ = 0;
+  int resets_in_row_ = 0;  // re-inits without a sample in between
+  bool quiet_ = false;     // init() doesn't log its WHO_AM_I error when missed() re-inits
   std::string last_error_;
 };
 

@@ -161,7 +161,7 @@ bool Lsm6dsv::init()
     char b[160];
     std::snprintf(b, sizeof(b), "LSM6DSV WHO_AM_I: got 0x%02X, expected 0x%02X (address SA0 LOW=0x6A, HIGH=0x6B?)",
                   id & 0xFF, kWhoAmI);
-    log_(2, b);
+    if (!quiet_) log_(2, b);
     return false;
   }
   bus_->writeReg8(REG_CTRL3, 0x01);  // software reset, self-clearing
@@ -417,18 +417,26 @@ void Lsm6dsv::missed()
   if (++timeouts_ >= 3) {
     // What the chip looks like before it is reset again: configuration registers at
     // their reset value 0x00 = it lost power / reset itself; still configured = it
-    // hung; -1 = no answer on the bus.
-    const int who = bus_->readReg8(REG_WHO_AM_I), c1 = bus_->readReg8(REG_CTRL1), c2 = bus_->readReg8(REG_CTRL2);
-    const int f4 = bus_->readReg8(REG_FIFO_CTRL4), st = bus_->readReg8(REG_STATUS);
-    char b[200];
-    std::snprintf(b, sizeof(b),
-                  "IMU unresponsive (WHO_AM_I %d CTRL1 %d CTRL2 %d FIFO_CTRL4 %d STATUS %d; configured: 112 6 6 %d) - "
-                  "re-initializing (bias/level kept), needs a gyro calibration",
-                  who, c1, c2, f4, st, fifo_ ? 6 : 0);
-    log_(2, b);
+    // hung; -1 = no answer on the bus. A chip that stays away (connection open) is
+    // re-initialized every 3 reads: logged in full once, then every 50th time.
+    if (resets_in_row_ == 0) {
+      const int who = bus_->readReg8(REG_WHO_AM_I), c1 = bus_->readReg8(REG_CTRL1), c2 = bus_->readReg8(REG_CTRL2);
+      const int f4 = bus_->readReg8(REG_FIFO_CTRL4), st = bus_->readReg8(REG_STATUS);
+      char b[200];
+      std::snprintf(b, sizeof(b),
+                    "IMU unresponsive (WHO_AM_I %d CTRL1 %d CTRL2 %d FIFO_CTRL4 %d STATUS %d; configured: 112 6 6 %d) - "
+                    "re-initializing (bias/level kept), needs a gyro calibration",
+                    who, c1, c2, f4, st, fifo_ ? 6 : 0);
+      log_(2, b);
+    } else if (resets_in_row_ % 50 == 0) {
+      log_(2, fmt("IMU still unresponsive after %.0f re-inits", resets_in_row_));
+    }
+    quiet_ = true;  // WHO_AM_I is in the line above
     if (init() && fifo_) configureFifo();
+    quiet_ = false;
     timeouts_ = 0;
     ++resets_;
+    ++resets_in_row_;
     needs_calibration_ = true;
   }
 }
@@ -491,6 +499,7 @@ bool Lsm6dsv::readFifo(Sample & out)
     return false;
   }
   timeouts_ = 0;
+  resets_in_row_ = 0;
   // Bias removed from the mean in raw LSB before scaling (keeps precision).
   const Vec3 gs{(static_cast<double>(g[0]) / gn - active_bias_[0]) * GYRO_SCALE,
                 (static_cast<double>(g[1]) / gn - active_bias_[1]) * GYRO_SCALE,
@@ -520,6 +529,7 @@ bool Lsm6dsv::readRegisters(Sample & out)
     return false;
   }
   timeouts_ = 0;
+  resets_in_row_ = 0;
   uint8_t g[6], a[6];
   if (!bus_->burstRead(REG_OUTX_L_G, g, 6) || !bus_->burstRead(REG_OUTX_L_A, a, 6)) {
     log_(1, "IMU read error - skipping sample");

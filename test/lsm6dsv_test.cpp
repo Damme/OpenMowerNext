@@ -27,6 +27,7 @@ struct FakeChip : I2cBus
   bool no_rollover = false;
   int16_t wobble = 0;  // gyro register reads alternate +-wobble (vibration / moving)
   int gyro_reads = 0;
+  bool gone = false;   // no answer on the bus (connection open)
   void push(uint8_t tag, int16_t x, int16_t y, int16_t z)
   {
     fifo.push_back({static_cast<uint8_t>(tag << 3), static_cast<uint8_t>(x & 0xFF), static_cast<uint8_t>(x >> 8 & 0xFF),
@@ -35,6 +36,7 @@ struct FakeChip : I2cBus
   }
   int readReg8(uint8_t reg) override
   {
+    if (gone) return -1;
     if (reg == 0x12) return regs[reg] & ~0x01;  // reset bit self-clears
     if (reg == 0x1B) return static_cast<int>(fifo.size() & 0xFF);
     if (reg == 0x1C) return static_cast<int>(fifo.size() >> 8 & 0x01);
@@ -42,12 +44,14 @@ struct FakeChip : I2cBus
   }
   bool writeReg8(uint8_t reg, uint8_t v) override
   {
+    if (gone) return false;
     regs[reg] = v;
     if (reg == 0x0A && v == 0x00) fifo.clear();  // bypass mode empties the FIFO
     return true;
   }
   bool burstRead(uint8_t reg, uint8_t * buf, int len) override
   {
+    if (gone) return false;
     if (reg == 0x78 && len % 7 == 0) {
       // Burst: the address rolls back to the tag register after each word,
       // unless no_rollover (then the bytes after the first word read as 0).
@@ -362,4 +366,46 @@ TEST(Lsm6dsv, FixedMountLevel)
   ASSERT_TRUE(imu.read(s));
   EXPECT_NEAR(s.accel.x, -9.8 * std::sin(5.0 * M_PI / 180.0), 0.01);
   EXPECT_NEAR(s.accel.y, 0.0, 0.01);
+}
+
+TEST(Lsm6dsv, ChipGoneLogsBoundedAndRecovers)
+{
+  auto chip = std::make_unique<FakeChip>();
+  FakeChip * c = chip.get();
+  setBodyAccel(*c, 0.0, 0.0, 9.8);
+  std::vector<std::string> errors;
+  Lsm6dsv imu(std::move(chip), [&errors](int level, const std::string & m) {
+    if (level == 2) errors.push_back(m);
+  });
+  ASSERT_TRUE(imu.init());
+  ASSERT_TRUE(imu.calibrateGyroBias(16));
+  ASSERT_TRUE(imu.enableFifo(FifoOptions{}));
+
+  // Connection open for 300 reads (6 s at 50 Hz): 100 re-inits, but only the first
+  // in full and a summary every 50th - no ERROR flood.
+  c->gone = true;
+  Sample s;
+  for (int i = 0; i < 300; i++) EXPECT_FALSE(imu.read(s));
+  EXPECT_EQ(imu.resets(), 100);
+  ASSERT_EQ(errors.size(), 2u);
+  EXPECT_NE(errors[0].find("WHO_AM_I -1"), std::string::npos) << errors[0];
+  EXPECT_NE(errors[1].find("after 50 re-inits"), std::string::npos) << errors[1];
+  EXPECT_TRUE(imu.needsCalibration());
+
+  // Back (power returned: registers at reset): re-configured, delivers, still needs a calibration.
+  c->gone = false;
+  c->regs[0x10] = c->regs[0x11] = c->regs[0x0A] = 0;
+  for (int i = 0; i < 3; i++) imu.read(s);
+  EXPECT_EQ(c->regs[0x11], 0x06);
+  c->push(0x01, 10, -20, 5);
+  ASSERT_TRUE(imu.read(s));
+  EXPECT_TRUE(imu.needsCalibration());
+  ASSERT_TRUE(imu.calibrateGyroBias(16, 0.1, 0.5));
+  EXPECT_FALSE(imu.needsCalibration());
+
+  // The next stall after good samples is logged in full again.
+  errors.clear();
+  for (int i = 0; i < 3; i++) EXPECT_FALSE(imu.read(s));
+  ASSERT_EQ(errors.size(), 1u);
+  EXPECT_NE(errors[0].find("WHO_AM_I 112"), std::string::npos) << errors[0];
 }
