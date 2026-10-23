@@ -17,7 +17,9 @@ Priorities, re-checked on every tick (a higher branch halts a lower one):
    Docked, it waits until it has been dry for `rain_clear_delay`.
 4. **Mowing** (command `MOW`): paused while GPS is bad (`gps_timeout`), continues after `gps_settle` s of good fixes.
    After an IMU error (`/imu/needs_calibration`) it stops where it is, blade off, and calibrates the gyro
-   (`IMU_CALIBRATION`, retried every 5 s until it works), then mows on. Also checked before docking, not during it.
+   (`IMU_CALIBRATION`, retried every 5 s), then mows on. No success within `imu_calibration_timeout` (300 s): the
+   IMU counts as gone, the mower stays where it is and goes IDLE (needs help; mission kept). Also checked before
+   docking, not during it.
    On the dock it calibrates once before each undock (`imu_calibration`).
 5. **Go home** (command `HOME`): dock.
 6. **Idle**.

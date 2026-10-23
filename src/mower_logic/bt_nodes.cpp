@@ -1214,8 +1214,10 @@ private:
 // Gyro bias calibration standing still (lsm6dsv_imu's imu/calibrate, ~3 s; it
 // refuses while the gyro moves). Blade off, then settle 1.5 s after the stop.
 // required: retried every 5 s until it worked (after an IMU error - the heading
-// isn't trusted). Not required (on the dock before undocking): one try, the old
-// bias stays when it fails or no IMU node answers (sim).
+// isn't trusted); after imu_calibration_timeout the IMU counts as gone (a bad
+// connection, Daniel 2026-10-23): the mower stays where it is, needs help, IDLE
+// (motors off; the mission is kept). Not required (on the dock before undocking):
+// one try, the old bias stays when it fails or no IMU node answers (sim).
 class CalibrateImu : public BT::StatefulActionNode
 {
 public:
@@ -1227,7 +1229,8 @@ public:
     required_ = getInput<bool>("required").value_or(true);
     ctx_->setBlade(false);
     if (required_) ctx_->setBranch("IMU_CALIBRATION");
-    next_try_ = Clock::now() + std::chrono::milliseconds(1500);
+    started_ = Clock::now();
+    next_try_ = started_ + std::chrono::milliseconds(1500);
     pending_.reset();
     return NodeStatus::RUNNING;
   }
@@ -1241,6 +1244,7 @@ public:
           RCLCPP_WARN(log, "Gyro calibration: /imu/calibrate not available - keeping the bias");
           return NodeStatus::SUCCESS;
         }
+        if (timedOut()) return giveUp("/imu/calibrate not available");
         RCLCPP_WARN_THROTTLE(log, *ctx_->node->get_clock(), 30000, "Gyro calibration: waiting for /imu/calibrate");
         next_try_ = Clock::now() + std::chrono::seconds(5);
         return NodeStatus::RUNNING;
@@ -1277,14 +1281,27 @@ private:
       RCLCPP_WARN(ctx_->node->get_logger(), "Gyro calibration failed (%s) - keeping the bias", why.c_str());
       return NodeStatus::SUCCESS;
     }
+    if (timedOut()) return giveUp(why);
     RCLCPP_WARN(ctx_->node->get_logger(), "Gyro calibration failed (%s) - trying again in 5 s", why.c_str());
     next_try_ = Clock::now() + std::chrono::seconds(5);
     return NodeStatus::RUNNING;
   }
+  bool timedOut() const
+  {
+    return std::chrono::duration<double>(Clock::now() - started_).count() >= ctx_->params.imu_calibration_timeout;
+  }
+  NodeStatus giveUp(const std::string & why)
+  {
+    RCLCPP_ERROR(ctx_->node->get_logger(),
+                 "IMU doesn't recover (%s, %.0f s) - not moving, needs help (check the IMU connection); IDLE, "
+                 "mission kept", why.c_str(), ctx_->params.imu_calibration_timeout);
+    ctx_->command = Command::IDLE;
+    return NodeStatus::FAILURE;
+  }
 
   CtxPtr ctx_;
   bool required_ = true;
-  Clock::time_point next_try_, sent_;
+  Clock::time_point started_, next_try_, sent_;
   std::optional<rclcpp::Client<std_srvs::srv::Trigger>::FutureAndRequestId> pending_;
 };
 

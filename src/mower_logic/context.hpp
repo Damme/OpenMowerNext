@@ -67,6 +67,7 @@ struct Params
   // re-initialized) pauses mowing for CalibrateImu; it also runs on the dock before
   // each undock. Off, or no IMU node: nothing waits.
   bool imu_calibration = true;
+  double imu_calibration_timeout = 300.0;  // s without a successful calibration -> needs help, IDLE
   bool dock_on_rain = true;
   double rain_clear_delay = 1800.0;  // s without rain before mowing again
   // Rain while out mowing (Daniel 2026-10-05): stop on the lawn first, blade off.
